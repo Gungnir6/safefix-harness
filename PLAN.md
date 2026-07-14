@@ -22,6 +22,7 @@
 - Public mode uses only an embedded sample repository and `ScriptedMockLLM`; it accepts no project path, source upload, real Key, arbitrary program, or network tool.
 - Primary native target is Windows 10/11 with Python 3.12; Docker provides the reproducible Linux runtime.
 - Each task uses a fresh subagent, a dedicated `codex/tNN-*` branch/worktree, spec-compliance review, code-quality review, and one PR.
+- Every commit message follows Conventional Commits as `type(scope): 中文摘要`; allowed types are `feat`, `fix`, `test`, `refactor`, `docs`, `build`, `ci`, and `chore`.
 - After each implementation commit, update this plan with its hash and append only required evidence to `AGENT_LOG.md`.
 
 ---
@@ -260,7 +261,7 @@ Run: `.\.venv\Scripts\python.exe -m pytest -q`
 
 Expected: all tests PASS.
 
-Commit: `feat: add typed SafeFix domain model`
+Commit: `feat(domain): 添加 SafeFix 类型化领域模型`
 
 After review, record the implementation commit hash beside T01 and add required evidence to `AGENT_LOG.md` in a separate documentation commit.
 
@@ -345,7 +346,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: add strict declarative configuration`
+Commit: `feat(config): 添加严格声明式配置`
 
 Record the T02 hash and required evidence after both reviews.
 
@@ -415,7 +416,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: add injectable LLM protocol and strict action parser`
+Commit: `feat(llm): 添加可注入模型接口与严格动作解析`
 
 Record the T03 hash and required evidence after both reviews.
 
@@ -492,7 +493,7 @@ Expected: PASS; permitted symlink-capability skip is explicitly reported.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: enforce canonical workspace boundaries`
+Commit: `feat(governance): 实现规范化工作区边界`
 
 Record the T04 hash and required evidence after both reviews.
 
@@ -563,7 +564,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: classify actions with deterministic policy rules`
+Commit: `feat(governance): 添加确定性动作策略分类`
 
 Record the T05 hash and required evidence after both reviews.
 
@@ -625,7 +626,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: add tamper-evident redacted audit log`
+Commit: `feat(audit): 添加脱敏防篡改审计日志`
 
 Record the T06 hash and required evidence after both reviews.
 
@@ -694,7 +695,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: persist secure human approval state`
+Commit: `feat(approval): 实现持久化人工审批状态机`
 
 Record the T07 hash and required evidence after both reviews.
 
@@ -765,7 +766,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: add bounded workspace file tools`
+Commit: `feat(tools): 添加受限工作区文件工具`
 
 Record the T08 hash and required evidence after both reviews.
 
@@ -837,7 +838,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: execute structured bounded validation processes`
+Commit: `feat(tools): 添加结构化验证进程执行`
 
 Record the T09 hash and required evidence after both reviews.
 
@@ -903,7 +904,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: classify validation feedback and stop no-progress loops`
+Commit: `feat(feedback): 添加验证反馈与停机判断`
 
 Record the T10 hash and required evidence after both reviews.
 
@@ -963,7 +964,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: persist bounded project memory and run state`
+Commit: `feat(storage): 持久化项目记忆与运行状态`
 
 Record the T11 hash and required evidence after both reviews.
 
@@ -1047,7 +1048,7 @@ Expected: PASS without network or real credentials.
 
 - [ ] **Step 7: Review and commit**
 
-Commit: `feat: implement SafeFix agent decision loop`
+Commit: `feat(agent): 实现 SafeFix 智能体主循环`
 
 Record the T12 hash and required evidence after both reviews.
 
@@ -1116,7 +1117,7 @@ Expected: PASS with no network.
 
 - [ ] **Step 5: Review and commit**
 
-Commit: `feat: manage credentials and real LLM calls safely`
+Commit: `feat(credentials): 安全管理凭据与模型调用`
 
 Record the T13 hash and required evidence after both reviews.
 
@@ -1193,7 +1194,7 @@ Expected: PASS.
 
 - [ ] **Step 7: Review and commit**
 
-Commit: `feat: expose SafeFix through API and CLI`
+Commit: `feat(interface): 添加 API 与命令行入口`
 
 Record the T14 hash and required evidence after both reviews.
 
@@ -1266,7 +1267,7 @@ Expected: PASS.
 
 - [ ] **Step 6: Review and commit**
 
-Commit: `feat: add transparent SafeFix web interface`
+Commit: `feat(web): 添加透明可审计的 Web 界面`
 
 Record the T15 hash and required evidence after both reviews.
 
@@ -1335,7 +1336,7 @@ Expected: PASS.
 
 - [ ] **Step 6: Review and commit**
 
-Commit: `feat: add deterministic harness mechanism demos`
+Commit: `feat(demo): 添加确定性 Harness 机制演示`
 
 Record the T16 hash and required evidence after both reviews.
 
@@ -1439,7 +1440,7 @@ Deploy the public-demo container to Render without any LLM Key, open the health 
 
 - [ ] **Step 9: Review and commit**
 
-Commit: `build: add reproducible distribution and CI`
+Commit: `build(distribution): 添加可复现分发与持续集成`
 
 Record the T17 hash and required evidence after both reviews.
 
