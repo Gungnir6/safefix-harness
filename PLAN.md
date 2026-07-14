@@ -1479,7 +1479,7 @@ Update this table only with actual commits; do not prefill hashes.
 | Task | Status | Implementation commit | PR | Reviews |
 |---|---|---|---|---|
 | Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
-| T01 | Ready for merge | `755a001`, `eb8f057` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0) |
+| T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
 | T02 | Pending | — | — | — |
 | T03 | Pending | — | — | — |
 | T04 | Pending | — | — | — |
