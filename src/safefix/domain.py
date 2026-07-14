@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -14,6 +22,13 @@ SearchPattern = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=512),
 ]
 Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+def _normalize_to_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC)
+
+
+UtcDatetime = Annotated[AwareDatetime, AfterValidator(_normalize_to_utc)]
 
 
 class TaskMode(str, Enum):
@@ -165,7 +180,7 @@ class BudgetState(_FrozenModel):
     remaining_steps: int = Field(ge=0)
     max_repair_rounds: int = Field(ge=1)
     remaining_repairs: int = Field(ge=0)
-    deadline_at: datetime | None = None
+    deadline_at: UtcDatetime | None = None
 
     @model_validator(mode="after")
     def validate_remaining_budget(self) -> Self:
@@ -253,5 +268,5 @@ class RunSnapshot(_FrozenModel):
     latest_tool_result: ToolResult | None = None
     changed_files: tuple[str, ...] = ()
     stop_reason: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
