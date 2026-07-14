@@ -41,7 +41,51 @@
 
 ## 2. 陌生智能体冷启动验证
 
-待 `SPEC.md` 与 `PLAN.md` 初稿通过审核后补充。冷启动必须使用不同类型的智能体、全新会话，并且只提供 SPEC 与 PLAN。
+### 2.1 设置与客观证据
+
+- 日期：2026-07-14。
+- 第二智能体：OpenCode CLI 1.17.20，模型 `njuse/glm-5.2`；主开发智能体为 Codex App，类型与模型均不同。
+- 技能：OpenCode 报告已加载 `using-superpowers` 与 `test-driven-development`。
+- 上下文隔离：新目录中只有新建的 `.git`、`SPEC.md` 与 `PLAN.md`；未提供 Codex 对话、memory、`SPEC_PROCESS.md` 或 `AGENT_LOG.md`。
+- 指令：尝试 T01 后尝试 T04；任何不确定点立即暂停，不得猜测，不得修改 SPEC/PLAN。
+- 实际产出：只创建 `tests/unit/test_domain.py`，内容与 PLAN T01 的首个测试一致；未创建生产代码，未修改 SPEC/PLAN，未产生 commit。
+- RED 证据：计划命令因环境无 pytest 而报 `No module named pytest`；OpenCode 另用直接 import 得到 `ModuleNotFoundError: No module named 'safefix'`。这证明模块尚不存在，但也暴露出计划缺少环境准备步骤，不能把替代命令视为完整 pytest RED。
+- 暂停位置：T01 Step 3。它在发现 `type` 判别值未定义后按要求暂停；T04 因依赖 T01 未正式开始，只进行了规约预检查。
+
+### 2.2 暴露的规约缺陷
+
+1. 七种 Action 的 discriminator、字段、默认值和验证规则不完整。
+2. SPEC 使用通用 `payload`，PLAN 使用判别联合，Action 模型互相矛盾。
+3. `RunSnapshot`、预算模型和多个基础模型字段未完整定义。
+4. `RiskLevel`、`RunStatus`、`FeedbackCategory`、`AccessKind` 等枚举值未固定。
+5. `PolicyDecision.risk_level` 与 PLAN 中的 `risk` 命名不一致；Feedback 与 ProgressResult 的职责混合。
+6. T04 没有指定敏感 glob 语义和 Windows 路径规范化算法。
+7. PLAN 没有在首次 pytest 前创建 Python 3.12 虚拟环境并安装依赖；冷启动提示又禁止了所有网络，使依赖安装不可能。
+
+### 2.3 处理决策
+
+- 采纳：在 SPEC 与 T01 中完整列出七种动作、精确 discriminator、字段约束、所有基础枚举、`BudgetState`、`RunSnapshot`、`ToolResult`、`Feedback`、`ProgressResult` 等接口。
+- 采纳：统一 `PolicyDecision.risk_level`，将进展判断独立为 `ProgressResult`。
+- 采纳：T04 使用 `AccessKind`；敏感模式固定为 pathspec GitWildMatch；Windows 使用规范绝对路径、`normcase` 与 `commonpath`。
+- 采纳：T01 新增不含生产行为的 Step 0，明确用 `py -3.12` 建立 `.venv` 并安装声明依赖；仅依赖安装可联网，核心测试仍离线。
+- 不采纳：将 Python 范围放宽到 3.13。Python 3.12 是已批准的目标运行时，冷启动机器也已安装 3.12.3；问题是解释器选择与环境引导缺失，不是目标版本不可用。
+
+### 2.4 关键修订前后对照
+
+| 修订前 | 修订后 |
+|---|---|
+| Action 只有 `id/type/payload/reason`，PLAN 又要求具体子类 | 明确采用七类判别联合，列出每类字段、默认值、限制和精确 `type` 字符串 |
+| T01 直接运行 pytest，但环境没有 pytest | T01 Step 0 先创建 Python 3.12 `.venv`、安装 `.[dev]`，再进入 RED |
+| `RunSnapshot` 和 negative budget 无定义 | 定义 `BudgetState`、`RunSnapshot` 全部字段及非负/上限约束 |
+| T04 只写“normalize case”和“sensitive globs” | 固定 `AccessKind`、GitWildMatch、`normcase + abspath + commonpath` 与符号链接逃逸语义 |
+| `PolicyDecision.risk`/`risk_level` 与 Feedback progress 混用 | 统一 `risk_level`，进展改由独立 `ProgressResult` 表示 |
+
+冷启动实现目录保持隔离，任何代码均不合并回主项目。修订后的 SPEC/PLAN 必须再次经学生审核后才能进入正式 T01。
+
+### 2.5 修订确认
+
+- 学生于 2026-07-14 审核并明确确认冷启动修订通过。
+- Gate 0 完成；后续可以提交规约修订并准备正式仓库/实现流程。
 
 ## 3. 过程反思
 

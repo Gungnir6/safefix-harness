@@ -13,6 +13,7 @@
 - Do not use LangChain AgentExecutor, AutoGen, CrewAI, LlamaIndex Agent, a coding-agent SDK runner, or any external agent loop.
 - Every production behavior begins with a failing test; capture RED, implement the minimum GREEN change, then refactor.
 - Core tests use `ScriptedMockLLM`, never the network or a real API Key.
+- Formal development uses a project-local Python 3.12 virtual environment. After T01 Step 0, every `python` command means the activated `.venv` interpreter; dependency installation may use the package index, but tests themselves remain offline.
 - Every action is parsed into a typed model and evaluated by `PolicyEngine` before tool dispatch.
 - File tools resolve real paths and may operate only inside the configured workspace; sensitive paths remain denied.
 - Process execution uses `program + args`, `shell=False`, explicit timeout, output limits, and a scrubbed environment.
@@ -109,15 +110,16 @@ After T01 merges, T02/T03/T04/T06 may run in parallel worktrees. After their dep
 
 ## Gate 0: Required Cross-Agent Cold Start — Before Formal Implementation
 
-This gate is performed by the student with a different agent type, such as Claude Code or Gemini CLI, in a fresh session with no Codex conversation or memory.
+This gate is performed by the student with a different agent type, such as OpenCode, Claude Code or Gemini CLI, in a fresh session with no Codex conversation or memory.
 
-- [ ] Create a disposable worktree from commit containing `SPEC.md` and `PLAN.md`.
-- [ ] Give the new agent only `SPEC.md` and `PLAN.md` and the instruction: “Attempt T01 and T04. If any requirement is uncertain, stop and ask instead of guessing.”
-- [ ] Save every question, conflicting interpretation and incomplete result; do not provide oral clarification during the attempt.
-- [ ] Compare the output with the intended interfaces and acceptance criteria in this plan.
-- [ ] Record the defects and before/after SPEC or PLAN diffs in `SPEC_PROCESS.md`.
-- [ ] Revise `SPEC.md` and `PLAN.md`, obtain student approval again, commit the revisions, and discard the disposable implementation worktree.
-- [ ] Do not begin T01 formal implementation until this gate is marked complete.
+- [x] Create a disposable directory containing only `SPEC.md`, `PLAN.md` and a fresh local `.git`; do not copy process logs or conversation history.
+- [x] Give the new agent only `SPEC.md` and `PLAN.md` and the instruction: “Attempt T01 and T04. If any requirement is uncertain, stop and ask instead of guessing.”
+- [x] Restrict the cold-start agent from real LLM/API access and network-dependent tests. The first run exposed that dependency installation must be the sole permitted network exception, now stated in T01 Step 0.
+- [x] Save every question, conflicting interpretation and incomplete result; do not provide oral clarification during the attempt.
+- [x] Compare the output with the intended interfaces and acceptance criteria in this plan.
+- [x] Record the defects and before/after SPEC or PLAN diffs in `SPEC_PROCESS.md`.
+- [x] Revise `SPEC.md` and `PLAN.md`, obtain student approval again, and keep the disposable implementation isolated.
+- [x] Do not begin T01 formal implementation until this gate is marked complete.
 
 Expected evidence: named second agent type, fresh-session instruction, 1–2 attempted task identifiers, questions/incorrect interpretations, and exact document revisions.
 
@@ -128,6 +130,7 @@ Expected evidence: named second agent type, fresh-session instruction, 1–2 att
 **Branch/PR:** `codex/t01-domain-foundation`
 
 **Files:**
+- Create: `.gitignore`
 - Create: `pyproject.toml`
 - Create: `src/safefix/__init__.py`
 - Create: `src/safefix/domain.py`
@@ -135,35 +138,11 @@ Expected evidence: named second agent type, fresh-session instruction, 1–2 att
 
 **Interfaces:**
 - Consumes: only Python/Pydantic.
-- Produces: `Action` discriminated union; `action_digest(action) -> str`; `ToolResult`; `PolicyDecision`; `Feedback`; `ApprovalRequest`; `RunSnapshot`; enums `DecisionOutcome`, `RiskLevel`, `RunStatus`, `FeedbackCategory`.
+- Produces: `Task`; `Action` discriminated union; `action_digest(action) -> str`; `BudgetState`; `ToolResult`; `PolicyDecision`; `Feedback`; `ProgressResult`; `StopDecision`; `ApprovalRequest`; `RunSnapshot`; enums `TaskMode`, `DecisionOutcome`, `RiskLevel`, `RunStatus`, `FeedbackCategory`, `ApprovalStatus`, `AccessKind`.
 
-- [ ] **Step 1: Write failing digest and discriminator tests**
+- [ ] **Step 0: Create the Python 3.12 environment without production behavior**
 
-```python
-from safefix.domain import ReadFileAction, action_digest
-
-
-def test_action_digest_is_stable_for_equal_actions() -> None:
-    first = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=20)
-    second = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=20)
-    assert action_digest(first) == action_digest(second)
-
-
-def test_action_digest_changes_when_payload_changes() -> None:
-    first = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=20)
-    second = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=21)
-    assert action_digest(first) != action_digest(second)
-```
-
-- [ ] **Step 2: Run RED test**
-
-Run: `python -m pytest tests/unit/test_domain.py -v`
-
-Expected: FAIL during collection with `ModuleNotFoundError: No module named 'safefix'`.
-
-- [ ] **Step 3: Add package metadata and domain models**
-
-Create `pyproject.toml` with Python `>=3.12,<3.13`, `src` package discovery, Pydantic 2, and pytest `testpaths=["tests"]`. Define immutable Pydantic action models using a `type` discriminator: `ListFilesAction`, `ReadFileAction`, `SearchTextAction`, `ApplyPatchAction`, `RunValidationAction`, `RunProcessAction`, and `FinishAction`. Define:
+Create `.gitignore` with `.venv/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/` and `.hypothesis/`. Create an empty `src/safefix/__init__.py` and this package manifest:
 
 ```toml
 [build-system]
@@ -176,17 +155,80 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1", "httpx>=0.28,<1", "jinja2>=3.1,<4",
-  "keyring>=25,<26", "pydantic>=2.10,<3", "python-multipart>=0.0.20,<1",
-  "PyYAML>=6,<7", "uvicorn>=0.34,<1",
+  "keyring>=25,<26", "pathspec>=0.12,<1", "pydantic>=2.10,<3",
+  "python-multipart>=0.0.20,<1", "PyYAML>=6,<7", "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]
-dev = ["hypothesis>=6.120,<7", "mypy>=1.14,<2", "pytest>=8.3,<9", "pytest-asyncio>=0.25,<1", "ruff>=0.9,<1"]
+dev = ["hypothesis>=6.120,<7", "mypy>=1.14,<2", "pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.9,<1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 ```
+
+Run:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe --version
+```
+
+Expected: Python reports `3.12.x`; dependencies install successfully; no `domain.py` exists yet.
+
+- [ ] **Step 1: Write failing digest and discriminator tests**
+
+```python
+from safefix.domain import ReadFileAction, action_digest
+
+
+def test_action_digest_is_stable_for_equal_actions() -> None:
+    first = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=20)
+    second = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=20)
+    assert first.type == "read_file"
+    assert action_digest(first) == action_digest(second)
+
+
+def test_action_digest_changes_when_payload_changes() -> None:
+    first = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=20)
+    second = ReadFileAction(id="a1", reason="inspect", path="src/app.py", start_line=1, end_line=21)
+    assert action_digest(first) != action_digest(second)
+```
+
+- [ ] **Step 2: Run RED test**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_domain.py -v`
+
+Expected: FAIL during collection with `ModuleNotFoundError: No module named 'safefix.domain'`.
+
+- [ ] **Step 3: Implement the complete immutable domain model**
+
+Use `ConfigDict(frozen=True, extra="forbid")` on every model and `Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]` for nonempty strings. Define these exact action fields:
+
+| Class | Exact fields after common `id`, `reason` |
+|---|---|
+| `ListFilesAction` | `type: Literal["list_files"]="list_files"`, `path="."`, `pattern="**/*"`, `limit=Field(100, ge=1, le=1000)` |
+| `ReadFileAction` | `type: Literal["read_file"]="read_file"`, nonempty `path`, `start_line=Field(1, ge=1)`, `end_line=Field(200, ge=1)`; validate `end_line >= start_line` and span `<=500` |
+| `SearchTextAction` | `type: Literal["search_text"]="search_text"`, nonempty `pattern` with max length 512 and literal-match semantics, `path="."`, `file_glob="**/*"`, `max_results=Field(50, ge=1, le=200)` |
+| `ApplyPatchAction` | `type: Literal["apply_patch"]="apply_patch"`, nonempty `path`, `expected_sha256` matching `^[0-9a-f]{64}$`, nonempty `old_text`, `new_text: str`, `expected_replacements=Field(1, ge=1, le=100)` |
+| `RunValidationAction` | `type: Literal["run_validation"]="run_validation"`, nonempty `validator_id` |
+| `RunProcessAction` | `type: Literal["run_process"]="run_process"`, nonempty `program`, `args: tuple[str, ...]=()` |
+| `FinishAction` | `type: Literal["finish"]="finish"`, nonempty `summary` |
+
+Define exact enum values: `TaskMode={LOCAL:"local", PUBLIC_DEMO:"public-demo"}`, `DecisionOutcome={ALLOW, REQUIRE_APPROVAL, DENY}`, `RiskLevel={LOW, MEDIUM, HIGH}`, `RunStatus={CREATED, RUNNING, AWAITING_APPROVAL, SUCCESS, BLOCKED, NO_PROGRESS, BUDGET_EXCEEDED, FAILED, CANCELLED}`, `FeedbackCategory={VALIDATION_SUCCESS, TEST_FAILURE, LINT_FAILURE, TYPE_ERROR, TIMEOUT, TOOL_ERROR, POLICY_REJECTION}`, `ApprovalStatus={PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED}`, and `AccessKind={READ, WRITE, LIST, SEARCH}`. Except for `TaskMode`, each member's serialized value equals its uppercase name.
+
+Define exact supporting models:
+
+- `Task(id, project_id, workspace_root, description, mode, created_at)` with nonempty identifiers, path and description.
+- `BudgetState(max_steps, remaining_steps, max_repair_rounds, remaining_repairs, deadline_at=None)` with maximums `>=1`, remaining values `>=0`, and remaining values not exceeding maximums.
+- `ToolResult(action_id, success, exit_code=None, stdout_summary="", stderr_summary="", changed_files=(), duration_ms=0, error_type=None)` and classmethod `failure(action_id, error_type, message)`.
+- `PolicyDecision(action_id, outcome, risk_level, rule_ids, explanation)`.
+- `Feedback(category, summary, failure_count, fingerprint, remaining_steps, remaining_repairs, changed_files=())`.
+- `ProgressResult(made_progress, reason)` and `StopDecision(code, reason)`.
+- `ApprovalRequest(id, run_id, action_hash, status, one_time_token_hash, frozen_action_json, created_at, expires_at, decided_at=None)`.
+- `RunSnapshot(run_id, task_id, project_id, workspace_root, description, status, repair_round, step_count, budget, version, pending_approval_id=None, action_digests=(), feedback_history=(), latest_tool_result=None, changed_files=(), stop_reason=None, created_at, updated_at)`.
 
 ```python
 Action = Annotated[
@@ -202,21 +244,19 @@ Action = Annotated[
 
 
 def action_digest(action: Action) -> str:
-    canonical = action.model_dump_json(exclude_none=True, by_alias=True)
+    canonical = action.model_dump_json(exclude_none=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
-`ApplyPatchAction` contains `path`, `expected_sha256`, `old_text`, `new_text`, and `expected_replacements=1`. `RunProcessAction` contains `program` and `args: tuple[str, ...]`; it never contains a Shell command string.
-
 - [ ] **Step 4: Run GREEN tests and add enum/model validation cases**
 
-Run: `python -m pytest tests/unit/test_domain.py -v`
+Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_domain.py -v`
 
-Expected: PASS. Add tests proving invalid line ranges, empty programs, and negative budgets raise Pydantic validation errors; rerun and keep PASS.
+Expected: PASS. Add tests proving `start_line < 1`, `end_line < start_line`, a span over 500, whitespace-only `program`, negative remaining budget and remaining budget above maximum raise Pydantic validation errors. Prove every action rejects an unknown field and serializes the exact discriminator in the table; rerun and keep PASS.
 
 - [ ] **Step 5: Review and commit**
 
-Run: `python -m pytest -q`
+Run: `.\.venv\Scripts\python.exe -m pytest -q`
 
 Expected: all tests PASS.
 
@@ -391,7 +431,7 @@ Record the T03 hash and required evidence after both reviews.
 - Create: `tests/unit/test_paths.py`
 
 **Interfaces:**
-- Consumes: a configured workspace root and sensitive glob patterns.
+- Consumes: a configured workspace root, T01 `AccessKind`, and sensitive GitWildMatch patterns.
 - Produces: `WorkspaceBoundary.resolve(candidate: str, access: AccessKind) -> Path`; exceptions `PathOutsideWorkspace`, `SensitivePathDenied`, `SymlinkEscapeDenied`.
 
 - [ ] **Step 1: Write failing traversal and sensitive-file tests**
@@ -399,6 +439,7 @@ Record the T03 hash and required evidence after both reviews.
 ```python
 from pathlib import Path
 import pytest
+from safefix.domain import AccessKind
 from safefix.governance.paths import PathOutsideWorkspace, SensitivePathDenied, WorkspaceBoundary
 
 
@@ -407,7 +448,7 @@ def test_boundary_rejects_parent_escape(tmp_path: Path) -> None:
     workspace.mkdir()
     boundary = WorkspaceBoundary(workspace, (".env", "**/*.pem"))
     with pytest.raises(PathOutsideWorkspace):
-        boundary.resolve("../outside.txt", "read")
+        boundary.resolve("../outside.txt", AccessKind.READ)
 
 
 def test_boundary_denies_sensitive_file_inside_workspace(tmp_path: Path) -> None:
@@ -416,7 +457,7 @@ def test_boundary_denies_sensitive_file_inside_workspace(tmp_path: Path) -> None
     (workspace / ".env").write_text("TOKEN=x", encoding="utf-8")
     boundary = WorkspaceBoundary(workspace, (".env",))
     with pytest.raises(SensitivePathDenied):
-        boundary.resolve(".env", "read")
+        boundary.resolve(".env", AccessKind.READ)
 ```
 
 - [ ] **Step 2: Run RED test**
@@ -427,17 +468,23 @@ Expected: FAIL because `WorkspaceBoundary` does not exist.
 
 - [ ] **Step 3: Implement canonical boundary checks**
 
-Resolve the workspace once. Join relative candidates to it, resolve existing parents without requiring the leaf to exist for writes, use `Path.is_relative_to`, normalize case on Windows, and check sensitive globs against workspace-relative POSIX paths. A symlink whose real target leaves the root raises `SymlinkEscapeDenied`.
+Resolve the workspace once. Join relative candidates to it and call `Path.resolve(strict=False)`, which resolves existing symlink parents without requiring a new write leaf to exist. Compare canonical paths with `os.path.normcase`, `os.path.abspath` and `os.path.commonpath`; a different drive or common path raises `PathOutsideWorkspace`. If the lexical path is inside but the resolved target escapes through a symlink, raise `SymlinkEscapeDenied`. Compile sensitive patterns once with `pathspec.PathSpec.from_lines("gitwildmatch", patterns)` and match the workspace-relative POSIX path.
 
 ```python
 def _assert_inside(root: Path, target: Path) -> None:
-    if not target.is_relative_to(root):
+    root_key = os.path.normcase(os.path.abspath(root))
+    target_key = os.path.normcase(os.path.abspath(target))
+    try:
+        inside = os.path.commonpath((root_key, target_key)) == root_key
+    except ValueError:
+        inside = False
+    if not inside:
         raise PathOutsideWorkspace(str(target))
 ```
 
 - [ ] **Step 4: Add symlink and property tests**
 
-Use Hypothesis to generate segments containing `.`, `..`, separators and Unicode. Assert every accepted path resolves beneath the root. Add a symlink-escape test guarded by platform capability and a mixed-case Windows test.
+Use Hypothesis to generate segments containing `.`, `..`, separators and Unicode. Assert every accepted path resolves beneath the root using the same canonical comparison. Add a symlink-escape test guarded by platform capability, a Windows drive/case test, and GitWildMatch cases proving `.env`, `**/*.pem` and `**/.ssh/**` match the documented files.
 
 Run: `python -m pytest tests/unit/test_paths.py -v`
 
@@ -502,7 +549,7 @@ def decide(self, action: Action) -> PolicyDecision:
     for rule in self._rules:
         match = rule.evaluate(action)
         if match is not None:
-            return PolicyDecision(action_id=action.id, outcome=match.outcome, risk=match.risk, rule_ids=(rule.id,), explanation=match.explanation)
+            return PolicyDecision(action_id=action.id, outcome=match.outcome, risk_level=match.risk_level, rule_ids=(rule.id,), explanation=match.explanation)
     return self._deny_by_default(action, "POLICY_NO_MATCH")
 ```
 
@@ -600,20 +647,20 @@ Record the T06 hash and required evidence after both reviews.
 
 ```python
 import pytest
-from safefix.domain import RunProcessAction
+from safefix.domain import RiskLevel, RunProcessAction
 from safefix.governance.approvals import ActionMismatch, ApprovalAlreadyUsed
 
 
 def test_approval_cannot_authorize_changed_action(approval_store) -> None:
     original = RunProcessAction(id="a1", reason="commit", program="git", args=("commit", "-m", "ok"))
     changed = RunProcessAction(id="a1", reason="commit", program="git", args=("push",))
-    challenge = approval_store.request("run-1", original, "HIGH", ("CMD_GIT_WRITE",), 300)
+    challenge = approval_store.request("run-1", original, RiskLevel.MEDIUM, ("CMD_GIT_WRITE",), 300)
     with pytest.raises(ActionMismatch):
         approval_store.approve(challenge.id, challenge.token, changed)
 
 
 def test_approval_token_is_single_use(approval_store, risky_action) -> None:
-    challenge = approval_store.request("run-1", risky_action, "HIGH", ("CMD_GIT_WRITE",), 300)
+    challenge = approval_store.request("run-1", risky_action, RiskLevel.MEDIUM, ("CMD_GIT_WRITE",), 300)
     approval_store.approve(challenge.id, challenge.token, risky_action)
     with pytest.raises(ApprovalAlreadyUsed):
         approval_store.approve(challenge.id, challenge.token, risky_action)
@@ -806,25 +853,27 @@ Record the T09 hash and required evidence after both reviews.
 
 **Interfaces:**
 - Consumes: validator `ToolResult` values and previous `Feedback`.
-- Produces: `FeedbackEngine.from_results(results, changed_files, remaining_budget) -> Feedback`; `compare(previous, current) -> ProgressResult`; `should_stop(history, budget) -> StopDecision | None`.
+- Produces: `FeedbackEngine.from_results(results, changed_files, remaining_steps, remaining_repairs) -> Feedback`; `compare(previous, current) -> ProgressResult`; `should_stop(history, budget: BudgetState, action_digests=()) -> StopDecision | None`.
 
 - [ ] **Step 1: Write failing classification and progress tests**
 
 ```python
+from safefix.domain import BudgetState
 from safefix.feedback import FeedbackEngine
 
 
 def test_fewer_failed_tests_counts_as_progress(pytest_results) -> None:
     engine = FeedbackEngine()
-    previous = engine.from_results([pytest_results("2 failed, 3 passed", 1)], ("app.py",), 2)
-    current = engine.from_results([pytest_results("1 failed, 4 passed", 1)], ("app.py",), 1)
+    previous = engine.from_results([pytest_results("2 failed, 3 passed", 1)], ("app.py",), remaining_steps=2, remaining_repairs=2)
+    current = engine.from_results([pytest_results("1 failed, 4 passed", 1)], ("app.py",), remaining_steps=1, remaining_repairs=1)
     assert engine.compare(previous, current).made_progress is True
 
 
 def test_two_equal_failure_fingerprints_stop_no_progress(pytest_results) -> None:
     engine = FeedbackEngine(no_progress_limit=2)
-    feedback = engine.from_results([pytest_results("1 failed: test_value", 1)], ("app.py",), 1)
-    decision = engine.should_stop([feedback, feedback], remaining_budget=1)
+    feedback = engine.from_results([pytest_results("1 failed: test_value", 1)], ("app.py",), remaining_steps=2, remaining_repairs=1)
+    budget = BudgetState(max_steps=20, remaining_steps=2, max_repair_rounds=3, remaining_repairs=1)
+    decision = engine.should_stop([feedback, feedback], budget)
     assert decision.code == "NO_PROGRESS"
 ```
 
@@ -871,8 +920,8 @@ Record the T10 hash and required evidence after both reviews.
 - Create: `tests/unit/test_run_store.py`
 
 **Interfaces:**
-- Consumes: SQLite connection, `MemoryRecord`, `RunSnapshot`.
-- Produces: `MemoryStore.add/list/delete_project/search`; `RunStore.create/get/transition/save_snapshot`; compare-and-set transitions.
+- Consumes: SQLite connection and T01 `RunSnapshot`.
+- Produces: `MemoryRecord`; `MemoryStore.add/list/delete_project/search`; `RunStore.create/get/transition/save_snapshot`; compare-and-set transitions.
 
 - [ ] **Step 1: Write failing bounded retrieval test**
 
@@ -979,7 +1028,7 @@ The loop performs exactly: load snapshot → check cancellation/budget → build
 
 ```python
 while snapshot.status is RunStatus.RUNNING:
-    stop = self.feedback.should_stop(snapshot.feedback_history, snapshot.budget.remaining)
+    stop = self.feedback.should_stop(snapshot.feedback_history, snapshot.budget, snapshot.action_digests)
     if stop is not None:
         return self._stop(snapshot, stop)
     response = await self.llm.complete(self.context.build(snapshot), self.model_settings)
@@ -1297,7 +1346,7 @@ Record the T16 hash and required evidence after both reviews.
 **Branch/PR:** `codex/t17-distribution-ci-docs`
 
 **Files:**
-- Create: `.gitignore`
+- Modify: `.gitignore`
 - Create: `Dockerfile`
 - Create: `.dockerignore`
 - Create: `.gitlab-ci.yml`
@@ -1425,7 +1474,7 @@ Update this table only with actual commits; do not prefill hashes.
 
 | Task | Status | Implementation commit | PR | Reviews |
 |---|---|---|---|---|
-| Gate 0 | Pending | — | — | Cross-agent cold start |
+| Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
 | T01 | Pending | — | — | — |
 | T02 | Pending | — | — | — |
 | T03 | Pending | — | — | — |

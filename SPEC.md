@@ -89,7 +89,8 @@ SafeFix Harness 面向在本地代码库工作的个人开发者。用户提供�
 
 - 路径先规范化为绝对路径，再验证其位于项目根目录。
 - 拒绝路径穿越、工作区外绝对路径和解析后越界的符号链接。
-- 默认禁止读取 `.env`、私钥、凭据目录和配置定义的敏感模式。
+- `AccessKind` 明确区分 READ、WRITE、LIST、SEARCH；Windows 比较使用规范绝对路径、`normcase` 与 `commonpath`，不同盘符直接视为越界。
+- 默认禁止读取 `.env`、私钥、凭据目录和配置定义的敏感模式；模式统一采用 pathspec 的 GitWildMatch 语义并对工作区相对 POSIX 路径匹配。
 - `run_process` 使用非 Shell 子进程模式；输入为程序和参数数组，不接受管道、重定向、命令替换或拼接 Shell 字符串。
 - 策略决定只有 `ALLOW`、`REQUIRE_APPROVAL`、`DENY` 三种。
 - 工作区内受控读写及预配置验证命令可自动允许。
@@ -247,15 +248,48 @@ flowchart LR
 ### Task
 
 - `id`、`project_id`、`workspace_root`、`description`
-- `mode`：local 或 public-demo
-- `status`、`created_at`、`updated_at`
-- `step_count`、`repair_round`、`budget`
+- `mode`：`local` 或 `public-demo`
+- `created_at`
 
 ### Action
 
-- `id`、`type`、`payload`
-- `reason`、`created_at`
-- `canonical_hash`
+Action 使用判别联合而非通用 `payload`。所有动作都有非空 `id`、非空 `reason` 和带默认值的 `type`；时间戳属于审计事件，动作哈希由 `action_digest(action)` 计算，不作为可由 LLM 提供的字段。
+
+| 动作 | `type` | 专属字段与约束 |
+|---|---|---|
+| `ListFilesAction` | `list_files` | `path="."`；`pattern="**/*"`；`limit=100`，范围 1–1000 |
+| `ReadFileAction` | `read_file` | 非空 `path`；`start_line=1`；`end_line=200`；起始行至少为 1、结束行不得小于起始行、单次最多 500 行 |
+| `SearchTextAction` | `search_text` | 非空 `pattern`，按字面文本匹配、最长 512 字符；`path="."`；`file_glob="**/*"`；`max_results=50`，范围 1–200 |
+| `ApplyPatchAction` | `apply_patch` | 非空 `path`；64 位小写十六进制 `expected_sha256`；非空 `old_text`；`new_text`；`expected_replacements=1`，范围 1–100 |
+| `RunValidationAction` | `run_validation` | 非空 `validator_id` |
+| `RunProcessAction` | `run_process` | 非空且去除首尾空白的 `program`；`args` 为字符串元组且允许为空 |
+| `FinishAction` | `finish` | 非空 `summary` |
+
+所有模型 `extra="forbid"` 且不可变。字符串形式的 `type` 必须与表中值完全一致。
+
+### Enums
+
+- `DecisionOutcome`：`ALLOW`、`REQUIRE_APPROVAL`、`DENY`。
+- `RiskLevel`：`LOW`、`MEDIUM`、`HIGH`，分别对应默认自动允许、需要审批、永久禁止的风险级别。
+- `RunStatus`：`CREATED`、`RUNNING`、`AWAITING_APPROVAL`、`SUCCESS`、`BLOCKED`、`NO_PROGRESS`、`BUDGET_EXCEEDED`、`FAILED`、`CANCELLED`。
+- `FeedbackCategory`：`VALIDATION_SUCCESS`、`TEST_FAILURE`、`LINT_FAILURE`、`TYPE_ERROR`、`TIMEOUT`、`TOOL_ERROR`、`POLICY_REJECTION`。
+- `ApprovalStatus`：`PENDING`、`APPROVED`、`REJECTED`、`EXPIRED`、`CANCELLED`。
+- `AccessKind`：`READ`、`WRITE`、`LIST`、`SEARCH`。
+- `TaskMode`：`local`、`public-demo`。
+
+### BudgetState
+
+- `max_steps`、`remaining_steps`：最大值至少为 1，剩余值至少为 0 且不得超过最大值。
+- `max_repair_rounds`、`remaining_repairs`：最大值至少为 1，剩余值至少为 0 且不得超过最大值。
+- `deadline_at`：可选 UTC 时间戳。
+
+### RunSnapshot
+
+- `run_id`、`task_id`、`project_id`、`workspace_root`、`description`。
+- `status`、`repair_round`、`step_count`、`budget`、`version`。
+- `pending_approval_id`、`latest_tool_result`、`stop_reason` 可为空。
+- `action_digests`、`feedback_history`、`changed_files` 为不可变元组。
+- `created_at`、`updated_at` 为 UTC 时间戳。
 
 ### PolicyDecision
 
@@ -265,7 +299,7 @@ flowchart LR
 ### ApprovalRequest
 
 - `id`、`run_id`、`action_hash`
-- `status`、`one_time_token_hash`
+- `status`、`one_time_token_hash`、`frozen_action_json`
 - `created_at`、`expires_at`、`decided_at`
 
 ### ToolResult
@@ -274,10 +308,14 @@ flowchart LR
 - `stdout_summary`、`stderr_summary`
 - `changed_files`、`duration_ms`、`error_type`
 
+`exit_code` 和 `error_type` 可为空；输出摘要默认为空字符串，变更文件默认为空元组。`ToolResult.failure(action_id, error_type, message)` 是标准失败构造器，返回 `success=false` 且不抛出一般工具错误。
+
 ### Feedback
 
 - `category`、`summary`、`failure_count`
-- `fingerprint`、`progress`、`remaining_budget`
+- `fingerprint`、`remaining_steps`、`remaining_repairs`、`changed_files`
+
+进展不直接存为 Feedback 字段。`ProgressResult` 包含 `made_progress` 与 `reason`；`StopDecision` 包含稳定的 `code` 与 `reason`。
 
 ### MemoryRecord
 
@@ -309,6 +347,7 @@ flowchart LR
 - FastAPI：提供类型化本地/公网 API 和自动化接口测试。
 - 服务端 HTML 模板与少量 JavaScript：降低前端构建复杂度；实现时遵循 Open Design 规范。
 - Pydantic：严格验证动作和 YAML 配置 Schema。
+- pathspec：以明确的 GitWildMatch 语义匹配敏感路径和忽略规则，避免不同 glob API 的行为差异。
 - SQLite：零运维存储运行、审批、审计和记忆。
 - pytest + Hypothesis：确定性单测、集成测试及路径/命令属性测试。
 - keyring：对接 Windows Credential Manager 等操作系统凭据库。
