@@ -131,7 +131,7 @@ Expected evidence: named second agent type, fresh-session instruction, 1–2 att
 **Branch/PR:** `codex/t01-domain-foundation`
 
 **Files:**
-- Create: `.gitignore`
+- Modify: `.gitignore`
 - Create: `pyproject.toml`
 - Create: `src/safefix/__init__.py`
 - Create: `src/safefix/domain.py`
@@ -143,7 +143,7 @@ Expected evidence: named second agent type, fresh-session instruction, 1–2 att
 
 - [ ] **Step 0: Create the Python 3.12 environment without production behavior**
 
-Create `.gitignore` with `.venv/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/` and `.hypothesis/`. Create an empty `src/safefix/__init__.py` and this package manifest:
+Verify the existing `.gitignore` retains `.worktrees/`, `.superpowers/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/` and `.hypothesis/`. Create an empty `src/safefix/__init__.py` and this package manifest:
 
 ```toml
 [build-system]
