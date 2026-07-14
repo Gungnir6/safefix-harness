@@ -141,7 +141,7 @@ Expected evidence: named second agent type, fresh-session instruction, 1–2 att
 - Consumes: only Python/Pydantic.
 - Produces: `Task`; `Action` discriminated union; `action_digest(action) -> str`; `BudgetState`; `ToolResult`; `PolicyDecision`; `Feedback`; `ProgressResult`; `StopDecision`; `ApprovalRequest`; `RunSnapshot`; enums `TaskMode`, `DecisionOutcome`, `RiskLevel`, `RunStatus`, `FeedbackCategory`, `ApprovalStatus`, `AccessKind`.
 
-- [ ] **Step 0: Create the Python 3.12 environment without production behavior**
+- [x] **Step 0: Create the Python 3.12 environment without production behavior**
 
 Verify the existing `.gitignore` retains `.worktrees/`, `.superpowers/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/` and `.hypothesis/`. Create an empty `src/safefix/__init__.py` and this package manifest:
 
@@ -163,6 +163,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["hypothesis>=6.120,<7", "mypy>=1.14,<2", "pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.9,<1"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/safefix"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -179,7 +182,7 @@ py -3.12 -m venv .venv
 
 Expected: Python reports `3.12.x`; dependencies install successfully; no `domain.py` exists yet.
 
-- [ ] **Step 1: Write failing digest and discriminator tests**
+- [x] **Step 1: Write failing digest and discriminator tests**
 
 ```python
 from safefix.domain import ReadFileAction, action_digest
@@ -198,13 +201,13 @@ def test_action_digest_changes_when_payload_changes() -> None:
     assert action_digest(first) != action_digest(second)
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_domain.py -v`
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'safefix.domain'`.
 
-- [ ] **Step 3: Implement the complete immutable domain model**
+- [x] **Step 3: Implement the complete immutable domain model**
 
 Use `ConfigDict(frozen=True, extra="forbid")` on every model and `Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]` for nonempty strings. Define these exact action fields:
 
@@ -223,13 +226,13 @@ Define exact enum values: `TaskMode={LOCAL:"local", PUBLIC_DEMO:"public-demo"}`,
 Define exact supporting models:
 
 - `Task(id, project_id, workspace_root, description, mode, created_at)` with nonempty identifiers, path and description.
-- `BudgetState(max_steps, remaining_steps, max_repair_rounds, remaining_repairs, deadline_at=None)` with maximums `>=1`, remaining values `>=0`, and remaining values not exceeding maximums.
+- `BudgetState(max_steps, remaining_steps, max_repair_rounds, remaining_repairs, deadline_at=None)` with maximums `>=1`, remaining values `>=0`, remaining values not exceeding maximums, and an optional aware deadline normalized to UTC.
 - `ToolResult(action_id, success, exit_code=None, stdout_summary="", stderr_summary="", changed_files=(), duration_ms=0, error_type=None)` and classmethod `failure(action_id, error_type, message)`.
 - `PolicyDecision(action_id, outcome, risk_level, rule_ids, explanation)`.
 - `Feedback(category, summary, failure_count, fingerprint, remaining_steps, remaining_repairs, changed_files=())`.
 - `ProgressResult(made_progress, reason)` and `StopDecision(code, reason)`.
 - `ApprovalRequest(id, run_id, action_hash, status, one_time_token_hash, frozen_action_json, created_at, expires_at, decided_at=None)`.
-- `RunSnapshot(run_id, task_id, project_id, workspace_root, description, status, repair_round, step_count, budget, version, pending_approval_id=None, action_digests=(), feedback_history=(), latest_tool_result=None, changed_files=(), stop_reason=None, created_at, updated_at)`.
+- `RunSnapshot(run_id, task_id, project_id, workspace_root, description, status, repair_round, step_count, budget, version, pending_approval_id=None, action_digests=(), feedback_history=(), latest_tool_result=None, changed_files=(), stop_reason=None, created_at, updated_at)` with aware `created_at` and `updated_at` values normalized to UTC.
 
 ```python
 Action = Annotated[
@@ -249,13 +252,13 @@ def action_digest(action: Action) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
-- [ ] **Step 4: Run GREEN tests and add enum/model validation cases**
+- [x] **Step 4: Run GREEN tests and add enum/model validation cases**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_domain.py -v`
 
-Expected: PASS. Add tests proving `start_line < 1`, `end_line < start_line`, a span over 500, whitespace-only `program`, negative remaining budget and remaining budget above maximum raise Pydantic validation errors. Prove every action rejects an unknown field and serializes the exact discriminator in the table; rerun and keep PASS.
+Expected: PASS. Add tests proving `start_line < 1`, `end_line < start_line`, a span over 500, whitespace-only `program`, negative remaining budget and remaining budget above maximum raise Pydantic validation errors. Prove every action rejects an unknown field, serializes the exact discriminator and preserves its exact defaults and bounds. Prove naive UTC-contract timestamps are rejected and aware timestamps are normalized to UTC; rerun and keep PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Run: `.\.venv\Scripts\python.exe -m pytest -q`
 
@@ -1476,7 +1479,7 @@ Update this table only with actual commits; do not prefill hashes.
 | Task | Status | Implementation commit | PR | Reviews |
 |---|---|---|---|---|
 | Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
-| T01 | Pending | — | — | — |
+| T01 | Ready for merge | `755a001`, `eb8f057` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0) |
 | T02 | Pending | — | — | — |
 | T03 | Pending | — | — | — |
 | T04 | Pending | — | — | — |
