@@ -46,5 +46,6 @@
 - 后续评审与修复：复审发现 `COM¹`/`LPT³` 等上标数字设备别名以及直接拒绝路径在 `capture_locals` 下仍可能暴露候选值，提交 `49895de fix(governance): 完善设备名与拒绝路径脱敏`，改用标准库保留名判断并统一为无路径内部失败码；再次复审发现内嵌 NUL 会由 `Path.resolve` 抛出未映射 `ValueError`，提交 `325aa1b fix(governance): 统一空字符路径失败映射`。
 - 最终独立复审：规格与质量评审均批准合并，Critical 0、Important 0、Minor 1；确认 NUL、上标设备别名、cause/context、默认 traceback、`capture_locals` 和符号链接边界问题均关闭。保留的 Minor 是 Hypothesis 属性测试部分复用了生产比较思路且把拒绝都视为通过；确定性接受测试能防止“全部拒绝”，故不阻塞本任务。
 - 根代理新鲜验证：异常脱敏专项 7 passed（33 deselected）；完整测试 171 passed；Ruff check/format、mypy、pip check、`git diff --check a3a6241..325aa1b` 全部 exit 0；过程文档修改前工作树干净。
+- 合并结果：MR !3 合并到 `main`，合并提交 `10cd964`；主工作区快进后确认分支头 `dad25df` 已进入主线，复跑异常脱敏专项为 7 passed（33 deselected）、完整测试为 171 passed，Ruff check/format、mypy、pip check 全部 exit 0。
 - 人工裁决：敏感路径对所有 `AccessKind` 一律拒绝；LIST/SEARCH 根目录本身允许，T08 必须对枚举出的每个后代再次调用边界；Windows 大小写比较严格遵循计划指定的 `normcase`，不引入超出任务范围的卷能力探测。
 - 经验：Windows 路径安全测试必须覆盖设备命名空间、ADS、保留设备名及上标数字别名；错误脱敏最好让内部失败只携带枚举码，并在候选字符串离开公开异常帧后再映射为稳定异常类型。
