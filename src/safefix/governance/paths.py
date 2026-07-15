@@ -86,7 +86,7 @@ class WorkspaceBoundary:
 
         try:
             resolved = lexical.resolve(strict=False)
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             return _PathFailure.UNRESOLVABLE
 
         if not _is_inside(self._root, resolved):

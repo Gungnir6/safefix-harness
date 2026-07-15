@@ -16,6 +16,7 @@ from safefix.governance.paths import (
 
 _LOOP_MARKER = "private-loop-candidate-marker"
 _OS_ERROR_MARKER = "private-os-error-marker"
+_NUL_MARKER = "private-nul-candidate-marker"
 _DIRECT_REJECTION_MARKERS = {
     "windows_unsafe": "private-windows-unsafe-marker",
     "lexical_outside": "private-lexical-outside-marker",
@@ -46,6 +47,14 @@ def _resolve_loop_candidate(boundary: WorkspaceBoundary) -> Path:
 
 def _resolve_os_error_candidate(boundary: WorkspaceBoundary) -> Path:
     candidate = f"nested/{_OS_ERROR_MARKER}"
+    try:
+        return boundary.resolve(candidate, AccessKind.READ)
+    finally:
+        del candidate
+
+
+def _resolve_nul_candidate(boundary: WorkspaceBoundary) -> Path:
+    candidate = f"{_NUL_MARKER}\x00tail"
     try:
         return boundary.resolve(candidate, AccessKind.READ)
     finally:
@@ -192,6 +201,18 @@ def test_boundary_sanitizes_os_error_from_canonical_resolution(
         _resolve_os_error_candidate(boundary)
 
     _assert_boundary_error_is_sanitized(error_info.value, _OS_ERROR_MARKER)
+
+
+def test_boundary_sanitizes_embedded_nul_resolution_failure(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, ())
+
+    with pytest.raises(PathOutsideWorkspace) as error_info:
+        _resolve_nul_candidate(boundary)
+
+    assert str(error_info.value) == "path cannot be resolved safely"
+    _assert_boundary_error_is_sanitized(error_info.value, _NUL_MARKER)
 
 
 @pytest.mark.parametrize("case", tuple(_DIRECT_REJECTION_MARKERS))
