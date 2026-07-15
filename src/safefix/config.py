@@ -133,9 +133,11 @@ def load_settings(path: Path) -> SafeFixSettings:
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
+        del raw
         raise ConfigError("configuration root must be a mapping")
     try:
         return SafeFixSettings.model_validate(raw)
     except ValidationError as exc:
         error_message = _format_validation_errors(exc)
+    del raw
     raise ConfigError(error_message)

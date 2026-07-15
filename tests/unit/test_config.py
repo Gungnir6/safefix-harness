@@ -19,6 +19,9 @@ from safefix.config import (
 )
 
 
+_CAPTURE_LOCALS_SECRET = "CAPTURE_LOCALS_REJECTED_SECRET_SENTINEL"
+
+
 def test_config_rejects_unknown_and_secret_fields(tmp_path: Path) -> None:
     path = tmp_path / "safefix.yaml"
     path.write_text(
@@ -51,6 +54,12 @@ def write_config(tmp_path: Path, raw: object) -> Path:
     path = tmp_path / "safefix.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     return path
+
+
+def write_config_with_rejected_secret(tmp_path: Path) -> Path:
+    raw = valid_config()
+    raw["llm"]["api_key"] = _CAPTURE_LOCALS_SECRET
+    return write_config(tmp_path, raw)
 
 
 @pytest.mark.parametrize("timeout_seconds", (0, 3601))
@@ -354,6 +363,30 @@ def test_validation_traceback_does_not_disclose_rejected_secret(
     assert sentinel not in "".join(traceback.format_exception(error.value))
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
+
+
+def test_validation_traceback_capture_locals_does_not_disclose_rejected_secret(
+    tmp_path: Path,
+) -> None:
+    path = write_config_with_rejected_secret(tmp_path)
+
+    with pytest.raises(ConfigError) as error:
+        load_settings(path)
+
+    formatted = "".join(
+        traceback.TracebackException.from_exception(
+            error.value, capture_locals=True
+        ).format()
+    )
+    load_frames = [
+        frame
+        for frame, _ in traceback.walk_tb(error.value.__traceback__)
+        if frame.f_code.co_name == "load_settings"
+    ]
+    assert "llm.api_key" in str(error.value)
+    assert _CAPTURE_LOCALS_SECRET not in formatted
+    assert len(load_frames) == 1
+    assert "raw" not in load_frames[0].f_locals
 
 
 def test_example_configuration_loads_without_any_key_field() -> None:
