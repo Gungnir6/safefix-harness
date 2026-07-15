@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from pathlib import Path
+import traceback
 from typing import Any
 
 import pytest
@@ -195,6 +196,20 @@ def test_config_reports_malformed_yaml_without_echoing_source(tmp_path: Path) ->
     assert source not in str(error.value)
 
 
+def test_malformed_yaml_traceback_does_not_disclose_source(tmp_path: Path) -> None:
+    sentinel = "MALFORMED_YAML_TRACEBACK_SENTINEL"
+    path = tmp_path / "safefix.yaml"
+    path.write_text(f"llm: [{sentinel}", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as error:
+        load_settings(path)
+
+    assert "invalid YAML at line 1, column" in str(error.value)
+    assert sentinel not in "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+
+
 def test_config_converts_invalid_utf8_to_safe_file_error(tmp_path: Path) -> None:
     path = tmp_path / "safefix.yaml"
     path.write_bytes(b"\xff")
@@ -323,6 +338,22 @@ def test_config_error_does_not_disclose_rejected_secret_value(tmp_path: Path) ->
         load_settings(write_config(tmp_path, raw))
     assert "llm.api_key" in str(error.value)
     assert secret not in str(error.value)
+
+
+def test_validation_traceback_does_not_disclose_rejected_secret(
+    tmp_path: Path,
+) -> None:
+    sentinel = "PYDANTIC_TRACEBACK_SECRET_SENTINEL"
+    raw = valid_config()
+    raw["llm"]["api_key"] = sentinel
+
+    with pytest.raises(ConfigError) as error:
+        load_settings(write_config(tmp_path, raw))
+
+    assert "llm.api_key" in str(error.value)
+    assert sentinel not in "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
 
 
 def test_example_configuration_loads_without_any_key_field() -> None:

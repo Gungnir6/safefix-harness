@@ -119,12 +119,17 @@ def _format_validation_errors(error: ValidationError) -> str:
 
 
 def load_settings(path: Path) -> SafeFixSettings:
+    error_message: str | None
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError) as exc:
-        raise ConfigError(f"cannot read configuration: {path}") from exc
+    except (OSError, UnicodeError):
+        error_message = f"cannot read configuration: {path}"
     except yaml.YAMLError as exc:
-        raise ConfigError(_safe_yaml_error(exc)) from exc
+        error_message = _safe_yaml_error(exc)
+    else:
+        error_message = None
+    if error_message is not None:
+        raise ConfigError(error_message)
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
@@ -132,4 +137,5 @@ def load_settings(path: Path) -> SafeFixSettings:
     try:
         return SafeFixSettings.model_validate(raw)
     except ValidationError as exc:
-        raise ConfigError(_format_validation_errors(exc)) from exc
+        error_message = _format_validation_errors(exc)
+    raise ConfigError(error_message)
