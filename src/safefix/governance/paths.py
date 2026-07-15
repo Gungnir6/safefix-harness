@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 import os
+from enum import Enum, auto
 from pathlib import Path, PureWindowsPath
 
 import pathspec
 
 from safefix.domain import AccessKind
-
-
-_WINDOWS_RESERVED_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
-    | {f"COM{number}" for number in range(1, 10)}
-    | {f"LPT{number}" for number in range(1, 10)}
-)
 
 
 class PathOutsideWorkspace(ValueError):
@@ -25,6 +19,13 @@ class SensitivePathDenied(ValueError):
 
 class SymlinkEscapeDenied(PathOutsideWorkspace):
     """Raised when an in-workspace path resolves outside through a symlink."""
+
+
+class _PathFailure(Enum):
+    OUTSIDE = auto()
+    UNRESOLVABLE = auto()
+    SYMLINK_ESCAPE = auto()
+    SENSITIVE = auto()
 
 
 def _is_inside(root: Path, target: Path) -> bool:
@@ -50,8 +51,7 @@ def _is_unsafe_windows_candidate(candidate: str) -> bool:
             continue
         if ":" in component:
             return True
-        basename = component.rstrip(" .").split(".", maxsplit=1)[0].rstrip(" ")
-        if basename.upper() in _WINDOWS_RESERVED_NAMES:
+        if PureWindowsPath(component).is_reserved():
             return True
     return False
 
@@ -68,11 +68,11 @@ class WorkspaceBoundary:
             patterns = tuple(pattern.casefold() for pattern in patterns)
         self._sensitive = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
-    def resolve(self, candidate: str, access: AccessKind) -> Path:
-        """Return a canonical path if it remains inside policy boundaries."""
+    def _resolve_candidate(
+        self, candidate: str, access: AccessKind
+    ) -> Path | _PathFailure:
         if _is_unsafe_windows_candidate(candidate):
-            del candidate
-            raise PathOutsideWorkspace("path is outside the workspace")
+            return _PathFailure.OUTSIDE
 
         lexical = Path(candidate)
         if not lexical.is_absolute():
@@ -82,19 +82,15 @@ class WorkspaceBoundary:
             _is_inside(self._configured_root, lexical)
             or _is_inside(self._root, lexical)
         ):
-            raise PathOutsideWorkspace("path is outside the workspace")
+            return _PathFailure.OUTSIDE
 
-        resolution_failed = False
         try:
             resolved = lexical.resolve(strict=False)
         except (OSError, RuntimeError):
-            resolution_failed = True
-        if resolution_failed:
-            del candidate, lexical
-            raise PathOutsideWorkspace("path cannot be resolved safely")
+            return _PathFailure.UNRESOLVABLE
 
         if not _is_inside(self._root, resolved):
-            raise SymlinkEscapeDenied("path escapes the workspace through a symlink")
+            return _PathFailure.SYMLINK_ESCAPE
 
         relative = Path(os.path.relpath(resolved, self._root)).as_posix()
         match_path = relative
@@ -103,6 +99,23 @@ class WorkspaceBoundary:
         if self._case_insensitive:
             match_path = match_path.casefold()
         if self._sensitive.match_file(match_path):
-            raise SensitivePathDenied("sensitive path access is denied")
+            return _PathFailure.SENSITIVE
 
         return resolved
+
+    def resolve(self, candidate: str, access: AccessKind) -> Path:
+        """Return a canonical path if it remains inside policy boundaries."""
+        outcome = self._resolve_candidate(candidate, access)
+        del candidate
+
+        if isinstance(outcome, Path):
+            return outcome
+        if outcome is _PathFailure.OUTSIDE:
+            raise PathOutsideWorkspace("path is outside the workspace")
+        if outcome is _PathFailure.UNRESOLVABLE:
+            raise PathOutsideWorkspace("path cannot be resolved safely")
+        if outcome is _PathFailure.SYMLINK_ESCAPE:
+            raise SymlinkEscapeDenied("path escapes the workspace through a symlink")
+        if outcome is _PathFailure.SENSITIVE:
+            raise SensitivePathDenied("sensitive path access is denied")
+        raise AssertionError("unknown path resolution outcome")

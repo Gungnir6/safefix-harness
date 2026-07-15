@@ -16,6 +16,24 @@ from safefix.governance.paths import (
 
 _LOOP_MARKER = "private-loop-candidate-marker"
 _OS_ERROR_MARKER = "private-os-error-marker"
+_DIRECT_REJECTION_MARKERS = {
+    "windows_unsafe": "private-windows-unsafe-marker",
+    "lexical_outside": "private-lexical-outside-marker",
+    "symlink_escape": "private-symlink-escape-marker",
+    "sensitive": "private-sensitive-marker",
+}
+_DIRECT_REJECTION_ERRORS = {
+    "windows_unsafe": PathOutsideWorkspace,
+    "lexical_outside": PathOutsideWorkspace,
+    "symlink_escape": SymlinkEscapeDenied,
+    "sensitive": SensitivePathDenied,
+}
+_DIRECT_REJECTION_MESSAGES = {
+    "windows_unsafe": "path is outside the workspace",
+    "lexical_outside": "path is outside the workspace",
+    "symlink_escape": "path escapes the workspace through a symlink",
+    "sensitive": "sensitive path access is denied",
+}
 
 
 def _resolve_loop_candidate(boundary: WorkspaceBoundary) -> Path:
@@ -28,6 +46,21 @@ def _resolve_loop_candidate(boundary: WorkspaceBoundary) -> Path:
 
 def _resolve_os_error_candidate(boundary: WorkspaceBoundary) -> Path:
     candidate = f"nested/{_OS_ERROR_MARKER}"
+    try:
+        return boundary.resolve(candidate, AccessKind.READ)
+    finally:
+        del candidate
+
+
+def _resolve_direct_rejection(boundary: WorkspaceBoundary, case: str) -> Path:
+    if case == "windows_unsafe":
+        candidate = f"{_DIRECT_REJECTION_MARKERS[case]}:stream"
+    elif case == "lexical_outside":
+        candidate = f"../{_DIRECT_REJECTION_MARKERS[case]}"
+    elif case == "symlink_escape":
+        candidate = f"escape-link/{_DIRECT_REJECTION_MARKERS[case]}"
+    else:
+        candidate = f"{_DIRECT_REJECTION_MARKERS[case]}.pem"
     try:
         return boundary.resolve(candidate, AccessKind.READ)
     finally:
@@ -161,6 +194,32 @@ def test_boundary_sanitizes_os_error_from_canonical_resolution(
     _assert_boundary_error_is_sanitized(error_info.value, _OS_ERROR_MARKER)
 
 
+@pytest.mark.parametrize("case", tuple(_DIRECT_REJECTION_MARKERS))
+def test_boundary_sanitizes_direct_rejection(tmp_path: Path, case: str) -> None:
+    if case == "windows_unsafe" and os.name != "nt":
+        pytest.skip("Windows unsafe-path semantics")
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    if case == "symlink_escape":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (workspace / "escape-link").symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+    patterns = ("**/*.pem",) if case == "sensitive" else ()
+    boundary = WorkspaceBoundary(workspace, patterns)
+
+    with pytest.raises(_DIRECT_REJECTION_ERRORS[case]) as error_info:
+        _resolve_direct_rejection(boundary, case)
+
+    assert str(error_info.value) == _DIRECT_REJECTION_MESSAGES[case]
+    _assert_boundary_error_is_sanitized(
+        error_info.value, _DIRECT_REJECTION_MARKERS[case]
+    )
+
+
 @pytest.mark.parametrize("access", list(AccessKind))
 @pytest.mark.parametrize("candidate", [".env", "keys/key.pem", ".ssh/id_key"])
 def test_boundary_denies_gitwildmatch_sensitive_paths_for_every_access(
@@ -212,6 +271,29 @@ def test_boundary_denies_nonexistent_case_alias_of_sensitive_windows_path(
 @pytest.mark.skipif(os.name != "nt", reason="Windows device-name semantics")
 @pytest.mark.parametrize("candidate", ["CON", "nested/COM1.log"])
 def test_boundary_rejects_windows_reserved_device_basename(
+    tmp_path: Path, candidate: str
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, ())
+
+    with pytest.raises(PathOutsideWorkspace):
+        boundary.resolve(candidate, AccessKind.WRITE)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows device-name semantics")
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "COM¹",
+        "nested/COM².log",
+        "COM³.txt",
+        "LPT¹",
+        "nested/LPT².log",
+        "deep/path/LPT³.txt",
+    ],
+)
+def test_boundary_rejects_windows_superscript_reserved_device_basename(
     tmp_path: Path, candidate: str
 ) -> None:
     workspace = tmp_path / "repo"
