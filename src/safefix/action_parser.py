@@ -166,38 +166,55 @@ class ActionParser:
 
 def _validation_feedback(exc: ValidationError) -> str:
     feedback: list[str] = []
-    issues = exc.errors(include_url=False, include_context=False, include_input=False)
-    for issue in issues[:_MAX_VALIDATION_FEEDBACK_ITEMS]:
-        issue_type = str(issue.get("type", ""))
-        location = _safe_location(issue.get("loc", ()))
-        if issue_type == "union_tag_invalid":
-            location = "$.type"
-            detail = "unsupported action type"
-        elif issue_type == "union_tag_not_found":
-            location = "$.type"
-            detail = "field required"
-        elif issue_type == "missing":
-            detail = "field required"
-        elif issue_type == "extra_forbidden":
-            detail = "unexpected field"
-        else:
-            detail = "invalid value"
-        feedback.append(f"{location}: {detail}")
-    remaining = len(issues) - _MAX_VALIDATION_FEEDBACK_ITEMS
-    if remaining > 0:
-        feedback.append(f"TRUNCATED: {remaining} additional errors omitted")
-    return "; ".join(feedback) or "$: invalid action"
+    issues: list[Any] = []
+    issue: Any = None
+    issue_type = ""
+    location = ""
+    detail = ""
+    remaining = 0
+    try:
+        issues = exc.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+        for issue in issues[:_MAX_VALIDATION_FEEDBACK_ITEMS]:
+            issue_type = str(issue.get("type", ""))
+            location = _safe_location(issue.get("loc", ()))
+            if issue_type == "union_tag_invalid":
+                location = "$.type"
+                detail = "unsupported action type"
+            elif issue_type == "union_tag_not_found":
+                location = "$.type"
+                detail = "field required"
+            elif issue_type == "missing":
+                detail = "field required"
+            elif issue_type == "extra_forbidden":
+                detail = "unexpected field"
+            else:
+                detail = "invalid value"
+            feedback.append(f"{location}: {detail}")
+        remaining = len(issues) - _MAX_VALIDATION_FEEDBACK_ITEMS
+        if remaining > 0:
+            feedback.append(f"TRUNCATED: {remaining} additional errors omitted")
+        return "; ".join(feedback) or "$: invalid action"
+    finally:
+        del exc, issues, issue, issue_type, location, detail, remaining, feedback
 
 
 def _safe_location(raw_location: Any) -> str:
-    if not isinstance(raw_location, tuple):
-        return "$"
     components: list[str] = []
-    for component in raw_location:
-        if isinstance(component, int):
-            components.append(f"[{component}]")
-        elif isinstance(component, str) and component in _SAFE_LOCATION_COMPONENTS:
-            components.append(f".{component}")
-        else:
-            components.append(".?")
-    return "$" + "".join(components)
+    component: Any = None
+    try:
+        if not isinstance(raw_location, tuple):
+            return "$"
+        for component in raw_location:
+            if isinstance(component, int):
+                components.append(f"[{component}]")
+            elif isinstance(component, str) and component in _SAFE_LOCATION_COMPONENTS:
+                components.append(f".{component}")
+            else:
+                components.append(".?")
+        return "$" + "".join(components)
+    finally:
+        del raw_location, components, component
