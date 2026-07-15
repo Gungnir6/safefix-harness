@@ -17,6 +17,8 @@ _DEEP_DECODER_CANARY = "DEEP_DECODER_CANARY_123"
 _INTERNAL_FAILURE_CANARY = "INTERNAL_RUNTIME_CANARY_123"
 _INTERNAL_INPUT_CANARY = "MODEL_INPUT_CANARY_123"
 _FEEDBACK_INPUT_CANARY = "FEEDBACK_INPUT_CANARY_123"
+_ADAPTER_RECURSION_CANARY = "ADAPTER_RECURSION_CANARY_123"
+_FORMATTER_FAILURE_CANARY = "FORMATTER_RUNTIME_CANARY_123"
 
 
 def _rejected_action_with_secret() -> str:
@@ -35,6 +37,13 @@ def _internal_failure_action() -> str:
     )
 
 
+def _validation_failure_action() -> str:
+    return (
+        '{"type":"run_process","id":"a1",'
+        f'"reason":"{_INTERNAL_INPUT_CANARY}","args":[]}}'
+    )
+
+
 def _many_invalid_args_action() -> str:
     invalid_args = [{_FEEDBACK_INPUT_CANARY: "secret"}, *range(4_999)]
     return json.dumps(
@@ -47,6 +56,10 @@ def _many_invalid_args_action() -> str:
         },
         separators=(",", ":"),
     )
+
+
+def _huge_integer_action() -> str:
+    return '{"type":"list_files","id":"a1","reason":"test","limit":' + "9" * 5_000 + "}"
 
 
 def _parser_traceback(error: BaseException) -> TracebackType:
@@ -62,6 +75,17 @@ class _BrokenActionAdapter:
     def validate_python(self, payload: object) -> NoReturn:
         del payload
         raise RuntimeError(_INTERNAL_FAILURE_CANARY)
+
+
+class _RecursiveActionAdapter:
+    def validate_python(self, payload: object) -> NoReturn:
+        del payload
+        raise RecursionError(_ADAPTER_RECURSION_CANARY)
+
+
+def _broken_validation_feedback(error: object) -> NoReturn:
+    del error
+    raise RuntimeError(_FORMATTER_FAILURE_CANARY)
 
 
 def test_parser_accepts_a_single_valid_run_process_object() -> None:
@@ -199,6 +223,79 @@ def test_internal_adapter_failure_is_distinct_and_sanitized(
     assert error.__cause__ is None
     assert error.__context__ is None
     assert {"text", "payload", "exc"}.isdisjoint(parser_traceback.tb_frame.f_locals)
+
+
+def test_decoder_huge_integer_is_a_safe_input_error() -> None:
+    with pytest.raises(ActionParseError) as caught:
+        ActionParser().parse(_huge_integer_action())
+
+    assert str(caught.value) == "model action could not be parsed"
+    assert caught.value.feedback == "INVALID_ACTION: $: invalid JSON"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_adapter_recursion_is_a_sanitized_internal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        action_parser_module,
+        "ACTION_ADAPTER",
+        _RecursiveActionAdapter(),
+    )
+
+    with pytest.raises(Exception) as caught:
+        ActionParser().parse(_internal_failure_action())
+
+    error = caught.value
+    parser_traceback = _parser_traceback(error)
+    parser_traceback_with_locals = "".join(
+        traceback.TracebackException(
+            type(error), error, parser_traceback, capture_locals=True
+        ).format()
+    )
+    assert type(error).__name__ == "ActionParserInternalError"
+    assert str(error) == "action parser internal failure"
+    assert _ADAPTER_RECURSION_CANARY not in parser_traceback_with_locals
+    assert _INTERNAL_INPUT_CANARY not in parser_traceback_with_locals
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_feedback_formatter_failure_is_a_sanitized_internal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        action_parser_module,
+        "_validation_feedback",
+        _broken_validation_feedback,
+    )
+
+    with pytest.raises(Exception) as caught:
+        ActionParser().parse(_validation_failure_action())
+
+    error = caught.value
+    parser_traceback = _parser_traceback(error)
+    parser_traceback_with_locals = "".join(
+        traceback.TracebackException(
+            type(error), error, parser_traceback, capture_locals=True
+        ).format()
+    )
+    parser_frame_locals = [
+        frame.f_locals
+        for frame, _ in traceback.walk_tb(error.__traceback__)
+        if frame.f_globals["__name__"] == "safefix.action_parser"
+    ]
+    assert type(error).__name__ == "ActionParserInternalError"
+    assert str(error) == "action parser internal failure"
+    assert _FORMATTER_FAILURE_CANARY not in parser_traceback_with_locals
+    assert _INTERNAL_INPUT_CANARY not in parser_traceback_with_locals
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert all(
+        {"text", "payload", "exc"}.isdisjoint(frame_locals)
+        for frame_locals in parser_frame_locals
+    )
 
 
 @pytest.mark.parametrize("unknown_field", ["CANARY_123", "秘密字段"])

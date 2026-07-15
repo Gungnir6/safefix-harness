@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from enum import Enum, auto
 from typing import Any, NoReturn
 
 from pydantic import TypeAdapter, ValidationError
@@ -49,13 +50,11 @@ class _NonObjectJSONError(ValueError):
     pass
 
 
-_EXPECTED_INPUT_EXCEPTIONS = (
-    json.JSONDecodeError,
-    _StrictJSONError,
-    ValidationError,
-    _NonObjectJSONError,
-    RecursionError,
-)
+class _FailureCode(Enum):
+    INVALID_JSON = auto()
+    NON_OBJECT = auto()
+    INVALID_ACTION = auto()
+    INTERNAL = auto()
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -70,6 +69,43 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 def _reject_nonstandard_constant(constant: str) -> NoReturn:
     del constant
     raise _StrictJSONError("non-standard JSON constant")
+
+
+def _decode_model_text(text: str) -> tuple[object | None, _FailureCode | None]:
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonstandard_constant,
+        )
+    except (json.JSONDecodeError, _StrictJSONError, ValueError, RecursionError):
+        return None, _FailureCode.INVALID_JSON
+    except Exception:
+        return None, _FailureCode.INTERNAL
+    return payload, None
+
+
+def _safe_validation_feedback(exc: ValidationError) -> str | None:
+    try:
+        feedback = _validation_feedback(exc)
+    except Exception:
+        return None
+    return feedback if isinstance(feedback, str) else None
+
+
+def _validate_action_payload(
+    payload: dict[str, object],
+) -> tuple[Action | None, str | None, _FailureCode | None]:
+    try:
+        action = ACTION_ADAPTER.validate_python(payload)
+    except ValidationError as exc:
+        feedback = _safe_validation_feedback(exc)
+        if feedback is None:
+            return None, None, _FailureCode.INTERNAL
+        return None, feedback, _FailureCode.INVALID_ACTION
+    except Exception:
+        return None, None, _FailureCode.INTERNAL
+    return action, None, None
 
 
 class ActionParserInternalError(RuntimeError):
@@ -101,28 +137,35 @@ class ActionParseError(ValueError):
 class ActionParser:
     def parse(self, text: str) -> Action:
         action: Action | None = None
-        error: ActionParseError | ActionParserInternalError | None = None
+        feedback: str | None = None
+        failure: _FailureCode | None = None
         payload: object | None = None
         try:
-            payload = json.loads(
-                text,
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_nonstandard_constant,
-            )
-            if not isinstance(payload, dict):
-                raise _NonObjectJSONError("action must be a JSON object")
-            action = ACTION_ADAPTER.validate_python(payload)
-        except Exception as exc:
-            if isinstance(exc, _EXPECTED_INPUT_EXCEPTIONS):
-                error = ActionParseError.from_exception(exc)
-            else:
-                error = ActionParserInternalError()
+            payload, failure = _decode_model_text(text)
+            if failure is None:
+                if not isinstance(payload, dict):
+                    failure = _FailureCode.NON_OBJECT
+                else:
+                    action, feedback, failure = _validate_action_payload(payload)
+        except Exception:
+            failure = _FailureCode.INTERNAL
 
-        if error is not None:
+        if failure is not None:
             del text, payload
-            raise error from None
+            if failure is _FailureCode.INTERNAL:
+                raise ActionParserInternalError from None
+            if feedback is None:
+                if failure is _FailureCode.INVALID_JSON:
+                    feedback = "$: invalid JSON"
+                elif failure is _FailureCode.NON_OBJECT:
+                    feedback = "$: action must be a JSON object"
+                else:  # pragma: no cover - helper contract
+                    feedback = "$: invalid action"
+            raise ActionParseError(feedback) from None
+
         if action is None:  # pragma: no cover - defensive invariant
-            raise RuntimeError("parser produced neither an action nor an error")
+            del text, payload
+            raise ActionParserInternalError from None
         return action
 
 
