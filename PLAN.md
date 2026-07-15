@@ -1506,7 +1506,7 @@ Update this table only with actual commits; do not prefill hashes.
 |---|---|---|---|---|
 | Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
 | T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
-| T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed |
+| T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab`; merge `bf675b0` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed; merged and reverified on `main` |
 | T03 | Pending | — | — | — |
 | T04 | Pending | — | — | — |
 | T05 | Pending | — | — | — |
