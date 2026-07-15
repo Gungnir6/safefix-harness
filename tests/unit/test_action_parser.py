@@ -19,6 +19,7 @@ _INTERNAL_INPUT_CANARY = "MODEL_INPUT_CANARY_123"
 _FEEDBACK_INPUT_CANARY = "FEEDBACK_INPUT_CANARY_123"
 _ADAPTER_RECURSION_CANARY = "ADAPTER_RECURSION_CANARY_123"
 _FORMATTER_FAILURE_CANARY = "FORMATTER_RUNTIME_CANARY_123"
+_INTERRUPT_INPUT_CANARY = "INTERRUPT_MODEL_CANARY_123"
 
 
 def _rejected_action_with_secret() -> str:
@@ -81,6 +82,12 @@ class _RecursiveActionAdapter:
     def validate_python(self, payload: object) -> NoReturn:
         del payload
         raise RecursionError(_ADAPTER_RECURSION_CANARY)
+
+
+class _InterruptingActionAdapter:
+    def validate_python(self, payload: object) -> NoReturn:
+        del payload
+        raise KeyboardInterrupt()
 
 
 def _broken_validation_feedback(error: object) -> NoReturn:
@@ -292,6 +299,42 @@ def test_feedback_formatter_failure_is_a_sanitized_internal_failure(
     assert _INTERNAL_INPUT_CANARY not in parser_traceback_with_locals
     assert error.__cause__ is None
     assert error.__context__ is None
+    assert all(
+        {"text", "payload", "exc"}.isdisjoint(frame_locals)
+        for frame_locals in parser_frame_locals
+    )
+
+
+def test_adapter_keyboard_interrupt_propagates_without_sensitive_locals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        action_parser_module,
+        "ACTION_ADAPTER",
+        _InterruptingActionAdapter(),
+    )
+    text = (
+        '{"type":"finish","id":"a1",'
+        f'"reason":"{_INTERRUPT_INPUT_CANARY}","summary":"ok"}}'
+    )
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        ActionParser().parse(text)
+
+    error = caught.value
+    parser_traceback = _parser_traceback(error)
+    parser_traceback_with_locals = "".join(
+        traceback.TracebackException(
+            type(error), error, parser_traceback, capture_locals=True
+        ).format()
+    )
+    parser_frame_locals = [
+        frame.f_locals
+        for frame, _ in traceback.walk_tb(error.__traceback__)
+        if frame.f_globals["__name__"] == "safefix.action_parser"
+    ]
+    assert type(error) is KeyboardInterrupt
+    assert _INTERRUPT_INPUT_CANARY not in parser_traceback_with_locals
     assert all(
         {"text", "payload", "exc"}.isdisjoint(frame_locals)
         for frame_locals in parser_frame_locals

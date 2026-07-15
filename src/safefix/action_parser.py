@@ -46,10 +46,6 @@ class _StrictJSONError(ValueError):
     pass
 
 
-class _NonObjectJSONError(ValueError):
-    pass
-
-
 class _FailureCode(Enum):
     INVALID_JSON = auto()
     NON_OBJECT = auto()
@@ -72,40 +68,53 @@ def _reject_nonstandard_constant(constant: str) -> NoReturn:
 
 
 def _decode_model_text(text: str) -> tuple[object | None, _FailureCode | None]:
+    payload: object | None = None
     try:
-        payload = json.loads(
-            text,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_nonstandard_constant,
-        )
-    except (json.JSONDecodeError, _StrictJSONError, ValueError, RecursionError):
-        return None, _FailureCode.INVALID_JSON
-    except Exception:
-        return None, _FailureCode.INTERNAL
-    return payload, None
+        try:
+            payload = json.loads(
+                text,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_nonstandard_constant,
+            )
+        except (json.JSONDecodeError, _StrictJSONError, ValueError, RecursionError):
+            return None, _FailureCode.INVALID_JSON
+        except Exception:
+            return None, _FailureCode.INTERNAL
+        return payload, None
+    finally:
+        del text, payload
 
 
 def _safe_validation_feedback(exc: ValidationError) -> str | None:
+    feedback: object | None = None
     try:
-        feedback = _validation_feedback(exc)
-    except Exception:
-        return None
-    return feedback if isinstance(feedback, str) else None
+        try:
+            feedback = _validation_feedback(exc)
+        except Exception:
+            return None
+        return feedback if isinstance(feedback, str) else None
+    finally:
+        del exc, feedback
 
 
 def _validate_action_payload(
     payload: dict[str, object],
 ) -> tuple[Action | None, str | None, _FailureCode | None]:
+    action: Action | None = None
+    feedback: str | None = None
     try:
-        action = ACTION_ADAPTER.validate_python(payload)
-    except ValidationError as exc:
-        feedback = _safe_validation_feedback(exc)
-        if feedback is None:
+        try:
+            action = ACTION_ADAPTER.validate_python(payload)
+        except ValidationError as exc:
+            feedback = _safe_validation_feedback(exc)
+            if feedback is None:
+                return None, None, _FailureCode.INTERNAL
+            return None, feedback, _FailureCode.INVALID_ACTION
+        except Exception:
             return None, None, _FailureCode.INTERNAL
-        return None, feedback, _FailureCode.INVALID_ACTION
-    except Exception:
-        return None, None, _FailureCode.INTERNAL
-    return action, None, None
+        return action, None, None
+    finally:
+        del payload, action, feedback
 
 
 class ActionParserInternalError(RuntimeError):
@@ -118,21 +127,6 @@ class ActionParseError(ValueError):
         super().__init__("model action could not be parsed")
         self.feedback = f"INVALID_ACTION: {feedback}"
 
-    @classmethod
-    def from_exception(
-        cls,
-        exc: Exception,
-    ) -> ActionParseError:
-        if isinstance(exc, json.JSONDecodeError):
-            return cls("$: invalid JSON")
-        if isinstance(exc, _StrictJSONError):
-            return cls("$: invalid JSON")
-        if isinstance(exc, ValidationError):
-            return cls(_validation_feedback(exc))
-        if isinstance(exc, _NonObjectJSONError):
-            return cls("$: action must be a JSON object")
-        return cls("$: action parsing failed")
-
 
 class ActionParser:
     def parse(self, text: str) -> Action:
@@ -141,32 +135,33 @@ class ActionParser:
         failure: _FailureCode | None = None
         payload: object | None = None
         try:
-            payload, failure = _decode_model_text(text)
-            if failure is None:
-                if not isinstance(payload, dict):
-                    failure = _FailureCode.NON_OBJECT
-                else:
-                    action, feedback, failure = _validate_action_payload(payload)
-        except Exception:
-            failure = _FailureCode.INTERNAL
+            try:
+                payload, failure = _decode_model_text(text)
+                if failure is None:
+                    if not isinstance(payload, dict):
+                        failure = _FailureCode.NON_OBJECT
+                    else:
+                        action, feedback, failure = _validate_action_payload(payload)
+            except Exception:
+                failure = _FailureCode.INTERNAL
 
-        if failure is not None:
-            del text, payload
-            if failure is _FailureCode.INTERNAL:
+            if failure is not None:
+                if failure is _FailureCode.INTERNAL:
+                    raise ActionParserInternalError from None
+                if feedback is None:
+                    if failure is _FailureCode.INVALID_JSON:
+                        feedback = "$: invalid JSON"
+                    elif failure is _FailureCode.NON_OBJECT:
+                        feedback = "$: action must be a JSON object"
+                    else:  # pragma: no cover - helper contract
+                        feedback = "$: invalid action"
+                raise ActionParseError(feedback) from None
+
+            if action is None:  # pragma: no cover - defensive invariant
                 raise ActionParserInternalError from None
-            if feedback is None:
-                if failure is _FailureCode.INVALID_JSON:
-                    feedback = "$: invalid JSON"
-                elif failure is _FailureCode.NON_OBJECT:
-                    feedback = "$: action must be a JSON object"
-                else:  # pragma: no cover - helper contract
-                    feedback = "$: invalid action"
-            raise ActionParseError(feedback) from None
-
-        if action is None:  # pragma: no cover - defensive invariant
-            del text, payload
-            raise ActionParserInternalError from None
-        return action
+            return action
+        finally:
+            del text, payload, action, feedback
 
 
 def _validation_feedback(exc: ValidationError) -> str:
