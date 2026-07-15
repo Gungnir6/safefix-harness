@@ -1,0 +1,23 @@
+llm:
+  endpoint: https://api.openai.com/v1
+  model: configured-by-user
+validators:
+  - id: pytest
+    kind: test
+    program: python
+    args: [-m, pytest, -q]
+    timeout_seconds: 120
+    success_exit_codes: [0]
+    output_limit_bytes: 65536
+budget:
+  repair_rounds: 3
+  no_progress_rounds: 2
+  total_steps: 20
+  wall_time_seconds: 900
+policy:
+  sensitive_patterns: [.env, "**/*.pem", "**/.ssh/**"]
+  allowed_programs: []
+  denied_programs: []
+memory:
+  retrieval_limit: 5
+  character_budget: 4000

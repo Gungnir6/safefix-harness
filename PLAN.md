@@ -281,9 +281,9 @@ After review, record the implementation commit hash beside T01 and add required 
 
 **Interfaces:**
 - Consumes: domain limits and Python path types from T01.
-- Produces: `SafeFixSettings`, `ValidatorSettings`, `PolicySettings`, `BudgetSettings`, `load_settings(path: Path) -> SafeFixSettings`.
+- Produces: `SafeFixSettings`, `LLMSettings`, `ValidatorSettings`, `PolicySettings`, `BudgetSettings`, `MemorySettings`, `ConfigError`, `load_settings(path: Path) -> SafeFixSettings`.
 
-- [ ] **Step 1: Write failing strict-schema tests**
+- [x] **Step 1: Write failing strict-schema tests**
 
 ```python
 from pathlib import Path
@@ -306,22 +306,42 @@ Run: `python -m pytest tests/unit/test_config.py -v`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'safefix.config'`.
 
-- [ ] **Step 3: Implement strict settings and loader**
+Evidence caveat (2026-07-15): execution resumed from uncommitted WIP, so the original pre-production pytest RED cannot be proven. The recorded base lacks `safefix.config`, and every defect found during recovery and review followed observed RED→GREEN. This checkbox intentionally remains open.
 
-Use Pydantic models with `ConfigDict(extra="forbid", frozen=True)`. `ValidatorSettings` requires nonempty `id`, `program`, tuple `args`, positive timeout, success exit-code set, and output limit. `SafeFixSettings` contains `validators`, `policy`, `budget`, `memory`, and provider endpoint/model without a Key. Convert YAML and validation exceptions into `ConfigError` with field locations.
+- [x] **Step 3: Implement strict settings and loader**
+
+Use Pydantic models with `ConfigDict(extra="forbid", frozen=True)` and stripped nonempty strings. Implement this exact schema:
+
+| Model | Exact fields and constraints |
+|---|---|
+| `LLMSettings` | required `endpoint: HttpUrl`; required nonempty `model`; no Key or secret field |
+| `ValidatorSettings` | required nonempty `id`; `kind: Literal["test", "lint", "type"]`; required nonempty `program`; required `args: tuple[str, ...]`; `timeout_seconds` in 1–3600; nonempty `success_exit_codes: frozenset[int]`; `output_limit_bytes` in 1024–10485760 |
+| `PolicySettings` | `sensitive_patterns=(".env", "**/*.pem", "**/.ssh/**")`; `allowed_programs=()`; `denied_programs=()`; every entry is nonempty after stripping; reject duplicates and any case-insensitive allow/deny overlap |
+| `BudgetSettings` | `repair_rounds=3` in 1–10; `no_progress_rounds=2` in 1–10 and not above repair rounds; `total_steps=20` in 1–1000 and not below repair rounds; `wall_time_seconds=900` in 1–86400 |
+| `MemorySettings` | `retrieval_limit=5` in 1–50; `character_budget=4000` in 256–100000 |
+| `SafeFixSettings` | required `llm`; at least one `validators` entry; default `policy`, `budget`, and `memory`; reject validator IDs that collide after stripping and `casefold()` |
+
+`load_settings` reads UTF-8 with `yaml.safe_load`, requires the YAML root to be a mapping, and never expands environment variables or reads a Key. Convert file, YAML, root-type and Pydantic errors into `ConfigError`. Pydantic error messages must contain dotted field locations such as `validators.0.timeout_seconds`, but must be constructed from `ValidationError.errors()` without including the rejected input value. YAML messages report only safe line/column information rather than echoing source text.
 
 ```python
 def load_settings(path: Path) -> SafeFixSettings:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise ConfigError(f"cannot read configuration: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise ConfigError(safe_yaml_error(exc)) from exc
+    if not isinstance(raw, dict):
+        raise ConfigError("configuration root must be a mapping")
+    try:
         return SafeFixSettings.model_validate(raw)
-    except (OSError, yaml.YAMLError, ValidationError) as exc:
-        raise ConfigError(str(exc)) from exc
+    except ValidationError as exc:
+        raise ConfigError(format_validation_errors(exc)) from exc
 ```
 
-- [ ] **Step 4: Add boundary tests and example config**
+- [x] **Step 4: Add boundary tests and example config**
 
-Test duplicate validator IDs, zero timeout, contradictory allow/deny programs, missing model, and a valid Python `pytest` validator. Create `examples/safefix.yaml` containing a `pytest` validator, three repair rounds, two no-progress rounds, bounded output and default sensitive patterns.
+Test duplicate validator IDs including case variations, zero and excessive timeout, empty success exit codes, output bounds, contradictory allow/deny programs, missing model, invalid endpoint, non-mapping YAML, malformed YAML, budget cross-field rules, memory bounds, immutability, unknown fields and non-disclosure of rejected secret values. Create `examples/safefix.yaml` containing a valid Python `pytest` validator, three repair rounds, two no-progress rounds, bounded wall time/output/memory and default sensitive patterns. Load this example with the production loader in a test and prove its serialized data contains no Key field.
 
 ```yaml
 llm:
@@ -339,15 +359,21 @@ budget:
   repair_rounds: 3
   no_progress_rounds: 2
   total_steps: 20
+  wall_time_seconds: 900
 policy:
   sensitive_patterns: [.env, "**/*.pem", "**/.ssh/**"]
+  allowed_programs: []
+  denied_programs: []
+memory:
+  retrieval_limit: 5
+  character_budget: 4000
 ```
 
 Run: `python -m pytest tests/unit/test_config.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(config): 添加严格声明式配置`
 
@@ -1480,7 +1506,7 @@ Update this table only with actual commits; do not prefill hashes.
 |---|---|---|---|---|
 | Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
 | T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
-| T02 | Pending | — | — | — |
+| T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed |
 | T03 | Pending | — | — | — |
 | T04 | Pending | — | — | — |
 | T05 | Pending | — | — | — |
