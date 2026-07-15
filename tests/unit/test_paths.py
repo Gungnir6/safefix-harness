@@ -1,4 +1,5 @@
 import os
+import traceback
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,43 @@ from safefix.governance.paths import (
     SymlinkEscapeDenied,
     WorkspaceBoundary,
 )
+
+
+_LOOP_MARKER = "private-loop-candidate-marker"
+_OS_ERROR_MARKER = "private-os-error-marker"
+
+
+def _resolve_loop_candidate(boundary: WorkspaceBoundary) -> Path:
+    candidate = f"loop-a/{_LOOP_MARKER}"
+    try:
+        return boundary.resolve(candidate, AccessKind.READ)
+    finally:
+        del candidate
+
+
+def _resolve_os_error_candidate(boundary: WorkspaceBoundary) -> Path:
+    candidate = f"nested/{_OS_ERROR_MARKER}"
+    try:
+        return boundary.resolve(candidate, AccessKind.READ)
+    finally:
+        del candidate
+
+
+def _assert_boundary_error_is_sanitized(error: BaseException, marker: str) -> None:
+    assert marker not in str(error)
+    assert marker not in "".join(traceback.format_exception(error))
+    traceback_with_locals = traceback.TracebackException.from_exception(
+        error, capture_locals=True
+    )
+    assert marker not in "".join(traceback_with_locals.format())
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+    current = error.__traceback__
+    while current is not None:
+        if current.tb_frame.f_code.co_name == "resolve":
+            assert marker not in repr(current.tb_frame.f_locals)
+        current = current.tb_next
 
 
 def test_boundary_rejects_parent_escape(tmp_path: Path) -> None:
@@ -51,6 +89,25 @@ def test_boundary_returns_canonical_path(tmp_path: Path) -> None:
     assert resolved == (workspace / "file.txt").resolve(strict=False)
 
 
+def test_boundary_accepts_absolute_candidate_through_configured_workspace_symlink(
+    tmp_path: Path,
+) -> None:
+    canonical_workspace = tmp_path / "canonical-repo"
+    canonical_workspace.mkdir()
+    configured_workspace = tmp_path / "repo-link"
+    try:
+        configured_workspace.symlink_to(canonical_workspace, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+    boundary = WorkspaceBoundary(configured_workspace, ())
+
+    resolved = boundary.resolve(
+        str(configured_workspace / "file.txt"), AccessKind.WRITE
+    )
+
+    assert resolved == (canonical_workspace / "file.txt").resolve(strict=False)
+
+
 def test_boundary_rejects_lexically_inside_symlink_escape(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -65,6 +122,43 @@ def test_boundary_rejects_lexically_inside_symlink_escape(tmp_path: Path) -> Non
 
     with pytest.raises(SymlinkEscapeDenied):
         boundary.resolve("linked/new.txt", AccessKind.WRITE)
+
+
+def test_boundary_sanitizes_symlink_loop_resolution_failure(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    loop_a = workspace / "loop-a"
+    loop_b = workspace / "loop-b"
+    try:
+        loop_a.symlink_to(loop_b, target_is_directory=True)
+        loop_b.symlink_to(loop_a, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+    boundary = WorkspaceBoundary(workspace, ())
+
+    with pytest.raises(PathOutsideWorkspace) as error_info:
+        _resolve_loop_candidate(boundary)
+
+    _assert_boundary_error_is_sanitized(error_info.value, _LOOP_MARKER)
+
+
+def test_boundary_sanitizes_os_error_from_canonical_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, ())
+
+    def fail_resolve(_path: Path, *, strict: bool) -> Path:
+        del _path, strict
+        raise OSError(_OS_ERROR_MARKER)
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+
+    with pytest.raises(PathOutsideWorkspace) as error_info:
+        _resolve_os_error_candidate(boundary)
+
+    _assert_boundary_error_is_sanitized(error_info.value, _OS_ERROR_MARKER)
 
 
 @pytest.mark.parametrize("access", list(AccessKind))
@@ -113,6 +207,43 @@ def test_boundary_denies_nonexistent_case_alias_of_sensitive_windows_path(
 
     with pytest.raises(SensitivePathDenied):
         boundary.resolve(".ENV", AccessKind.WRITE)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows device-name semantics")
+@pytest.mark.parametrize("candidate", ["CON", "nested/COM1.log"])
+def test_boundary_rejects_windows_reserved_device_basename(
+    tmp_path: Path, candidate: str
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, ())
+
+    with pytest.raises(PathOutsideWorkspace):
+        boundary.resolve(candidate, AccessKind.WRITE)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ADS semantics")
+@pytest.mark.parametrize("candidate", [".env:stream", "nested/file.txt:metadata"])
+def test_boundary_rejects_windows_alternate_data_stream(
+    tmp_path: Path, candidate: str
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, (".env",))
+
+    with pytest.raises(PathOutsideWorkspace):
+        boundary.resolve(candidate, AccessKind.WRITE)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows device namespace semantics")
+def test_boundary_rejects_windows_device_namespace(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, ())
+    device_candidate = f"\\\\?\\{workspace / 'file.txt'}"
+
+    with pytest.raises(PathOutsideWorkspace):
+        boundary.resolve(device_candidate, AccessKind.WRITE)
 
 
 _SEGMENTS = st.sampled_from((".", "..", "safe", "资料", "café"))

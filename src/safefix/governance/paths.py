@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pathspec
 
 from safefix.domain import AccessKind
+
+
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
 
 
 class PathOutsideWorkspace(ValueError):
@@ -29,10 +36,31 @@ def _is_inside(root: Path, target: Path) -> bool:
         return False
 
 
+def _is_unsafe_windows_candidate(candidate: str) -> bool:
+    if os.name != "nt":
+        return False
+
+    normalized = candidate.replace("/", "\\")
+    if normalized.startswith(("\\\\?\\", "\\\\.\\", "\\??\\")):
+        return True
+
+    path = PureWindowsPath(candidate)
+    for component in path.parts:
+        if component == path.anchor:
+            continue
+        if ":" in component:
+            return True
+        basename = component.rstrip(" .").split(".", maxsplit=1)[0].rstrip(" ")
+        if basename.upper() in _WINDOWS_RESERVED_NAMES:
+            return True
+    return False
+
+
 class WorkspaceBoundary:
     """Resolve tool paths within one canonical workspace."""
 
     def __init__(self, workspace: Path, sensitive_patterns: tuple[str, ...]) -> None:
+        self._configured_root = Path(os.path.abspath(workspace))
         self._root = workspace.resolve(strict=False)
         self._case_insensitive = os.path.normcase("A") == os.path.normcase("a")
         patterns = sensitive_patterns
@@ -42,14 +70,29 @@ class WorkspaceBoundary:
 
     def resolve(self, candidate: str, access: AccessKind) -> Path:
         """Return a canonical path if it remains inside policy boundaries."""
-        lexical = Path(candidate)
-        if not lexical.is_absolute():
-            lexical = self._root / lexical
-
-        if not _is_inside(self._root, lexical):
+        if _is_unsafe_windows_candidate(candidate):
+            del candidate
             raise PathOutsideWorkspace("path is outside the workspace")
 
-        resolved = lexical.resolve(strict=False)
+        lexical = Path(candidate)
+        if not lexical.is_absolute():
+            lexical = self._configured_root / lexical
+
+        if not (
+            _is_inside(self._configured_root, lexical)
+            or _is_inside(self._root, lexical)
+        ):
+            raise PathOutsideWorkspace("path is outside the workspace")
+
+        resolution_failed = False
+        try:
+            resolved = lexical.resolve(strict=False)
+        except (OSError, RuntimeError):
+            resolution_failed = True
+        if resolution_failed:
+            del candidate, lexical
+            raise PathOutsideWorkspace("path cannot be resolved safely")
+
         if not _is_inside(self._root, resolved):
             raise SymlinkEscapeDenied("path escapes the workspace through a symlink")
 
