@@ -49,3 +49,20 @@
 - 合并结果：MR !3 合并到 `main`，合并提交 `10cd964`；主工作区快进后确认分支头 `dad25df` 已进入主线，复跑异常脱敏专项为 7 passed（33 deselected）、完整测试为 171 passed，Ruff check/format、mypy、pip check 全部 exit 0。
 - 人工裁决：敏感路径对所有 `AccessKind` 一律拒绝；LIST/SEARCH 根目录本身允许，T08 必须对枚举出的每个后代再次调用边界；Windows 大小写比较严格遵循计划指定的 `normcase`，不引入超出任务范围的卷能力探测。
 - 经验：Windows 路径安全测试必须覆盖设备命名空间、ADS、保留设备名及上标数字别名；错误脱敏最好让内部失败只携带枚举码，并在候选字符串离开公开异常帧后再映射为稳定异常类型。
+
+## T03 — LLM Protocol, Scripted Mock and Action Parser
+
+- 时间：2026-07-15 19:35–22:23 +08:00
+- 分支 / MR：`codex/t03-llm-parser` / Pending
+- Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
+- 关键 prompt/context：全新实现代理仅获得 T03 brief、隔离工作树、基线 `310f1ec`、六文件范围、严格 RED→GREEN、中文 Conventional Commit 和报告契约；规格与质量代理分别只读同一版冻结 `BASE..HEAD` 差异。延续 T02 人工裁决：全局秘密非披露优先于 brief 的 `raise ... from exc` 示例，T03 负责自身公开异常与 parser frame，调用者 locals/日志层由 T12/T13 继续落实。
+- 初始实现：两份测试先因 `ModuleNotFoundError: safefix.llm` 与 `safefix.action_parser` 精确 RED；`762a073 feat(llm): 添加可注入模型接口与严格动作解析` 建立异步 LLM 协议、不可变 scripted mock、typed parser 与安全字段反馈，初始聚焦 9 passed、完整 180 passed。
+- 第一轮评审与修复：评审复现深层 JSON `RecursionError` 和动态 extra-field location 两条泄密路径，并发现缺少 `INVALID_ACTION`、重复键与 `NaN/Infinity` 可绕过严格 JSON。`b322870 fix(llm): 强化动作解析安全边界` 分别以真实 RED 修复，聚焦增至 18、完整 189。
+- 第二轮评审与修复：质量评审发现宽泛 `Exception` 会把内部 adapter 错误伪装成模型错误、全调用栈 capture-locals 结论超出组件边界，以及 5,000 校验错误把约 29k 输入放大为约 204k feedback。`fea9a51 fix(llm): 区分内部故障并限制解析反馈` 引入独立内部故障类型、将保证收窄到 parser frames，并把反馈限制为前 8 项加固定截断；聚焦 20、完整 191。
+- 第三轮评审与修复：Python 3.12 的 5,000 位整数 decoder `ValueError`、adapter `RecursionError` 和 formatter 自身故障暴露了跨阶段误分类。`1e585fe fix(llm): 按解析阶段隔离异常分类` 用无数据 failure code 分离 decoder、adapter、formatter 边界；聚焦 23、完整 194。
+- 中断路径修复：质量评审继续用 `KeyboardInterrupt` 验证“不吞 BaseException 但必须清理 locals”。`2be70e4 fix(llm): 清理中断路径敏感局部变量` 清理 parser/decoder/adapter helper；`c38f3bc fix(llm): 清理反馈格式化中断局部变量` 补齐 `_validation_feedback` 与 location helper，并保持同一中断对象原样传播。最终聚焦 25、完整 196。
+- 最终独立复审：规格与质量评审均批准，Critical 0、Important 0、Minor 2；确认严格单 JSON object、typed Action、`INVALID_ACTION`、重复键/非标准常量拒绝、动态 location 净化、8 项反馈上限、阶段化输入/内部错误分类，以及普通异常和中断路径 parser-frame 非披露均满足。
+- 根代理新鲜验证：T03 聚焦 25 passed；安全边界专项 16 passed（6 deselected）；完整测试 196 passed；Ruff check/format、mypy、pip check、`git diff --check 310f1ec..c38f3bc` 全部 exit 0；过程文档修改前工作树干净且差异仅含 brief 六文件。
+- 延期 Minor：`ScriptedMockLLM` 接受裸 `str` 时会按字符形成脚本；当前 `ModelResponse` 已冻结但测试只显式修改 `ModelMessage`。两项不影响生产契约与合并，记录供后续测试清理。
+- 后续约束：T12 AgentLoop、T13 provider 与日志/错误采集层不得用未脱敏的 `capture_locals` 记录调用者 frame；应禁用该选项或在持久化/上报前递归脱敏。
+- 经验：不可信解析边界应按处理阶段而非异常类型分类；安全异常既要区分可重试输入错误与内部故障，也要覆盖 formatter 和 `BaseException` 原样传播时的 `finally` 局部变量清理。
