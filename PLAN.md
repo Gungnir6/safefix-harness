@@ -1508,7 +1508,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
 | T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab`; merge `bf675b0` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed; merged and reverified on `main` |
 | T03 | Pending | — | — | — |
-| T04 | Completed (awaiting MR) | `91dbd88`, `94c0edd`, `49895de`, `325aa1b` | Pending | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; Hypothesis oracle design Minor deferred |
+| T04 | Completed (awaiting merge) | `91dbd88`, `94c0edd`, `49895de`, `325aa1b`; plan `6031621` | [!3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; Hypothesis oracle design Minor deferred |
 | T05 | Pending | — | — | — |
 | T06 | Pending | — | — | — |
 | T07 | Pending | — | — | — |

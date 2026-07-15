@@ -38,7 +38,7 @@
 ## T04 — Canonical Workspace and Sensitive-Path Boundary
 
 - 时间：2026-07-15 17:50–19:27 +08:00
-- 分支 / MR：`codex/t04-path-boundary` / Pending
+- 分支 / MR：`codex/t04-path-boundary` / [GitLab !3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3)
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
 - 关键 prompt/context：实现代理 Wegener 仅获得 T04 task brief、工作树、基线 `a3a6241`、三个允许文件、严格 RED→GREEN、中文 Conventional Commit 与报告契约；规格评审 Volta 和质量评审 Planck 分别获得同一 brief、实现报告和冻结的完整 `BASE..HEAD` 差异包，并保持只读。
 - 实现过程：生产代码前，目标测试因 `ModuleNotFoundError: safefix.governance` 精确 RED；首个实现提交为 `91dbd88 feat(governance): 实现规范化工作区边界`，建立规范化工作区、词法与真实路径双重边界、GitWildMatch 敏感路径检查和三类公开拒绝异常。
