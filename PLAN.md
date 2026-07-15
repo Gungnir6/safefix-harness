@@ -283,7 +283,7 @@ After review, record the implementation commit hash beside T01 and add required 
 - Consumes: domain limits and Python path types from T01.
 - Produces: `SafeFixSettings`, `LLMSettings`, `ValidatorSettings`, `PolicySettings`, `BudgetSettings`, `MemorySettings`, `ConfigError`, `load_settings(path: Path) -> SafeFixSettings`.
 
-- [ ] **Step 1: Write failing strict-schema tests**
+- [x] **Step 1: Write failing strict-schema tests**
 
 ```python
 from pathlib import Path
@@ -306,7 +306,9 @@ Run: `python -m pytest tests/unit/test_config.py -v`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'safefix.config'`.
 
-- [ ] **Step 3: Implement strict settings and loader**
+Evidence caveat (2026-07-15): execution resumed from uncommitted WIP, so the original pre-production pytest RED cannot be proven. The recorded base lacks `safefix.config`, and every defect found during recovery and review followed observed RED→GREEN. This checkbox intentionally remains open.
+
+- [x] **Step 3: Implement strict settings and loader**
 
 Use Pydantic models with `ConfigDict(extra="forbid", frozen=True)` and stripped nonempty strings. Implement this exact schema:
 
@@ -337,7 +339,7 @@ def load_settings(path: Path) -> SafeFixSettings:
         raise ConfigError(format_validation_errors(exc)) from exc
 ```
 
-- [ ] **Step 4: Add boundary tests and example config**
+- [x] **Step 4: Add boundary tests and example config**
 
 Test duplicate validator IDs including case variations, zero and excessive timeout, empty success exit codes, output bounds, contradictory allow/deny programs, missing model, invalid endpoint, non-mapping YAML, malformed YAML, budget cross-field rules, memory bounds, immutability, unknown fields and non-disclosure of rejected secret values. Create `examples/safefix.yaml` containing a valid Python `pytest` validator, three repair rounds, two no-progress rounds, bounded wall time/output/memory and default sensitive patterns. Load this example with the production loader in a test and prove its serialized data contains no Key field.
 
@@ -371,7 +373,7 @@ Run: `python -m pytest tests/unit/test_config.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(config): 添加严格声明式配置`
 
@@ -1504,7 +1506,7 @@ Update this table only with actual commits; do not prefill hashes.
 |---|---|---|---|---|
 | Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
 | T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
-| T02 | Pending | — | — | — |
+| T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab` | Pending | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed |
 | T03 | Pending | — | — | — |
 | T04 | Pending | — | — | — |
 | T05 | Pending | — | — | — |
