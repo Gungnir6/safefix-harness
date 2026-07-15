@@ -464,7 +464,7 @@ Record the T03 hash and required evidence after both reviews.
 - Consumes: a configured workspace root, T01 `AccessKind`, and sensitive GitWildMatch patterns.
 - Produces: `WorkspaceBoundary.resolve(candidate: str, access: AccessKind) -> Path`; exceptions `PathOutsideWorkspace`, `SensitivePathDenied`, `SymlinkEscapeDenied`.
 
-- [ ] **Step 1: Write failing traversal and sensitive-file tests**
+- [x] **Step 1: Write failing traversal and sensitive-file tests**
 
 ```python
 from pathlib import Path
@@ -490,13 +490,13 @@ def test_boundary_denies_sensitive_file_inside_workspace(tmp_path: Path) -> None
         boundary.resolve(".env", AccessKind.READ)
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/unit/test_paths.py -v`
 
 Expected: FAIL because `WorkspaceBoundary` does not exist.
 
-- [ ] **Step 3: Implement canonical boundary checks**
+- [x] **Step 3: Implement canonical boundary checks**
 
 Resolve the workspace once. Join relative candidates to it and call `Path.resolve(strict=False)`, which resolves existing symlink parents without requiring a new write leaf to exist. Compare canonical paths with `os.path.normcase`, `os.path.abspath` and `os.path.commonpath`; a different drive or common path raises `PathOutsideWorkspace`. If the lexical path is inside but the resolved target escapes through a symlink, raise `SymlinkEscapeDenied`. Compile sensitive patterns once with `pathspec.PathSpec.from_lines("gitwildmatch", patterns)` and match the workspace-relative POSIX path.
 
@@ -512,7 +512,7 @@ def _assert_inside(root: Path, target: Path) -> None:
         raise PathOutsideWorkspace(str(target))
 ```
 
-- [ ] **Step 4: Add symlink and property tests**
+- [x] **Step 4: Add symlink and property tests**
 
 Use Hypothesis to generate segments containing `.`, `..`, separators and Unicode. Assert every accepted path resolves beneath the root using the same canonical comparison. Add a symlink-escape test guarded by platform capability, a Windows drive/case test, and GitWildMatch cases proving `.env`, `**/*.pem` and `**/.ssh/**` match the documented files.
 
@@ -520,7 +520,7 @@ Run: `python -m pytest tests/unit/test_paths.py -v`
 
 Expected: PASS; permitted symlink-capability skip is explicitly reported.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(governance): 实现规范化工作区边界`
 
@@ -1508,7 +1508,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
 | T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab`; merge `bf675b0` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed; merged and reverified on `main` |
 | T03 | Pending | — | — | — |
-| T04 | Pending | — | — | — |
+| T04 | Completed (awaiting merge) | `91dbd88`, `94c0edd`, `49895de`, `325aa1b`; plan `6031621` | [!3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; Hypothesis oracle design Minor deferred |
 | T05 | Pending | — | — | — |
 | T06 | Pending | — | — | — |
 | T07 | Pending | — | — | — |
