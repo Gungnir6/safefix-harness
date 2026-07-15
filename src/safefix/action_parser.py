@@ -38,10 +38,24 @@ _SAFE_LOCATION_COMPONENTS = frozenset(
         "validator_id",
     }
 )
+_MAX_VALIDATION_FEEDBACK_ITEMS = 8
 
 
 class _StrictJSONError(ValueError):
     pass
+
+
+class _NonObjectJSONError(ValueError):
+    pass
+
+
+_EXPECTED_INPUT_EXCEPTIONS = (
+    json.JSONDecodeError,
+    _StrictJSONError,
+    ValidationError,
+    _NonObjectJSONError,
+    RecursionError,
+)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -56,6 +70,11 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 def _reject_nonstandard_constant(constant: str) -> NoReturn:
     del constant
     raise _StrictJSONError("non-standard JSON constant")
+
+
+class ActionParserInternalError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("action parser internal failure")
 
 
 class ActionParseError(ValueError):
@@ -74,7 +93,7 @@ class ActionParseError(ValueError):
             return cls("$: invalid JSON")
         if isinstance(exc, ValidationError):
             return cls(_validation_feedback(exc))
-        if isinstance(exc, ValueError):
+        if isinstance(exc, _NonObjectJSONError):
             return cls("$: action must be a JSON object")
         return cls("$: action parsing failed")
 
@@ -82,7 +101,7 @@ class ActionParseError(ValueError):
 class ActionParser:
     def parse(self, text: str) -> Action:
         action: Action | None = None
-        error: ActionParseError | None = None
+        error: ActionParseError | ActionParserInternalError | None = None
         payload: object | None = None
         try:
             payload = json.loads(
@@ -91,10 +110,13 @@ class ActionParser:
                 parse_constant=_reject_nonstandard_constant,
             )
             if not isinstance(payload, dict):
-                raise ValueError("action must be a JSON object")
+                raise _NonObjectJSONError("action must be a JSON object")
             action = ACTION_ADAPTER.validate_python(payload)
         except Exception as exc:
-            error = ActionParseError.from_exception(exc)
+            if isinstance(exc, _EXPECTED_INPUT_EXCEPTIONS):
+                error = ActionParseError.from_exception(exc)
+            else:
+                error = ActionParserInternalError()
 
         if error is not None:
             del text, payload
@@ -106,9 +128,8 @@ class ActionParser:
 
 def _validation_feedback(exc: ValidationError) -> str:
     feedback: list[str] = []
-    for issue in exc.errors(
-        include_url=False, include_context=False, include_input=False
-    ):
+    issues = exc.errors(include_url=False, include_context=False, include_input=False)
+    for issue in issues[:_MAX_VALIDATION_FEEDBACK_ITEMS]:
         issue_type = str(issue.get("type", ""))
         location = _safe_location(issue.get("loc", ()))
         if issue_type == "union_tag_invalid":
@@ -124,6 +145,9 @@ def _validation_feedback(exc: ValidationError) -> str:
         else:
             detail = "invalid value"
         feedback.append(f"{location}: {detail}")
+    remaining = len(issues) - _MAX_VALIDATION_FEEDBACK_ITEMS
+    if remaining > 0:
+        feedback.append(f"TRUNCATED: {remaining} additional errors omitted")
     return "; ".join(feedback) or "$: invalid action"
 
 
