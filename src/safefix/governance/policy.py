@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ntpath
+import os
 import posixpath
 import re
 from collections.abc import Sequence
@@ -93,19 +94,6 @@ _INSTALL_PROGRAMS = frozenset(
         "installer",
     }
 )
-_INSTALL_SUBCOMMANDS = frozenset(
-    {
-        "install",
-        "i",
-        "add",
-        "sync",
-        "update",
-        "upgrade",
-        "create",
-        "uninstall",
-        "remove",
-    }
-)
 _GIT_WRITE_SUBCOMMANDS = frozenset(
     {
         "add",
@@ -135,6 +123,28 @@ _GIT_WRITE_SUBCOMMANDS = frozenset(
         "switch",
         "tag",
         "worktree",
+    }
+)
+_GIT_NETWORK_SUBCOMMANDS = frozenset({"clone", "fetch", "ls-remote", "pull"})
+_GIT_SAFE_READ_SUBCOMMANDS = frozenset(
+    {
+        "blame",
+        "cat-file",
+        "describe",
+        "diff",
+        "diff-tree",
+        "for-each-ref",
+        "grep",
+        "log",
+        "ls-files",
+        "ls-tree",
+        "merge-base",
+        "name-rev",
+        "rev-list",
+        "rev-parse",
+        "show",
+        "show-ref",
+        "status",
     }
 )
 _SYSTEM_DESTRUCTION_PROGRAMS = frozenset(
@@ -169,10 +179,13 @@ _NODE_SUBPROCESS_DELETE = re.compile(
 )
 _PYTHON_CREDENTIAL_READ = re.compile(
     r"(?:\b[a-zA-Z_]\w*\.environ|os\.getenv\s*\(|keyring\.|"
+    r"getattr\s*\(\s*[a-zA-Z_]\w*\s*,\s*['\"]environ['\"]\s*\)|"
     r"open\s*\([^)]*(?:\.env|\.ssh|\.pem|credentials?|id_(?:rsa|ed25519)))",
     re.IGNORECASE,
 )
-_NODE_CREDENTIAL_READ = re.compile(r"\bprocess\.env\b", re.IGNORECASE)
+_NODE_CREDENTIAL_READ = re.compile(
+    r"\bprocess(?:\.env\b|\s*\[\s*['\"]env['\"]\s*\])", re.IGNORECASE
+)
 _SHELL_DELETE = re.compile(
     r"(?:^|[\s;&|])(?:rm|del|erase|rmdir|rd|unlink|remove-item)(?:\s|$)",
     re.IGNORECASE,
@@ -183,16 +196,31 @@ _SENSITIVE_REFERENCE = re.compile(
     r"credentials?(?:[.\\/\s'\"]|$))",
     re.IGNORECASE,
 )
-_ROOT_QUOTED = re.compile(r"(['\"])[\\/]\1")
 _SHELL_ROOT_TARGET = re.compile(r"(?:^|[\s;&|'\"])/{1,2}\*?(?:$|[\s;&|'\"),])")
-_DRIVE_ROOT = re.compile(r"(?<![\w])['\"]?[a-z]:/[\s'\"]?(?:$|[,;)])", re.IGNORECASE)
-_SYSTEM_PATH = re.compile(
-    r"(?:^|[\s'\"=(])(?:/(?:etc|usr|bin|sbin|boot|proc|sys|dev|lib|lib64|var)(?:/|[\s'\"),;]|$)|"
-    r"[a-z]:/(?:windows|program files|programdata)(?:/|[\s'\"),;]|$))",
-    re.IGNORECASE,
-)
 _COMMAND_TOKEN = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s]+)""")
-_COMMAND_SPLIT = re.compile(r"(?:&&|\|\||[;|])")
+_SUBCOMMAND_START = re.compile(
+    r"(?:\$\(|`)\s*(?:command\s+|exec\s+)?([^\s;&|()`]+)", re.IGNORECASE
+)
+_QUOTED_VALUE = re.compile(r"(['\"])(.*?)\1")
+_COMMAND_SPLIT = re.compile(r"(?:&&|\|\||[;&|\r\n]+)")
+_COMMAND_WRAPPERS = frozenset({"command", "exec", "builtin", "nohup"})
+_POSIX_SYSTEM_ROOTS = frozenset(
+    {
+        "bin",
+        "boot",
+        "dev",
+        "etc",
+        "lib",
+        "lib64",
+        "proc",
+        "root",
+        "sbin",
+        "sys",
+        "usr",
+        "var",
+    }
+)
+_WINDOWS_SYSTEM_ROOTS = ("windows", "program files", "programdata")
 
 
 def _risk_program_identity(program: str) -> str:
@@ -219,15 +247,20 @@ def _is_bare_program(program: str) -> bool:
     )
 
 
-def _bare_authorization_identity(program: str) -> str:
+def _split_executable_suffix(program: str) -> tuple[str, str | None]:
     identity = program.casefold()
     for suffix in _EXECUTABLE_SUFFIXES:
         if identity.endswith(suffix) and len(identity) > len(suffix):
-            return identity[: -len(suffix)]
-    return identity
+            return identity[: -len(suffix)], suffix
+    return identity, None
 
 
-def _program_matches_configuration(configured: str, actual: str) -> bool:
+def _program_matches_configuration(
+    configured: str,
+    actual: str,
+    *,
+    platform_name: str | None = None,
+) -> bool:
     configured = configured.strip().strip("'\"")
     actual = actual.strip().strip("'\"")
     if _is_windows_absolute_path(configured):
@@ -240,8 +273,14 @@ def _program_matches_configuration(configured: str, actual: str) -> bool:
         return actual == configured
     if not _is_bare_program(configured) or not _is_bare_program(actual):
         return actual == configured
-    return _bare_authorization_identity(actual) == _bare_authorization_identity(
-        configured
+    if (platform_name or os.name) != "nt":
+        return actual == configured
+    configured_stem, configured_suffix = _split_executable_suffix(configured)
+    actual_stem, actual_suffix = _split_executable_suffix(actual)
+    if configured_suffix is not None:
+        return actual_stem == configured_stem and actual_suffix == configured_suffix
+    return actual_stem == configured_stem and not any(
+        actual_stem.endswith(suffix) for suffix in _EXECUTABLE_SUFFIXES
     )
 
 
@@ -261,16 +300,17 @@ def _inline_code(identity: str, args: Sequence[str]) -> str | None:
     if _PYTHON_PROGRAM.fullmatch(identity):
         flags = ("-c",)
     elif identity in {"node", "nodejs"}:
-        flags = ("-e", "--eval")
+        flags = ("-e", "--eval", "-p", "--print")
     else:
         return None
     for index, arg in enumerate(args):
         if arg in flags:
             return args[index + 1] if index + 1 < len(args) else None
-        if identity in {"node", "nodejs"} and arg.startswith("--eval="):
-            return arg.partition("=")[2]
-        if identity in {"node", "nodejs"} and arg.startswith("-e") and len(arg) > 2:
-            return arg[2:]
+        if identity in {"node", "nodejs"}:
+            if arg.startswith(("--eval=", "--print=")):
+                return arg.partition("=")[2]
+            if arg.startswith(("-e", "-p")) and len(arg) > 2:
+                return arg[2:]
         if (
             _PYTHON_PROGRAM.fullmatch(identity)
             and arg.startswith("-c")
@@ -307,10 +347,82 @@ def _shell_commands(command_text: str) -> tuple[tuple[str, tuple[str, ...]], ...
         ]
         while tokens and "=" in tokens[0] and not tokens[0].startswith(("/", "\\")):
             tokens.pop(0)
+        while tokens and _risk_program_identity(tokens[0]) in _COMMAND_WRAPPERS:
+            tokens.pop(0)
+            while tokens and tokens[0].startswith("-"):
+                tokens.pop(0)
         if not tokens:
             continue
         commands.append((_risk_program_identity(tokens[0]), tuple(tokens[1:])))
+    commands.extend(
+        (_risk_program_identity(program), ())
+        for program in _SUBCOMMAND_START.findall(command_text)
+    )
     return tuple(commands)
+
+
+def _git_invocation(args: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
+    index = 0
+    configuration: list[str] = []
+    value_options = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}
+    while index < len(args):
+        arg = args[index]
+        folded = arg.casefold()
+        if arg in value_options:
+            if index + 1 < len(args) and arg == "-c":
+                configuration.append(args[index + 1])
+            index += 2
+            continue
+        matched_option = next(
+            (
+                option
+                for option in value_options
+                if folded.startswith(f"{option.casefold()}=")
+            ),
+            None,
+        )
+        if matched_option is not None:
+            if matched_option == "-c":
+                configuration.append(arg.partition("=")[2])
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return folded, tuple(configuration)
+    return None, tuple(configuration)
+
+
+def _git_alias_commands(args: Sequence[str]) -> tuple[str, ...]:
+    _, configuration = _git_invocation(args)
+    commands: list[str] = []
+    for item in configuration:
+        key, separator, value = item.partition("=")
+        if separator and key.casefold().startswith("alias.") and value.startswith("!"):
+            commands.append(value[1:])
+    return tuple(commands)
+
+
+def _expanded_commands(
+    identity: str, args: Sequence[str], *, depth: int = 0
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    current = (identity, tuple(args))
+    if depth >= 4:
+        return (current,)
+    expanded: list[tuple[str, tuple[str, ...]]] = [current]
+    shell_text = _shell_command_text(identity, args)
+    if shell_text is not None:
+        for nested_identity, nested_args in _shell_commands(shell_text):
+            expanded.extend(
+                _expanded_commands(nested_identity, nested_args, depth=depth + 1)
+            )
+    if identity == "git":
+        for alias_text in _git_alias_commands(args):
+            for nested_identity, nested_args in _shell_commands(alias_text):
+                expanded.extend(
+                    _expanded_commands(nested_identity, nested_args, depth=depth + 1)
+                )
+    return tuple(expanded)
 
 
 def _is_delete_command(identity: str, args: Sequence[str]) -> bool:
@@ -328,22 +440,36 @@ def _is_delete_command(identity: str, args: Sequence[str]) -> bool:
     return False
 
 
-def _targets_root_or_system(args: Sequence[str]) -> bool:
-    for arg in args:
-        normalized = arg.strip().strip("'\"").replace("\\", "/").casefold()
-        posix_normalized = posixpath.normpath(normalized)
-        if (
-            normalized in {"/", "/*", "//"}
-            or posix_normalized == "/"
-            or re.fullmatch(r"[a-z]:/?(?:\*?)", normalized)
+def _is_system_or_escape_path(candidate: str) -> bool:
+    raw = candidate.strip().strip("'\"")
+    if not raw or raw.startswith("-"):
+        return False
+    windows_raw = raw.replace("/", "\\")
+    if windows_raw.startswith(("\\\\?\\", "\\\\.\\", "\\??\\")):
+        return True
+    windows_normalized = ntpath.normpath(windows_raw).casefold()
+    if windows_normalized.startswith("\\\\"):
+        return True
+    drive, tail = ntpath.splitdrive(windows_normalized)
+    if drive:
+        tail_key = tail.lstrip("\\")
+        if not tail_key or any(
+            tail_key == root or tail_key.startswith(f"{root}\\")
+            for root in _WINDOWS_SYSTEM_ROOTS
         ):
             return True
-    text = _argument_text(args).replace("\\", "/")
-    return bool(
-        _ROOT_QUOTED.search(text)
-        or _DRIVE_ROOT.search(text)
-        or _SYSTEM_PATH.search(text)
-    )
+
+    posix_normalized = posixpath.normpath(raw.replace("\\", "/")).casefold()
+    if posix_normalized == ".." or posix_normalized.startswith("../"):
+        return True
+    if posix_normalized.startswith("/"):
+        first = posix_normalized.lstrip("/").partition("/")[0]
+        return not first or first in _POSIX_SYSTEM_ROOTS
+    return False
+
+
+def _targets_root_or_system(args: Sequence[str]) -> bool:
+    return any(_is_system_or_escape_path(arg) for arg in args)
 
 
 def _is_system_destruction(identity: str, args: Sequence[str]) -> bool:
@@ -360,7 +486,13 @@ def _is_system_destruction(identity: str, args: Sequence[str]) -> bool:
     if (
         code is not None
         and _is_delete_command(identity, args)
-        and _SHELL_ROOT_TARGET.search(code.replace("\\", "/"))
+        and (
+            _SHELL_ROOT_TARGET.search(code.replace("\\", "/"))
+            or any(
+                _is_system_or_escape_path(value)
+                for _, value in _QUOTED_VALUE.findall(code)
+            )
+        )
     ):
         return True
     if _targets_root_or_system(args):
@@ -413,38 +545,42 @@ def _is_install(identity: str, args: Sequence[str]) -> bool:
                 "pip3",
                 "ensurepip",
             }:
-                return (
-                    any(
-                        candidate.casefold() in _INSTALL_SUBCOMMANDS
-                        for candidate in args[index + 2 :]
-                    )
-                    or _risk_program_identity(args[index + 1]) == "ensurepip"
-                )
-    if identity not in _INSTALL_PROGRAMS:
-        return False
-    if identity in {"msiexec", "installer"}:
-        return True
-    return any(arg.casefold() in _INSTALL_SUBCOMMANDS for arg in args)
+                return True
+    return identity in _INSTALL_PROGRAMS
 
 
-def _is_git_write(identity: str, args: Sequence[str]) -> bool:
+def _git_approval_rule(identity: str, args: Sequence[str]) -> str | None:
+    if identity.startswith("git-"):
+        return "CMD_GIT_COMMAND"
     if identity != "git":
-        return False
-    index = 0
-    value_options = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}
-    while index < len(args):
-        arg = args[index]
-        folded = arg.casefold()
-        if arg in value_options:
-            index += 2
-            continue
-        if any(folded.startswith(f"{option.casefold()}=") for option in value_options):
-            index += 1
-            continue
-        if arg.startswith("-"):
-            index += 1
-            continue
-        return folded in _GIT_WRITE_SUBCOMMANDS
+        return None
+    subcommand, configuration = _git_invocation(args)
+    if any(item.casefold().startswith("alias.") for item in configuration):
+        return "CMD_GIT_COMMAND"
+    if subcommand in _GIT_NETWORK_SUBCOMMANDS:
+        return "CMD_NETWORK"
+    if subcommand in _GIT_WRITE_SUBCOMMANDS:
+        return "CMD_GIT_WRITE"
+    if subcommand in _GIT_SAFE_READ_SUBCOMMANDS:
+        return None
+    return "CMD_GIT_COMMAND"
+
+
+def _is_interpreter_execution(identity: str, args: Sequence[str]) -> bool:
+    if identity in _SHELL_PROGRAMS:
+        return True
+    if _PYTHON_PROGRAM.fullmatch(identity):
+        if not args:
+            return True
+        if any(arg in {"-c", "-m"} or arg.startswith("-c") for arg in args):
+            return True
+        return any(not arg.startswith("-") for arg in args)
+    if identity in {"node", "nodejs"}:
+        if not args:
+            return True
+        if _inline_code(identity, args) is not None:
+            return True
+        return any(not arg.startswith("-") for arg in args)
     return False
 
 
@@ -517,145 +653,92 @@ class PolicyEngine:
     def _decide_process(self, action: RunProcessAction) -> PolicyDecision:
         identity = _risk_program_identity(action.program)
         args = action.args
-        shell_command = _shell_command_text(identity, args)
+        commands = _expanded_commands(identity, args)
 
-        if identity in self._denied_programs:
-            return self._decision(
-                action.id,
-                DecisionOutcome.DENY,
+        permanent_rules = (
+            (
                 "CMD_DENIED_PROGRAM",
-                "The program is permanently denied by policy configuration.",
-            )
-        if identity in _PRIVILEGE_PROGRAMS:
-            return self._decision(
-                action.id,
-                DecisionOutcome.DENY,
+                "The command invokes a program denied by policy configuration.",
+                lambda program, command_args: program in self._denied_programs,
+            ),
+            (
                 "CMD_PRIVILEGE_ESCALATION",
-                "Privilege-escalation programs are permanently denied.",
-            )
-        if shell_command is None and _is_credential_access(identity, args):
-            return self._decision(
-                action.id,
-                DecisionOutcome.DENY,
+                "The command requests privilege escalation.",
+                lambda program, command_args: program in _PRIVILEGE_PROGRAMS,
+            ),
+            (
                 "CMD_CREDENTIAL_ACCESS",
-                "Credential and secret-reading commands are permanently denied.",
-            )
-        if shell_command is None and _is_system_destruction(identity, args):
-            return self._decision(
-                action.id,
-                DecisionOutcome.DENY,
+                "The command attempts to read credentials or secrets.",
+                lambda program, command_args: (
+                    program not in _SHELL_PROGRAMS
+                    and _is_credential_access(program, command_args)
+                ),
+            ),
+            (
                 "CMD_SYSTEM_DESTRUCTION",
-                "Destructive operations against root or system targets are denied.",
-            )
-
-        if shell_command is None and _is_delete_command(identity, args):
-            return self._decision(
-                action.id,
-                DecisionOutcome.REQUIRE_APPROVAL,
-                "CMD_DELETE",
-                "Deletion commands require explicit approval.",
-            )
-        if shell_command is None and _is_install(identity, args):
-            return self._decision(
-                action.id,
-                DecisionOutcome.REQUIRE_APPROVAL,
-                "CMD_INSTALL",
-                "Package installation and environment mutation require approval.",
-            )
-        if shell_command is None and _is_git_write(identity, args):
-            return self._decision(
-                action.id,
-                DecisionOutcome.REQUIRE_APPROVAL,
-                "CMD_GIT_WRITE",
-                "Git operations that can change local or remote state require approval.",
-            )
-        if shell_command is None and identity in _NETWORK_PROGRAMS:
-            return self._decision(
-                action.id,
-                DecisionOutcome.REQUIRE_APPROVAL,
-                "CMD_NETWORK",
-                "Network client programs require explicit approval.",
-            )
-
-        inline_code = _inline_code(identity, args)
-        if inline_code is not None:
-            return self._decision(
-                action.id,
-                DecisionOutcome.REQUIRE_APPROVAL,
-                "CMD_INLINE_CODE",
-                "Inline interpreter code requires explicit approval.",
-            )
-
-        if shell_command is not None:
-            commands = _shell_commands(shell_command)
-            for nested_identity, nested_args in commands:
-                if nested_identity in self._denied_programs:
-                    return self._decision(
-                        action.id,
-                        DecisionOutcome.DENY,
-                        "CMD_DENIED_PROGRAM",
-                        "The shell command invokes a program denied by policy.",
-                    )
-                if nested_identity in _PRIVILEGE_PROGRAMS:
-                    return self._decision(
-                        action.id,
-                        DecisionOutcome.DENY,
-                        "CMD_PRIVILEGE_ESCALATION",
-                        "The shell command requests privilege escalation.",
-                    )
-                if _is_credential_access(nested_identity, nested_args):
-                    return self._decision(
-                        action.id,
-                        DecisionOutcome.DENY,
-                        "CMD_CREDENTIAL_ACCESS",
-                        "The shell command attempts to read credentials or secrets.",
-                    )
-                if _is_system_destruction(nested_identity, nested_args):
-                    return self._decision(
-                        action.id,
-                        DecisionOutcome.DENY,
-                        "CMD_SYSTEM_DESTRUCTION",
-                        "The shell command targets a root or system location.",
-                    )
-            for nested_identity, nested_args in commands:
-                if _is_delete_command(nested_identity, nested_args):
-                    rule = "CMD_DELETE"
-                    explanation = "The shell command performs deletion."
-                elif _is_install(nested_identity, nested_args):
-                    rule = "CMD_INSTALL"
-                    explanation = "The shell command mutates a package environment."
-                elif _is_git_write(nested_identity, nested_args):
-                    rule = "CMD_GIT_WRITE"
-                    explanation = "The shell command performs a Git write operation."
-                elif nested_identity in _NETWORK_PROGRAMS:
-                    rule = "CMD_NETWORK"
-                    explanation = "The shell command invokes a network client."
-                else:
-                    continue
+                "The command targets a root or system location.",
+                lambda program, command_args: (
+                    program not in _SHELL_PROGRAMS
+                    and _is_system_destruction(program, command_args)
+                ),
+            ),
+        )
+        for rule, explanation, matches in permanent_rules:
+            if any(
+                matches(program, command_args) for program, command_args in commands
+            ):
                 return self._decision(
-                    action.id,
-                    DecisionOutcome.REQUIRE_APPROVAL,
-                    rule,
-                    explanation,
+                    action.id, DecisionOutcome.DENY, rule, explanation
                 )
-            return self._decision(
-                action.id,
-                DecisionOutcome.REQUIRE_APPROVAL,
-                "CMD_SHELL_COMMAND",
-                "Shell command text requires explicit approval.",
-            )
 
-        if any(
+        is_validator = any(
             args == validator_args
             and _program_matches_configuration(validator_program, action.program)
             for validator_program, validator_args in self._validators
-        ):
+        )
+        if is_validator:
             return self._decision(
                 action.id,
                 DecisionOutcome.ALLOW,
                 "CMD_CONFIGURED_VALIDATOR",
                 "The command exactly matches a configured validator.",
             )
+
+        for program, command_args in commands:
+            if _is_delete_command(program, command_args):
+                rule = "CMD_DELETE"
+                explanation = "Deletion commands require explicit approval."
+            elif _is_install(program, command_args):
+                rule = "CMD_INSTALL"
+                explanation = "Package-manager commands require explicit approval."
+            elif (git_rule := _git_approval_rule(program, command_args)) is not None:
+                rule = git_rule
+                explanation = "The Git command is not an allowlisted local read."
+            elif program in _NETWORK_PROGRAMS:
+                rule = "CMD_NETWORK"
+                explanation = "Network client programs require explicit approval."
+            else:
+                continue
+            return self._decision(
+                action.id,
+                DecisionOutcome.REQUIRE_APPROVAL,
+                rule,
+                explanation,
+            )
+
+        for program, command_args in commands:
+            if not _is_interpreter_execution(program, command_args):
+                continue
+            rule = (
+                "CMD_SHELL_COMMAND" if program in _SHELL_PROGRAMS else "CMD_INLINE_CODE"
+            )
+            return self._decision(
+                action.id,
+                DecisionOutcome.REQUIRE_APPROVAL,
+                rule,
+                "Shell and interpreter execution requires explicit approval.",
+            )
+
         if any(
             _program_matches_configuration(program, action.program)
             for program in self._allowed_programs
