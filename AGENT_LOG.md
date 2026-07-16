@@ -63,6 +63,7 @@
 - 中断路径修复：质量评审继续用 `KeyboardInterrupt` 验证“不吞 BaseException 但必须清理 locals”。`2be70e4 fix(llm): 清理中断路径敏感局部变量` 清理 parser/decoder/adapter helper；`c38f3bc fix(llm): 清理反馈格式化中断局部变量` 补齐 `_validation_feedback` 与 location helper，并保持同一中断对象原样传播。最终聚焦 25、完整 196。
 - 最终独立复审：规格与质量评审均批准，Critical 0、Important 0、Minor 2；确认严格单 JSON object、typed Action、`INVALID_ACTION`、重复键/非标准常量拒绝、动态 location 净化、8 项反馈上限、阶段化输入/内部错误分类，以及普通异常和中断路径 parser-frame 非披露均满足。
 - 根代理新鲜验证：T03 聚焦 25 passed；安全边界专项 16 passed（6 deselected）；完整测试 196 passed；Ruff check/format、mypy、pip check、`git diff --check 310f1ec..c38f3bc` 全部 exit 0；过程文档修改前工作树干净且差异仅含 brief 六文件。
+- 合并结果：MR !4 合并到 `main`，合并提交 `8b34b10`；主工作区快进后确认分支头 `abc0fac` 已进入主线，复跑 T03 聚焦为 25 passed、安全边界专项为 16 passed（6 deselected）、完整测试为 196 passed，Ruff check/format、mypy、pip check 全部 exit 0。
 - 延期 Minor：`ScriptedMockLLM` 接受裸 `str` 时会按字符形成脚本；当前 `ModelResponse` 已冻结但测试只显式修改 `ModelMessage`。两项不影响生产契约与合并，记录供后续测试清理。
 - 后续约束：T12 AgentLoop、T13 provider 与日志/错误采集层不得用未脱敏的 `capture_locals` 记录调用者 frame；应禁用该选项或在持久化/上报前递归脱敏。
 - 经验：不可信解析边界应按处理阶段而非异常类型分类；安全异常既要区分可重试输入错误与内部故障，也要覆盖 formatter 和 `BaseException` 原样传播时的 `finally` 局部变量清理。
