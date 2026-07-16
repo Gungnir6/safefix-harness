@@ -50,10 +50,27 @@ def settings() -> SafeFixSettings:
             _validator("pytest", "pytest", ("-q",)),
             _validator("python-pytest", "python", ("-m", "pytest", "-q")),
             _validator("literal-meta", "echo", ("hello; rm -rf /",)),
+            _validator(
+                "windows-pytest", r"C:\Tools\special-pytest.exe", ("--windows",)
+            ),
+            _validator("posix-pytest", "/opt/tools/pytest", ("--posix",)),
         ),
         policy=PolicySettings(
             sensitive_patterns=(".env", "**/*.pem", "**/.ssh/**"),
-            allowed_programs=("ruff", "python", "node", "rm"),
+            allowed_programs=(
+                "ruff",
+                "python",
+                "node",
+                "rm",
+                "bash",
+                "git",
+                "pip",
+                "npm",
+                "mv",
+                "cp",
+                r"C:\Tools\custom.exe",
+                "/opt/tools/custom",
+            ),
             denied_programs=("shutdown",),
         ),
     )
@@ -112,7 +129,7 @@ def test_process_risk_matrix(
     ("program", "args", "expected", "rule"),
     [
         (
-            r"C:\Tools\PyTest.EXE",
+            "PyTest.EXE",
             ("-q",),
             DecisionOutcome.ALLOW,
             "CMD_CONFIGURED_VALIDATOR",
@@ -128,6 +145,12 @@ def test_process_risk_matrix(
             (),
             DecisionOutcome.DENY,
             "CMD_DENIED_PROGRAM",
+        ),
+        (
+            r"C:\Tools\SUDO.EXE.CMD",
+            (),
+            DecisionOutcome.DENY,
+            "CMD_PRIVILEGE_ESCALATION",
         ),
         (
             "not-sudo-helper",
@@ -150,6 +173,86 @@ def test_program_identity_is_normalized_without_substring_matching(
 
     assert decision.outcome is expected
     assert decision.rule_ids == (rule,)
+
+
+@pytest.mark.parametrize("program", ("ruff", "RUFF.EXE", "RuFf.CmD"))
+def test_authorization_bare_program_allows_only_bare_windows_variants(
+    policy: PolicyEngine, program: str
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="bare-allow", reason="test", program=program)
+    )
+
+    assert decision.outcome is DecisionOutcome.ALLOW
+    assert decision.rule_ids == ("CMD_CONFIGURED_PROGRAM",)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        (r"C:\attacker\ruff.exe.cmd", ()),
+        (r"C:\Tools\ruff.exe", ()),
+        ("/tmp/ruff", ()),
+        ("ruff.exe.cmd", ()),
+        (r"C:\attacker\pytest.exe", ("-q",)),
+    ],
+)
+def test_authorization_bare_program_rejects_paths_and_double_extensions(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="bare-spoof", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_UNCONFIGURED_PROGRAM",)
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    [
+        (r"c:/tools/CUSTOM.EXE", DecisionOutcome.ALLOW),
+        (r"D:\Tools\custom.exe", DecisionOutcome.REQUIRE_APPROVAL),
+        ("/opt/tools/custom", DecisionOutcome.ALLOW),
+        ("/opt/tools/CUSTOM", DecisionOutcome.REQUIRE_APPROVAL),
+    ],
+)
+def test_authorization_full_paths_follow_platform_path_semantics(
+    policy: PolicyEngine, program: str, expected: DecisionOutcome
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="full-path", reason="test", program=program)
+    )
+
+    assert decision.outcome is expected
+
+
+@pytest.mark.parametrize(
+    ("program", "args", "expected"),
+    [
+        (r"c:/TOOLS/SPECIAL-PYTEST.EXE", ("--windows",), DecisionOutcome.ALLOW),
+        (
+            r"D:\Tools\special-pytest.exe",
+            ("--windows",),
+            DecisionOutcome.REQUIRE_APPROVAL,
+        ),
+        ("/opt/tools/pytest", ("--posix",), DecisionOutcome.ALLOW),
+        ("/opt/tools/PYTEST", ("--posix",), DecisionOutcome.REQUIRE_APPROVAL),
+    ],
+)
+def test_authorization_validator_full_path_must_match_exact_configuration(
+    policy: PolicyEngine,
+    program: str,
+    args: tuple[str, ...],
+    expected: DecisionOutcome,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="validator-path", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is expected
+    if expected is DecisionOutcome.ALLOW:
+        assert decision.rule_ids == ("CMD_CONFIGURED_VALIDATOR",)
 
 
 def test_denied_program_precedes_other_risk_and_allow_rules(
@@ -293,6 +396,104 @@ def test_inline_environment_readers_are_permanently_denied(
 @pytest.mark.parametrize(
     ("program", "args", "rule"),
     [
+        (
+            "python",
+            ("-c", "import shutil as s; s.rmtree('/')"),
+            "CMD_SYSTEM_DESTRUCTION",
+        ),
+        (
+            "python",
+            ("-c", "import os as o; print(o.environ)"),
+            "CMD_CREDENTIAL_ACCESS",
+        ),
+        (
+            "node",
+            ("-e", "require('fs')['rmSync']('/')"),
+            "CMD_SYSTEM_DESTRUCTION",
+        ),
+    ],
+)
+def test_inline_alias_and_computed_access_cannot_bypass_permanent_denials(
+    policy: PolicyEngine, program: str, args: tuple[str, ...], rule: str
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="inline-bypass", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == (rule,)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("python", ("-c", "print('safe')")),
+        ("node", ("--eval", "console.log('safe')")),
+    ],
+)
+def test_unclassified_inline_code_never_inherits_configured_program_allow(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="inline-fallback", reason="test", program=program, args=args
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_INLINE_CODE",)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected", "rule"),
+    [
+        ("/bin/rm -rf /", DecisionOutcome.DENY, "CMD_SYSTEM_DESTRUCTION"),
+        ("/usr/bin/sudo id", DecisionOutcome.DENY, "CMD_PRIVILEGE_ESCALATION"),
+        ("cat .env", DecisionOutcome.DENY, "CMD_CREDENTIAL_ACCESS"),
+        ("/usr/bin/pip install x", DecisionOutcome.REQUIRE_APPROVAL, "CMD_INSTALL"),
+        ("git push", DecisionOutcome.REQUIRE_APPROVAL, "CMD_GIT_WRITE"),
+        ("curl https://example.test", DecisionOutcome.REQUIRE_APPROVAL, "CMD_NETWORK"),
+        ("echo safe", DecisionOutcome.REQUIRE_APPROVAL, "CMD_SHELL_COMMAND"),
+    ],
+)
+def test_shell_command_text_is_classified_before_shell_program_allow(
+    policy: PolicyEngine,
+    command: str,
+    expected: DecisionOutcome,
+    rule: str,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="shell-command",
+            reason="test",
+            program="bash",
+            args=("-c", command),
+        )
+    )
+
+    assert decision.outcome is expected
+    assert decision.rule_ids == (rule,)
+
+
+def test_shell_permanent_denial_precedes_earlier_approval_segment(
+    policy: PolicyEngine,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="shell-priority",
+            reason="test",
+            program="bash",
+            args=("-c", "rm -rf build; /usr/bin/sudo id"),
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_PRIVILEGE_ESCALATION",)
+
+
+@pytest.mark.parametrize(
+    ("program", "args", "rule"),
+    [
         ("curl", ("https://example.test",), "CMD_NETWORK"),
         ("npm", ("install",), "CMD_INSTALL"),
         ("git", ("push",), "CMD_GIT_WRITE"),
@@ -323,6 +524,92 @@ def test_python_module_installer_requires_approval(policy: PolicyEngine) -> None
 
     assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
     assert decision.rule_ids == ("CMD_INSTALL",)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("python", ("-m", "ensurepip")),
+        ("pip", ("uninstall", "requests")),
+        ("npm", ("i", "package")),
+    ],
+)
+def test_installer_variants_precede_configured_program_allow(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="install-variant", reason="test", program=program, args=args
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_INSTALL",)
+
+
+def test_configured_package_manager_non_install_command_remains_allowed(
+    policy: PolicyEngine,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="pip-list", reason="test", program="pip", args=("list",))
+    )
+
+    assert decision.outcome is DecisionOutcome.ALLOW
+    assert decision.rule_ids == ("CMD_CONFIGURED_PROGRAM",)
+
+
+@pytest.mark.parametrize(
+    ("args", "expected", "rule"),
+    [
+        (
+            ("config", "user.name", "x"),
+            DecisionOutcome.REQUIRE_APPROVAL,
+            "CMD_GIT_WRITE",
+        ),
+        (
+            ("-C", "repo", "commit", "-m", "x"),
+            DecisionOutcome.REQUIRE_APPROVAL,
+            "CMD_GIT_WRITE",
+        ),
+        (("show", "commit"), DecisionOutcome.ALLOW, "CMD_CONFIGURED_PROGRAM"),
+        (("show", "push"), DecisionOutcome.ALLOW, "CMD_CONFIGURED_PROGRAM"),
+    ],
+)
+def test_git_classifies_the_actual_subcommand_only(
+    policy: PolicyEngine,
+    args: tuple[str, ...],
+    expected: DecisionOutcome,
+    rule: str,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="git-subcommand", reason="test", program="git", args=args)
+    )
+
+    assert decision.outcome is expected
+    assert decision.rule_ids == (rule,)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("rm", ("-rf", "/.")),
+        ("rm", ("-rf", "//")),
+        ("rm", ("-rf", "/lib")),
+        ("rm", ("-rf", "/lib64/module")),
+        ("rm", ("-rf", "/var/lib/app")),
+        ("mv", ("/etc/passwd", "/tmp/passwd")),
+        ("cp", ("payload", "/etc/passwd")),
+    ],
+)
+def test_system_path_mutations_are_permanently_denied(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="system-path", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_SYSTEM_DESTRUCTION",)
 
 
 def test_validator_command_requires_exact_arguments(policy: PolicyEngine) -> None:
@@ -403,6 +690,12 @@ class _RecordingBoundary:
     def resolve(self, candidate: str, access: AccessKind) -> Path:
         self.calls.append((candidate, access))
         return Path(candidate)
+
+
+class _UnexpectedFailureBoundary:
+    def resolve(self, candidate: str, access: AccessKind) -> Path:
+        del candidate, access
+        raise RuntimeError("unexpected-boundary-failure")
 
 
 @pytest.mark.parametrize(
@@ -488,6 +781,25 @@ def test_boundary_failure_is_denied_without_disclosing_path(
     assert decision.outcome is DecisionOutcome.DENY
     assert decision.rule_ids == ("FILE_BOUNDARY_DENY",)
     assert rejected not in decision.explanation
+
+
+def test_unexpected_boundary_exception_is_not_swallowed(
+    settings: SafeFixSettings,
+) -> None:
+    engine = PolicyEngine(
+        settings=settings,
+        boundary=_UnexpectedFailureBoundary(),  # type: ignore[arg-type]
+    )
+    action = ReadFileAction(
+        id="unexpected-boundary",
+        reason="test",
+        path="README.md",
+        start_line=1,
+        end_line=200,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected-boundary-failure"):
+        engine.decide(action)
 
 
 def test_finish_is_allowed(policy: PolicyEngine) -> None:

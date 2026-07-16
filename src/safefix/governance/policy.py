@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ntpath
+import posixpath
 import re
 from collections.abc import Sequence
+from pathlib import PureWindowsPath
 
 from safefix.config import SafeFixSettings
 from safefix.domain import (
@@ -18,7 +21,11 @@ from safefix.domain import (
     RunValidationAction,
     SearchTextAction,
 )
-from safefix.governance.paths import WorkspaceBoundary
+from safefix.governance.paths import (
+    PathOutsideWorkspace,
+    SensitivePathDenied,
+    WorkspaceBoundary,
+)
 
 
 _EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1")
@@ -87,7 +94,17 @@ _INSTALL_PROGRAMS = frozenset(
     }
 )
 _INSTALL_SUBCOMMANDS = frozenset(
-    {"install", "add", "sync", "update", "upgrade", "create"}
+    {
+        "install",
+        "i",
+        "add",
+        "sync",
+        "update",
+        "upgrade",
+        "create",
+        "uninstall",
+        "remove",
+    }
 )
 _GIT_WRITE_SUBCOMMANDS = frozenset(
     {
@@ -101,6 +118,7 @@ _GIT_WRITE_SUBCOMMANDS = frozenset(
         "clean",
         "clone",
         "commit",
+        "config",
         "fetch",
         "init",
         "merge",
@@ -123,11 +141,12 @@ _SYSTEM_DESTRUCTION_PROGRAMS = frozenset(
     {"format", "mkfs", "shutdown", "reboot", "halt", "poweroff"}
 )
 _SYSTEM_MUTATION_PROGRAMS = frozenset(
-    {"chmod", "chown", "chgrp", "truncate", "icacls", "takeown"}
+    {"chmod", "chown", "chgrp", "truncate", "icacls", "takeown", "mv", "cp"}
 )
 _PYTHON_PROGRAM = re.compile(r"^(?:python(?:\d+(?:\.\d+)*)?|py|pypy\d*)$")
 _PYTHON_DELETE = re.compile(
     r"(?:os\.(?:remove|unlink|rmdir)|shutil\.rmtree|"
+    r"\b[a-zA-Z_]\w*\.rmtree|"
     r"pathlib\.Path\([^)]*\)\.(?:unlink|rmdir)|\.unlink\s*\(|\.rmdir\s*\()",
     re.IGNORECASE,
 )
@@ -138,7 +157,8 @@ _PYTHON_SUBPROCESS_DELETE = re.compile(
 )
 _NODE_DELETE = re.compile(
     r"(?:\b(?:unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync)\s*\(|"
-    r"\.(?:unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync)\s*\()",
+    r"\.(?:unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync)\s*\(|"
+    r"\[\s*['\"](?:unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync)['\"]\s*\]\s*\()",
     re.IGNORECASE,
 )
 _NODE_SUBPROCESS_DELETE = re.compile(
@@ -148,7 +168,7 @@ _NODE_SUBPROCESS_DELETE = re.compile(
     re.IGNORECASE,
 )
 _PYTHON_CREDENTIAL_READ = re.compile(
-    r"(?:os\.environ|os\.getenv\s*\(|keyring\.|"
+    r"(?:\b[a-zA-Z_]\w*\.environ|os\.getenv\s*\(|keyring\.|"
     r"open\s*\([^)]*(?:\.env|\.ssh|\.pem|credentials?|id_(?:rsa|ed25519)))",
     re.IGNORECASE,
 )
@@ -167,13 +187,15 @@ _ROOT_QUOTED = re.compile(r"(['\"])[\\/]\1")
 _SHELL_ROOT_TARGET = re.compile(r"(?:^|[\s;&|'\"])/{1,2}\*?(?:$|[\s;&|'\"),])")
 _DRIVE_ROOT = re.compile(r"(?<![\w])['\"]?[a-z]:/[\s'\"]?(?:$|[,;)])", re.IGNORECASE)
 _SYSTEM_PATH = re.compile(
-    r"(?:^|[\s'\"=(])(?:/(?:etc|usr|bin|sbin|boot|proc|sys|dev)(?:/|[\s'\"),;]|$)|"
+    r"(?:^|[\s'\"=(])(?:/(?:etc|usr|bin|sbin|boot|proc|sys|dev|lib|lib64|var)(?:/|[\s'\"),;]|$)|"
     r"[a-z]:/(?:windows|program files|programdata)(?:/|[\s'\"),;]|$))",
     re.IGNORECASE,
 )
+_COMMAND_TOKEN = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s]+)""")
+_COMMAND_SPLIT = re.compile(r"(?:&&|\|\||[;|])")
 
 
-def _program_identity(program: str) -> str:
+def _risk_program_identity(program: str) -> str:
     basename = program.strip().strip("'\"").replace("\\", "/").rsplit("/", 1)[-1]
     identity = basename.casefold()
     removed = True
@@ -185,6 +207,42 @@ def _program_identity(program: str) -> str:
                 removed = True
                 break
     return identity
+
+
+def _is_windows_absolute_path(program: str) -> bool:
+    return PureWindowsPath(program).is_absolute()
+
+
+def _is_bare_program(program: str) -> bool:
+    return not _is_windows_absolute_path(program) and not any(
+        separator in program for separator in ("/", "\\")
+    )
+
+
+def _bare_authorization_identity(program: str) -> str:
+    identity = program.casefold()
+    for suffix in _EXECUTABLE_SUFFIXES:
+        if identity.endswith(suffix) and len(identity) > len(suffix):
+            return identity[: -len(suffix)]
+    return identity
+
+
+def _program_matches_configuration(configured: str, actual: str) -> bool:
+    configured = configured.strip().strip("'\"")
+    actual = actual.strip().strip("'\"")
+    if _is_windows_absolute_path(configured):
+        if not _is_windows_absolute_path(actual):
+            return False
+        configured_key = ntpath.normpath(configured).replace("\\", "/").casefold()
+        actual_key = ntpath.normpath(actual).replace("\\", "/").casefold()
+        return actual_key == configured_key
+    if configured.startswith("/"):
+        return actual == configured
+    if not _is_bare_program(configured) or not _is_bare_program(actual):
+        return actual == configured
+    return _bare_authorization_identity(actual) == _bare_authorization_identity(
+        configured
+    )
 
 
 def _argument_text(args: Sequence[str]) -> str:
@@ -222,6 +280,39 @@ def _inline_code(identity: str, args: Sequence[str]) -> str | None:
     return None
 
 
+def _shell_command_text(identity: str, args: Sequence[str]) -> str | None:
+    for index, arg in enumerate(args):
+        folded = arg.casefold()
+        is_command_flag = False
+        if identity == "cmd":
+            is_command_flag = folded in {"/c", "/k"}
+        elif identity in {"powershell", "pwsh"}:
+            is_command_flag = folded in {"-command", "-c"}
+        elif identity in _SHELL_PROGRAMS:
+            is_command_flag = (
+                folded.startswith("-")
+                and not folded.startswith("--")
+                and "c" in folded[1:]
+            )
+        if is_command_flag:
+            return args[index + 1] if index + 1 < len(args) else ""
+    return None
+
+
+def _shell_commands(command_text: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    commands: list[tuple[str, tuple[str, ...]]] = []
+    for segment in _COMMAND_SPLIT.split(command_text):
+        tokens = [
+            token.strip("'\"") for token in _COMMAND_TOKEN.findall(segment.strip())
+        ]
+        while tokens and "=" in tokens[0] and not tokens[0].startswith(("/", "\\")):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        commands.append((_risk_program_identity(tokens[0]), tuple(tokens[1:])))
+    return tuple(commands)
+
+
 def _is_delete_command(identity: str, args: Sequence[str]) -> bool:
     if identity in _DELETE_PROGRAMS:
         return True
@@ -240,7 +331,12 @@ def _is_delete_command(identity: str, args: Sequence[str]) -> bool:
 def _targets_root_or_system(args: Sequence[str]) -> bool:
     for arg in args:
         normalized = arg.strip().strip("'\"").replace("\\", "/").casefold()
-        if normalized in {"/", "/*"} or re.fullmatch(r"[a-z]:/?(?:\*?)", normalized):
+        posix_normalized = posixpath.normpath(normalized)
+        if (
+            normalized in {"/", "/*", "//"}
+            or posix_normalized == "/"
+            or re.fullmatch(r"[a-z]:/?(?:\*?)", normalized)
+        ):
             return True
     text = _argument_text(args).replace("\\", "/")
     return bool(
@@ -277,6 +373,10 @@ def _is_system_destruction(identity: str, args: Sequence[str]) -> bool:
 def _is_credential_access(identity: str, args: Sequence[str]) -> bool:
     if identity in _CREDENTIAL_PROGRAMS:
         return True
+    if identity in {"get-childitem", "gci"} and any(
+        arg.casefold().startswith("env:") for arg in args
+    ):
+        return True
     first = _first_non_option(args)
     if identity == "git" and first is not None and first.startswith("credential"):
         return True
@@ -307,8 +407,8 @@ def _is_credential_access(identity: str, args: Sequence[str]) -> bool:
 
 def _is_install(identity: str, args: Sequence[str]) -> bool:
     if _PYTHON_PROGRAM.fullmatch(identity):
-        for index, arg in enumerate(args[:-2]):
-            if arg == "-m" and _program_identity(args[index + 1]) in {
+        for index, arg in enumerate(args[:-1]):
+            if arg == "-m" and _risk_program_identity(args[index + 1]) in {
                 "pip",
                 "pip3",
                 "ensurepip",
@@ -318,7 +418,7 @@ def _is_install(identity: str, args: Sequence[str]) -> bool:
                         candidate.casefold() in _INSTALL_SUBCOMMANDS
                         for candidate in args[index + 2 :]
                     )
-                    or _program_identity(args[index + 1]) == "ensurepip"
+                    or _risk_program_identity(args[index + 1]) == "ensurepip"
                 )
     if identity not in _INSTALL_PROGRAMS:
         return False
@@ -330,7 +430,22 @@ def _is_install(identity: str, args: Sequence[str]) -> bool:
 def _is_git_write(identity: str, args: Sequence[str]) -> bool:
     if identity != "git":
         return False
-    return any(arg.casefold() in _GIT_WRITE_SUBCOMMANDS for arg in args)
+    index = 0
+    value_options = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}
+    while index < len(args):
+        arg = args[index]
+        folded = arg.casefold()
+        if arg in value_options:
+            index += 2
+            continue
+        if any(folded.startswith(f"{option.casefold()}=") for option in value_options):
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return folded in _GIT_WRITE_SUBCOMMANDS
+    return False
 
 
 class PolicyEngine:
@@ -339,15 +454,13 @@ class PolicyEngine:
     def __init__(self, settings: SafeFixSettings, boundary: WorkspaceBoundary) -> None:
         self._settings = settings
         self._boundary = boundary
-        self._allowed_programs = frozenset(
-            _program_identity(program) for program in settings.policy.allowed_programs
-        )
+        self._allowed_programs = settings.policy.allowed_programs
         self._denied_programs = frozenset(
-            _program_identity(program) for program in settings.policy.denied_programs
+            _risk_program_identity(program)
+            for program in settings.policy.denied_programs
         )
         self._validators = tuple(
-            (_program_identity(validator.program), validator.args)
-            for validator in settings.validators
+            (validator.program, validator.args) for validator in settings.validators
         )
         self._validator_ids = frozenset(
             validator.id for validator in settings.validators
@@ -387,7 +500,7 @@ class PolicyEngine:
             access, allow_rule = AccessKind.WRITE, "FILE_WRITE"
         try:
             self._boundary.resolve(action.path, access)
-        except Exception:
+        except (PathOutsideWorkspace, SensitivePathDenied):
             return self._decision(
                 action.id,
                 DecisionOutcome.DENY,
@@ -402,8 +515,9 @@ class PolicyEngine:
         )
 
     def _decide_process(self, action: RunProcessAction) -> PolicyDecision:
-        identity = _program_identity(action.program)
+        identity = _risk_program_identity(action.program)
         args = action.args
+        shell_command = _shell_command_text(identity, args)
 
         if identity in self._denied_programs:
             return self._decision(
@@ -419,14 +533,14 @@ class PolicyEngine:
                 "CMD_PRIVILEGE_ESCALATION",
                 "Privilege-escalation programs are permanently denied.",
             )
-        if _is_credential_access(identity, args):
+        if shell_command is None and _is_credential_access(identity, args):
             return self._decision(
                 action.id,
                 DecisionOutcome.DENY,
                 "CMD_CREDENTIAL_ACCESS",
                 "Credential and secret-reading commands are permanently denied.",
             )
-        if _is_system_destruction(identity, args):
+        if shell_command is None and _is_system_destruction(identity, args):
             return self._decision(
                 action.id,
                 DecisionOutcome.DENY,
@@ -434,28 +548,28 @@ class PolicyEngine:
                 "Destructive operations against root or system targets are denied.",
             )
 
-        if _is_delete_command(identity, args):
+        if shell_command is None and _is_delete_command(identity, args):
             return self._decision(
                 action.id,
                 DecisionOutcome.REQUIRE_APPROVAL,
                 "CMD_DELETE",
                 "Deletion commands require explicit approval.",
             )
-        if _is_install(identity, args):
+        if shell_command is None and _is_install(identity, args):
             return self._decision(
                 action.id,
                 DecisionOutcome.REQUIRE_APPROVAL,
                 "CMD_INSTALL",
                 "Package installation and environment mutation require approval.",
             )
-        if _is_git_write(identity, args):
+        if shell_command is None and _is_git_write(identity, args):
             return self._decision(
                 action.id,
                 DecisionOutcome.REQUIRE_APPROVAL,
                 "CMD_GIT_WRITE",
                 "Git operations that can change local or remote state require approval.",
             )
-        if identity in _NETWORK_PROGRAMS:
+        if shell_command is None and identity in _NETWORK_PROGRAMS:
             return self._decision(
                 action.id,
                 DecisionOutcome.REQUIRE_APPROVAL,
@@ -463,14 +577,89 @@ class PolicyEngine:
                 "Network client programs require explicit approval.",
             )
 
-        if (identity, args) in self._validators:
+        inline_code = _inline_code(identity, args)
+        if inline_code is not None:
+            return self._decision(
+                action.id,
+                DecisionOutcome.REQUIRE_APPROVAL,
+                "CMD_INLINE_CODE",
+                "Inline interpreter code requires explicit approval.",
+            )
+
+        if shell_command is not None:
+            commands = _shell_commands(shell_command)
+            for nested_identity, nested_args in commands:
+                if nested_identity in self._denied_programs:
+                    return self._decision(
+                        action.id,
+                        DecisionOutcome.DENY,
+                        "CMD_DENIED_PROGRAM",
+                        "The shell command invokes a program denied by policy.",
+                    )
+                if nested_identity in _PRIVILEGE_PROGRAMS:
+                    return self._decision(
+                        action.id,
+                        DecisionOutcome.DENY,
+                        "CMD_PRIVILEGE_ESCALATION",
+                        "The shell command requests privilege escalation.",
+                    )
+                if _is_credential_access(nested_identity, nested_args):
+                    return self._decision(
+                        action.id,
+                        DecisionOutcome.DENY,
+                        "CMD_CREDENTIAL_ACCESS",
+                        "The shell command attempts to read credentials or secrets.",
+                    )
+                if _is_system_destruction(nested_identity, nested_args):
+                    return self._decision(
+                        action.id,
+                        DecisionOutcome.DENY,
+                        "CMD_SYSTEM_DESTRUCTION",
+                        "The shell command targets a root or system location.",
+                    )
+            for nested_identity, nested_args in commands:
+                if _is_delete_command(nested_identity, nested_args):
+                    rule = "CMD_DELETE"
+                    explanation = "The shell command performs deletion."
+                elif _is_install(nested_identity, nested_args):
+                    rule = "CMD_INSTALL"
+                    explanation = "The shell command mutates a package environment."
+                elif _is_git_write(nested_identity, nested_args):
+                    rule = "CMD_GIT_WRITE"
+                    explanation = "The shell command performs a Git write operation."
+                elif nested_identity in _NETWORK_PROGRAMS:
+                    rule = "CMD_NETWORK"
+                    explanation = "The shell command invokes a network client."
+                else:
+                    continue
+                return self._decision(
+                    action.id,
+                    DecisionOutcome.REQUIRE_APPROVAL,
+                    rule,
+                    explanation,
+                )
+            return self._decision(
+                action.id,
+                DecisionOutcome.REQUIRE_APPROVAL,
+                "CMD_SHELL_COMMAND",
+                "Shell command text requires explicit approval.",
+            )
+
+        if any(
+            args == validator_args
+            and _program_matches_configuration(validator_program, action.program)
+            for validator_program, validator_args in self._validators
+        ):
             return self._decision(
                 action.id,
                 DecisionOutcome.ALLOW,
                 "CMD_CONFIGURED_VALIDATOR",
                 "The command exactly matches a configured validator.",
             )
-        if identity in self._allowed_programs:
+        if any(
+            _program_matches_configuration(program, action.program)
+            for program in self._allowed_programs
+        ):
             return self._decision(
                 action.id,
                 DecisionOutcome.ALLOW,
