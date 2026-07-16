@@ -397,7 +397,7 @@ Record the T02 hash and required evidence after both reviews.
 - Consumes: `Action` and its `TypeAdapter` from T01.
 - Produces: async `LLMClient.complete(messages, settings) -> ModelResponse`; `ScriptedMockLLM`; `ActionParser.parse(text: str) -> Action`; `ActionParseError.feedback`.
 
-- [ ] **Step 1: Write failing scripted-sequence test**
+- [x] **Step 1: Write failing scripted-sequence test**
 
 ```python
 import pytest
@@ -413,13 +413,13 @@ async def test_mock_returns_script_in_order_and_then_fails() -> None:
         await client.complete([], {})
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python -m pytest tests/unit/test_llm_mock.py tests/unit/test_action_parser.py -v`
 
 Expected: FAIL because the LLM package and parser do not exist.
 
-- [ ] **Step 3: Implement protocol, mock and strict parser**
+- [x] **Step 3: Implement protocol, mock and strict parser**
 
 `ModelMessage` has `role` and `content`; `ModelResponse` has `text`, provider request ID and usage counts. `ScriptedMockLLM` stores an immutable script and a call index. `ActionParser.parse` accepts exactly one JSON object and validates it through `TypeAdapter(Action)`.
 
@@ -435,7 +435,7 @@ class ActionParser:
             raise ActionParseError.from_exception(exc) from exc
 ```
 
-- [ ] **Step 4: Add parser feedback tests**
+- [x] **Step 4: Add parser feedback tests**
 
 Test trailing text, unknown action type, missing required payload, and valid `run_process` arrays. Assert parse errors expose redacted field-level feedback without echoing a value matching `sk-SECRET`.
 
@@ -443,7 +443,7 @@ Run: `python -m pytest tests/unit/test_llm_mock.py tests/unit/test_action_parser
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(llm): 添加可注入模型接口与严格动作解析`
 
@@ -1507,7 +1507,7 @@ Update this table only with actual commits; do not prefill hashes.
 | Gate 0 | Completed | — | — | OpenCode + GLM-5.2 cold start; revisions approved |
 | T01 | Completed | `755a001`, `eb8f057`; merge `22067fd` | [!1](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/1) | First independent review requested UTC/boundary fixes; second independent review APPROVED (0/0/0); merged and reverified on `main` |
 | T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab`; merge `bf675b0` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed; merged and reverified on `main` |
-| T03 | Pending | — | — | — |
+| T03 | Completed (awaiting merge) | `762a073`, `b322870`, `fea9a51`, `1e585fe`, `2be70e4`, `c38f3bc`; plan `a822e82` | [!4](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/4) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 2 Minor); strict JSON, staged exception classification, bounded feedback and traceback-local disclosure findings fixed; mock bare-string and ModelResponse immutability-test Minors deferred |
 | T04 | Completed | `91dbd88`, `94c0edd`, `49895de`, `325aa1b`; plan `6031621`, `dad25df`; merge `10cd964` | [!3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; merged and reverified on `main`; Hypothesis oracle design Minor deferred |
 | T05 | Pending | — | — | — |
 | T06 | Pending | — | — | — |
