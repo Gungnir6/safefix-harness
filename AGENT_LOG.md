@@ -53,7 +53,7 @@
 ## T03 — LLM Protocol, Scripted Mock and Action Parser
 
 - 时间：2026-07-15 19:35–22:23 +08:00
-- 分支 / MR：`codex/t03-llm-parser` / Pending
+- 分支 / MR：`codex/t03-llm-parser` / [GitLab !4](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/4)
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
 - 关键 prompt/context：全新实现代理仅获得 T03 brief、隔离工作树、基线 `310f1ec`、六文件范围、严格 RED→GREEN、中文 Conventional Commit 和报告契约；规格与质量代理分别只读同一版冻结 `BASE..HEAD` 差异。延续 T02 人工裁决：全局秘密非披露优先于 brief 的 `raise ... from exc` 示例，T03 负责自身公开异常与 parser frame，调用者 locals/日志层由 T12/T13 继续落实。
 - 初始实现：两份测试先因 `ModuleNotFoundError: safefix.llm` 与 `safefix.action_parser` 精确 RED；`762a073 feat(llm): 添加可注入模型接口与严格动作解析` 建立异步 LLM 协议、不可变 scripted mock、typed parser 与安全字段反馈，初始聚焦 9 passed、完整 180 passed。
