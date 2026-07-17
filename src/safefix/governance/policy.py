@@ -66,6 +66,9 @@ _NETWORK_PROGRAMS = frozenset(
         "rsync",
     }
 )
+_FILE_TRANSFER_PROGRAMS = frozenset(
+    {"cp", "mv", "copy", "xcopy", "robocopy", "tar", "zip", "7z"}
+)
 _INSTALL_PROGRAMS = frozenset(
     {
         "pip",
@@ -680,7 +683,7 @@ def _git_approval_rule(identity: str, args: Sequence[str]) -> str | None:
         return "CMD_GIT_COMMAND"
     if identity != "git":
         return None
-    subcommand, configuration = _git_invocation(args)
+    subcommand, _ = _git_invocation(args)
     options = _git_options(args)
     if any(arg == "--output" or arg.startswith("--output=") for arg in options):
         return "CMD_GIT_WRITE"
@@ -689,9 +692,7 @@ def _git_approval_rule(identity: str, args: Sequence[str]) -> str | None:
     if subcommand in _GIT_WRITE_SUBCOMMANDS:
         return "CMD_GIT_WRITE"
     if subcommand in _GIT_SAFE_READ_SUBCOMMANDS:
-        if configuration or options:
-            return "CMD_GIT_COMMAND"
-        return None
+        return "CMD_GIT_COMMAND"
     return "CMD_GIT_COMMAND"
 
 
@@ -771,6 +772,20 @@ class PolicyEngine:
             "The structured file action passed the workspace boundary.",
         )
 
+    def _is_sensitive_file_transfer(self, identity: str, args: Sequence[str]) -> bool:
+        if identity not in _FILE_TRANSFER_PROGRAMS:
+            return False
+        for candidate in args:
+            if not candidate or candidate.startswith("-"):
+                continue
+            try:
+                self._boundary.resolve(candidate, AccessKind.READ)
+            except SensitivePathDenied:
+                return True
+            except PathOutsideWorkspace:
+                continue
+        return False
+
     def _decide_process(self, action: RunProcessAction) -> PolicyDecision:
         identity = _risk_program_identity(action.program)
         args = action.args
@@ -792,7 +807,10 @@ class PolicyEngine:
                 "The command attempts to read credentials or secrets.",
                 lambda program, command_args: (
                     program not in _SHELL_PROGRAMS
-                    and _is_credential_access(program, command_args)
+                    and (
+                        _is_credential_access(program, command_args)
+                        or self._is_sensitive_file_transfer(program, command_args)
+                    )
                 ),
             ),
             (
@@ -843,6 +861,9 @@ class PolicyEngine:
             elif program in _NETWORK_PROGRAMS:
                 rule = "CMD_NETWORK"
                 explanation = "Network client programs require explicit approval."
+            elif program in _FILE_TRANSFER_PROGRAMS:
+                rule = "CMD_FILE_TRANSFER"
+                explanation = "File-transfer commands require explicit approval."
             else:
                 continue
             return self._decision(

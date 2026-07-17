@@ -571,8 +571,16 @@ def test_configured_package_manager_non_install_command_requires_approval(
             DecisionOutcome.REQUIRE_APPROVAL,
             "CMD_GIT_WRITE",
         ),
-        (("show", "commit"), DecisionOutcome.ALLOW, "CMD_CONFIGURED_PROGRAM"),
-        (("show", "push"), DecisionOutcome.ALLOW, "CMD_CONFIGURED_PROGRAM"),
+        (
+            ("show", "commit"),
+            DecisionOutcome.REQUIRE_APPROVAL,
+            "CMD_GIT_COMMAND",
+        ),
+        (
+            ("show", "push"),
+            DecisionOutcome.REQUIRE_APPROVAL,
+            "CMD_GIT_COMMAND",
+        ),
     ],
 )
 def test_git_classifies_the_actual_subcommand_only(
@@ -917,8 +925,8 @@ def test_git_double_dash_keeps_following_dash_argument_positional(
         )
     )
 
-    assert decision.outcome is DecisionOutcome.ALLOW
-    assert decision.rule_ids == ("CMD_CONFIGURED_PROGRAM",)
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_GIT_COMMAND",)
 
 
 @pytest.mark.parametrize(
@@ -970,8 +978,8 @@ def test_computed_environment_access_is_permanently_denied(
         (
             "git",
             ("status",),
-            DecisionOutcome.ALLOW,
-            "CMD_CONFIGURED_PROGRAM",
+            DecisionOutcome.REQUIRE_APPROVAL,
+            "CMD_GIT_COMMAND",
         ),
     ],
 )
@@ -1015,6 +1023,80 @@ def test_package_manager_programs_default_to_install_approval(
 
     assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
     assert decision.rule_ids == ("CMD_INSTALL",)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("cp", (".env", "copied.txt")),
+        ("mv", (".ssh/id_rsa", "copied.txt")),
+        ("tar", ("-cf", "archive.tar", ".env")),
+        ("zip", ("archive.zip", ".ssh/id_rsa")),
+    ],
+)
+def test_sensitive_file_transfers_are_permanently_denied_without_disclosure(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="sensitive-transfer", reason="test", program=program, args=args
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_CREDENTIAL_ACCESS",)
+    assert all(arg not in decision.explanation for arg in args)
+
+
+def test_sensitive_file_transfer_uses_custom_boundary_patterns(
+    tmp_path: Path, settings: SafeFixSettings
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    custom_policy = settings.policy.model_copy(
+        update={"sensitive_patterns": ("private/**",)}
+    )
+    custom_settings = settings.model_copy(update={"policy": custom_policy})
+    engine = PolicyEngine(
+        settings=custom_settings,
+        boundary=WorkspaceBoundary(workspace, custom_policy.sensitive_patterns),
+    )
+
+    decision = engine.decide(
+        RunProcessAction(
+            id="custom-sensitive-transfer",
+            reason="test",
+            program="7z",
+            args=("a", "archive.7z", "private/token.txt"),
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_CREDENTIAL_ACCESS",)
+    assert "private/token.txt" not in decision.explanation
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("cp", ("README.md", "copied.txt")),
+        ("copy", ("README.md", "copied.txt")),
+        ("xcopy", ("src", "backup")),
+        ("robocopy", ("src", "backup")),
+        ("tar", ("-cf", "archive.tar", "src")),
+        ("zip", ("archive.zip", "src")),
+        ("7z", ("a", "archive.7z", "src")),
+    ],
+)
+def test_non_sensitive_file_transfers_require_approval(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="file-transfer", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_FILE_TRANSFER",)
 
 
 @pytest.mark.parametrize(
