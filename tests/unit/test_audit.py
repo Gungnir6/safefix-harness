@@ -1,13 +1,15 @@
 import hashlib
 import json
 import sqlite3
+import threading
 from dataclasses import FrozenInstanceError
 from datetime import UTC, timedelta, timezone
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from safefix.governance.audit import AuditStore, AuditUnavailable
+from safefix.governance.audit import AuditEvent, AuditStore, AuditUnavailable
 
 
 def test_audit_chain_detects_modified_payload() -> None:
@@ -405,6 +407,439 @@ def test_process_control_exceptions_are_not_swallowed(signal: BaseException) -> 
 
     with pytest.raises(type(signal)):
         AuditStore(factory)
+
+
+@pytest.mark.parametrize(
+    ("field", "value_kind"),
+    [
+        ("run_id", "exact"),
+        ("run_id", "substring"),
+        ("event_type", "exact"),
+        ("event_type", "substring"),
+        ("run_id", "non-string"),
+        ("event_type", "non-string"),
+    ],
+)
+def test_append_rejects_unsafe_metadata_without_persisting(
+    field: str, value_kind: str
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    configured_secret = "FAKE-METADATA-CREDENTIAL"
+    store = AuditStore(connection, configured_secret_values=[configured_secret])
+    unsafe: object
+    if value_kind == "exact":
+        unsafe = configured_secret
+    elif value_kind == "substring":
+        unsafe = f"prefix-{configured_secret}-suffix"
+    else:
+        unsafe = 17
+    run_id: object = unsafe if field == "run_id" else "run"
+    event_type: object = unsafe if field == "event_type" else "ACTION"
+
+    with pytest.raises(AuditUnavailable) as captured:
+        store.append(cast(Any, run_id), cast(Any, event_type), {"value": 1})
+
+    assert str(captured.value) == "Audit storage is unavailable"
+    assert configured_secret not in repr(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("operation", ["list", "verify"])
+@pytest.mark.parametrize("value_kind", ["exact", "substring", "non-string"])
+def test_reads_reject_unsafe_run_id(operation: str, value_kind: str) -> None:
+    connection = sqlite3.connect(":memory:")
+    configured_secret = "FAKE-READ-METADATA-CREDENTIAL"
+    store = AuditStore(connection, configured_secret_values=[configured_secret])
+    if value_kind == "exact":
+        unsafe: object = configured_secret
+    elif value_kind == "substring":
+        unsafe = f"prefix-{configured_secret}-suffix"
+    else:
+        unsafe = 23
+
+    with pytest.raises(AuditUnavailable) as captured:
+        if operation == "list":
+            store.list_events(cast(Any, unsafe))
+        else:
+            store.verify_chain(cast(Any, unsafe))
+
+    assert configured_secret not in repr(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+@pytest.mark.parametrize("value_kind", ["exact", "substring"])
+def test_injected_secret_event_type_is_never_returned(value_kind: str) -> None:
+    connection = sqlite3.connect(":memory:")
+    configured_secret = "FAKE-STORED-METADATA-CREDENTIAL"
+    store = AuditStore(connection, configured_secret_values=[configured_secret])
+    event = store.append("run", "ACTION", {"value": 1})
+    injected_type = (
+        configured_secret
+        if value_kind == "exact"
+        else f"prefix-{configured_secret}-suffix"
+    )
+    payload, created_at = connection.execute(
+        "SELECT payload, created_at FROM audit_events WHERE run_id = ?", ("run",)
+    ).fetchone()
+    forged_hash = _event_hash(
+        "run", 1, injected_type, payload, created_at, event.previous_hash
+    )
+    connection.execute(
+        "UPDATE audit_events SET event_type = ?, event_hash = ? WHERE run_id = ?",
+        (injected_type, forged_hash, "run"),
+    )
+
+    verification = store.verify_chain("run")
+    assert verification.valid is False
+    assert verification.first_invalid_sequence == 1
+    with pytest.raises(AuditUnavailable) as captured:
+        store.list_events("run")
+    assert configured_secret not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("configured_secret", "payload"),
+    [
+        ("REDACTED", {"token": "fake-value"}),
+        ("#2", {"[REDACTED]": 0, "key-containing-#2": 1}),
+    ],
+)
+def test_final_canonical_payload_must_not_contain_configured_secret(
+    configured_secret: str, payload: object
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection, configured_secret_values=[configured_secret])
+
+    with pytest.raises(AuditUnavailable) as captured:
+        store.append("run", "ACTION", payload)
+
+    assert configured_secret not in repr(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("column", "target_sequence", "tampered_value", "invalid_sequence"),
+    [
+        ("payload", 1, '{"value":9}', 1),
+        ("event_type", 1, "TAMPERED", 1),
+        ("previous_hash", 2, "broken-link", 2),
+        ("event_hash", 1, "0" * 64, 1),
+        ("sequence", 2, 5, 2),
+        ("created_at", 2, "2000-01-01T00:00:00.000000Z", 2),
+    ],
+)
+def test_list_and_append_fail_closed_on_any_invalid_existing_chain(
+    column: str,
+    target_sequence: int,
+    tampered_value: object,
+    invalid_sequence: int,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+    store.append("run", "FIRST", {"value": 1})
+    store.append("run", "SECOND", {"value": 2})
+    connection.execute(
+        f"UPDATE audit_events SET {column} = ? WHERE run_id = ? AND sequence = ?",
+        (tampered_value, "run", target_sequence),
+    )
+    rows_before = connection.execute(
+        "SELECT * FROM audit_events WHERE run_id = ? ORDER BY sequence", ("run",)
+    ).fetchall()
+
+    verification = store.verify_chain("run")
+    assert verification.valid is False
+    assert verification.first_invalid_sequence == invalid_sequence
+    with pytest.raises(AuditUnavailable):
+        store.list_events("run")
+    with pytest.raises(AuditUnavailable):
+        store.append("run", "THIRD", {"value": 3})
+
+    rows_after = connection.execute(
+        "SELECT * FROM audit_events WHERE run_id = ? ORDER BY sequence", ("run",)
+    ).fetchall()
+    assert rows_after == rows_before
+
+
+@pytest.mark.parametrize(
+    ("column", "tampered_value"),
+    [
+        ("event_type", sqlite3.Binary(b"ACTION")),
+        ("payload", sqlite3.Binary(b'{"value":1}')),
+        ("previous_hash", sqlite3.Binary(b"")),
+        ("event_hash", sqlite3.Binary(b"0" * 64)),
+        ("created_at", sqlite3.Binary(b"2000-01-01T00:00:00.000000Z")),
+    ],
+)
+def test_text_columns_reject_sqlite_blob_storage(
+    column: str, tampered_value: object
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+    store.append("run", "ACTION", {"value": 1})
+    connection.execute(
+        f"UPDATE audit_events SET {column} = ? WHERE run_id = ?",
+        (tampered_value, "run"),
+    )
+    rows_before = connection.execute("SELECT * FROM audit_events").fetchall()
+
+    assert store.verify_chain("run").valid is False
+    with pytest.raises(AuditUnavailable):
+        store.list_events("run")
+    with pytest.raises(AuditUnavailable):
+        store.append("run", "NEXT", {"value": 2})
+    assert connection.execute("SELECT * FROM audit_events").fetchall() == rows_before
+
+
+def test_real_sequence_is_not_coerced_to_integer_even_with_matching_hash() -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+    event = store.append("run", "ACTION", {"value": 1})
+    payload, created_at = connection.execute(
+        "SELECT payload, created_at FROM audit_events WHERE run_id = ?", ("run",)
+    ).fetchone()
+    coerced_hash = _event_hash(
+        "run", 1, "ACTION", payload, created_at, event.previous_hash
+    )
+    connection.execute(
+        "UPDATE audit_events SET sequence = ?, event_hash = ? WHERE run_id = ?",
+        (1.5, coerced_hash, "run"),
+    )
+    rows_before = connection.execute("SELECT * FROM audit_events").fetchall()
+
+    assert store.verify_chain("run").valid is False
+    with pytest.raises(AuditUnavailable):
+        store.list_events("run")
+    with pytest.raises(AuditUnavailable):
+        store.append("run", "NEXT", {"value": 2})
+    assert connection.execute("SELECT * FROM audit_events").fetchall() == rows_before
+
+
+def test_blob_run_id_is_detected_as_invalid_for_the_requested_chain() -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+    store.append("run", "ACTION", {"value": 1})
+    connection.execute(
+        "UPDATE audit_events SET run_id = ? WHERE run_id = ?",
+        (sqlite3.Binary(b"run"), "run"),
+    )
+    rows_before = connection.execute("SELECT * FROM audit_events").fetchall()
+
+    assert store.verify_chain("run").valid is False
+    with pytest.raises(AuditUnavailable):
+        store.list_events("run")
+    with pytest.raises(AuditUnavailable):
+        store.append("run", "NEXT", {"value": 2})
+    assert connection.execute("SELECT * FROM audit_events").fetchall() == rows_before
+
+
+@pytest.mark.parametrize("store_count", [1, 2], ids=["same-store", "two-stores"])
+def test_same_connection_concurrent_successes_are_never_rolled_back(
+    store_count: int,
+) -> None:
+    connection = sqlite3.connect(
+        ":memory:", check_same_thread=False, factory=_PausingInsertConnection
+    )
+    assert isinstance(connection, _PausingInsertConnection)
+    first_store = AuditStore(connection)
+    stores = (
+        [first_store, first_store]
+        if store_count == 1
+        else [first_store, AuditStore(connection)]
+    )
+    connection.pause_first_insert = True
+    results: dict[str, AuditEvent | AuditUnavailable] = {}
+
+    def append(name: str, store: AuditStore) -> None:
+        try:
+            results[name] = store.append("run", name, {"name": name})
+        except AuditUnavailable as error:
+            results[name] = error
+
+    first = threading.Thread(target=append, args=("FIRST", stores[0]))
+    second = threading.Thread(target=append, args=("SECOND", stores[1]))
+    first.start()
+    assert connection.first_insert_waiting.wait(timeout=2)
+    second.start()
+    second_finished_while_first_waited = connection.second_thread_finished.wait(
+        timeout=0.2
+    )
+    connection.release_first_insert.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results
+
+    final_events = first_store.list_events("run")
+    assert first_store.verify_chain("run").valid is True
+    successful = [
+        result for result in results.values() if isinstance(result, AuditEvent)
+    ]
+    assert successful
+    for returned in successful:
+        assert any(
+            stored.sequence == returned.sequence
+            and stored.event_hash == returned.event_hash
+            for stored in final_events
+        ), (second_finished_while_first_waited, returned)
+
+
+def test_each_append_uses_a_unique_internal_savepoint_name() -> None:
+    connection = sqlite3.connect(":memory:", factory=_PausingInsertConnection)
+    assert isinstance(connection, _PausingInsertConnection)
+    store = AuditStore(connection)
+
+    store.append("run", "FIRST", {"value": 1})
+    store.append("run", "SECOND", {"value": 2})
+
+    assert len(connection.savepoint_names) == 2
+    assert len(set(connection.savepoint_names)) == 2
+
+
+def test_different_connections_concurrently_fail_safely_without_breaking_chain(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "concurrent-audit.sqlite3"
+    first_connection = sqlite3.connect(
+        database,
+        timeout=1,
+        check_same_thread=False,
+        factory=_BarrierInsertConnection,
+    )
+    second_connection = sqlite3.connect(
+        database,
+        timeout=1,
+        check_same_thread=False,
+        factory=_BarrierInsertConnection,
+    )
+    assert isinstance(first_connection, _BarrierInsertConnection)
+    assert isinstance(second_connection, _BarrierInsertConnection)
+    first_store = AuditStore(first_connection)
+    second_store = AuditStore(second_connection)
+    barrier = threading.Barrier(2)
+    first_connection.insert_barrier = barrier
+    second_connection.insert_barrier = barrier
+    results: dict[str, AuditEvent | BaseException] = {}
+
+    def append(name: str, store: AuditStore) -> None:
+        try:
+            results[name] = store.append("run", name, {"name": name})
+        except BaseException as error:
+            results[name] = error
+
+    threads = [
+        threading.Thread(target=append, args=("FIRST", first_store)),
+        threading.Thread(target=append, args=("SECOND", second_store)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+    assert len(results) == 2
+    assert all(
+        isinstance(result, (AuditEvent, AuditUnavailable))
+        for result in results.values()
+    )
+    verifier = AuditStore(sqlite3.connect(database))
+    final_events = verifier.list_events("run")
+    assert verifier.verify_chain("run").valid is True
+    for returned in results.values():
+        if isinstance(returned, AuditEvent):
+            assert any(
+                stored.sequence == returned.sequence
+                and stored.event_hash == returned.event_hash
+                for stored in final_events
+            )
+    first_connection.close()
+    second_connection.close()
+
+
+def test_failed_append_preserves_explicit_outer_transaction_and_sentinel() -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+    connection.execute("CREATE TABLE transaction_sentinel (value TEXT NOT NULL)")
+    connection.execute(
+        """
+        CREATE TRIGGER reject_outer_transaction_append
+        BEFORE INSERT ON audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'coordinated append failure');
+        END
+        """
+    )
+    connection.commit()
+    connection.execute("BEGIN")
+    connection.execute("INSERT INTO transaction_sentinel VALUES ('preserve-me')")
+
+    with pytest.raises(AuditUnavailable):
+        store.append("run", "ACTION", {"value": 1})
+
+    assert connection.in_transaction is True
+    assert connection.execute("SELECT value FROM transaction_sentinel").fetchall() == [
+        ("preserve-me",)
+    ]
+    assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+    connection.commit()
+    assert connection.execute("SELECT value FROM transaction_sentinel").fetchall() == [
+        ("preserve-me",)
+    ]
+
+
+class _PausingInsertConnection(sqlite3.Connection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.pause_first_insert = False
+        self.first_insert_waiting = threading.Event()
+        self.release_first_insert = threading.Event()
+        self.second_thread_finished = threading.Event()
+        self.savepoint_names: list[str] = []
+        self._pause_claimed = False
+        self._pause_lock = threading.Lock()
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        normalized = sql.strip()
+        if normalized.startswith("SAVEPOINT "):
+            self.savepoint_names.append(normalized.split()[1])
+        should_pause = False
+        if self.pause_first_insert and normalized.startswith(
+            "INSERT INTO audit_events"
+        ):
+            with self._pause_lock:
+                if not self._pause_claimed:
+                    self._pause_claimed = True
+                    should_pause = True
+        if should_pause:
+            self.first_insert_waiting.set()
+            if not self.release_first_insert.wait(timeout=2):
+                raise sqlite3.OperationalError("coordinated test timeout")
+        result = super().execute(sql, parameters)
+        if (
+            self.pause_first_insert
+            and normalized.startswith("RELEASE SAVEPOINT")
+            and threading.current_thread() is not threading.main_thread()
+        ):
+            self.second_thread_finished.set()
+        return result
+
+
+class _BarrierInsertConnection(sqlite3.Connection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.insert_barrier: threading.Barrier | None = None
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        if self.insert_barrier is not None and sql.strip().startswith(
+            "INSERT INTO audit_events"
+        ):
+            self.insert_barrier.wait(timeout=2)
+        return super().execute(sql, parameters)
 
 
 def _event_hash(

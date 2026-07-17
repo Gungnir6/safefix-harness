@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,6 +15,8 @@ from typing import Any, NoReturn
 _REDACTED = "[REDACTED]"
 _SENSITIVE_KEY_PARTS = ("token", "key", "secret", "password", "authorization")
 _UNAVAILABLE_MESSAGE = "Audit storage is unavailable"
+_CONNECTION_LOCKS = tuple(threading.RLock() for _ in range(64))
+_SAVEPOINT_COUNTER = itertools.count()
 
 
 class AuditUnavailable(RuntimeError):
@@ -36,6 +40,12 @@ class AuditVerification:
     first_invalid_sequence: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _ChainSnapshot:
+    events: tuple[AuditEvent, ...]
+    verification: AuditVerification
+
+
 class AuditStore:
     def __init__(
         self,
@@ -53,48 +63,63 @@ class AuditStore:
             self._secrets = tuple(
                 sorted({secret for secret in configured_secret_values if secret})
             )
-            self._connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    run_id TEXT NOT NULL,
-                    sequence INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    previous_hash TEXT NOT NULL,
-                    event_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (run_id, sequence)
-                )
-                """
-            )
-            object_type = self._connection.execute(
-                "SELECT type FROM sqlite_master WHERE name = ?", ("audit_events",)
-            ).fetchone()
-            columns = self._connection.execute(
-                "PRAGMA table_info(audit_events)"
-            ).fetchall()
-            expected_columns = [
-                (0, "run_id", "TEXT", 1, None, 1),
-                (1, "sequence", "INTEGER", 1, None, 2),
-                (2, "event_type", "TEXT", 1, None, 0),
-                (3, "payload", "TEXT", 1, None, 0),
-                (4, "previous_hash", "TEXT", 1, None, 0),
-                (5, "event_hash", "TEXT", 1, None, 0),
-                (6, "created_at", "TEXT", 1, None, 0),
+            self._lock = _CONNECTION_LOCKS[
+                id(self._connection) % len(_CONNECTION_LOCKS)
             ]
-            normalized_type = None if object_type is None else tuple(object_type)
-            normalized_columns = [tuple(column) for column in columns]
-            if normalized_type != ("table",) or normalized_columns != expected_columns:
-                raise ValueError
+            with self._lock:
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        run_id TEXT NOT NULL,
+                        sequence INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        previous_hash TEXT NOT NULL,
+                        event_hash TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (run_id, sequence)
+                    )
+                    """
+                )
+                object_type = self._connection.execute(
+                    "SELECT type FROM sqlite_master WHERE name = ?", ("audit_events",)
+                ).fetchone()
+                columns = self._connection.execute(
+                    "PRAGMA table_info(audit_events)"
+                ).fetchall()
+                expected_columns = [
+                    (0, "run_id", "TEXT", 1, None, 1),
+                    (1, "sequence", "INTEGER", 1, None, 2),
+                    (2, "event_type", "TEXT", 1, None, 0),
+                    (3, "payload", "TEXT", 1, None, 0),
+                    (4, "previous_hash", "TEXT", 1, None, 0),
+                    (5, "event_hash", "TEXT", 1, None, 0),
+                    (6, "created_at", "TEXT", 1, None, 0),
+                ]
+                normalized_type = None if object_type is None else tuple(object_type)
+                normalized_columns = [tuple(column) for column in columns]
+                if (
+                    normalized_type != ("table",)
+                    or normalized_columns != expected_columns
+                ):
+                    raise ValueError
         except Exception:
             failed = True
         if failed:
             self._raise_unavailable()
 
     def append(self, run_id: str, event_type: str, payload: Any) -> AuditEvent:
+        with self._lock:
+            return self._append_locked(run_id, event_type, payload)
+
+    def _append_locked(self, run_id: str, event_type: str, payload: Any) -> AuditEvent:
+        if not self._metadata_is_safe(run_id) or not self._metadata_is_safe(event_type):
+            self._raise_unavailable()
         serialization_failed = False
         try:
             payload_json = self._canonical_payload(self._redact(payload))
+            if self._contains_secret(payload_json):
+                raise ValueError
         except Exception:
             serialization_failed = True
         if serialization_failed:
@@ -102,21 +127,17 @@ class AuditStore:
 
         transaction_failed = False
         savepoint_started = False
+        savepoint_name = f"safefix_audit_append_{next(_SAVEPOINT_COUNTER)}"
         try:
-            self._connection.execute("SAVEPOINT safefix_audit_append")
+            self._connection.execute(f"SAVEPOINT {savepoint_name}")
             savepoint_started = True
-            row = self._connection.execute(
-                """
-                SELECT sequence, event_hash
-                FROM audit_events
-                WHERE run_id = ?
-                ORDER BY sequence DESC
-                LIMIT 1
-                """,
-                (run_id,),
-            ).fetchone()
-            sequence = 1 if row is None else int(row[0]) + 1
-            previous_hash = "" if row is None else str(row[1])
+            snapshot = self._read_chain(run_id)
+            if not snapshot.verification.valid:
+                raise ValueError
+            sequence = len(snapshot.events) + 1
+            previous_hash = (
+                "" if not snapshot.events else snapshot.events[-1].event_hash
+            )
             created_at = datetime.now(UTC)
             created_at_text = self._format_timestamp(created_at)
             event_hash = self._hash_event(
@@ -144,15 +165,13 @@ class AuditStore:
                     created_at_text,
                 ),
             )
-            self._connection.execute("RELEASE SAVEPOINT safefix_audit_append")
+            self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
         except Exception:
             transaction_failed = True
             if savepoint_started:
                 try:
-                    self._connection.execute(
-                        "ROLLBACK TO SAVEPOINT safefix_audit_append"
-                    )
-                    self._connection.execute("RELEASE SAVEPOINT safefix_audit_append")
+                    self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                    self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
                 except Exception:
                     pass
         if transaction_failed:
@@ -169,30 +188,19 @@ class AuditStore:
         )
 
     def list_events(self, run_id: str) -> list[AuditEvent]:
+        with self._lock:
+            return self._list_events_locked(run_id)
+
+    def _list_events_locked(self, run_id: str) -> list[AuditEvent]:
+        if not self._metadata_is_safe(run_id):
+            self._raise_unavailable()
         failed = False
         events: list[AuditEvent] = []
         try:
-            rows = self._connection.execute(
-                """
-                SELECT sequence, event_type, payload, previous_hash, event_hash, created_at
-                FROM audit_events
-                WHERE run_id = ?
-                ORDER BY sequence
-                """,
-                (run_id,),
-            ).fetchall()
-            events = [
-                AuditEvent(
-                    run_id=run_id,
-                    sequence=int(row[0]),
-                    event_type=str(row[1]),
-                    redacted_payload=self._decode_canonical_payload(str(row[2])),
-                    previous_hash=str(row[3]),
-                    event_hash=str(row[4]),
-                    created_at=self._parse_timestamp(str(row[5])),
-                )
-                for row in rows
-            ]
+            snapshot = self._read_chain(run_id)
+            if not snapshot.verification.valid:
+                raise ValueError
+            events = list(snapshot.events)
         except Exception:
             failed = True
         if failed:
@@ -200,39 +208,64 @@ class AuditStore:
         return events
 
     def verify_chain(self, run_id: str) -> AuditVerification:
+        with self._lock:
+            return self._verify_chain_locked(run_id)
+
+    def _verify_chain_locked(self, run_id: str) -> AuditVerification:
+        if not self._metadata_is_safe(run_id):
+            self._raise_unavailable()
         failed = False
-        rows: list[tuple[Any, ...]] = []
+        verification = AuditVerification(True, None)
         try:
-            rows = self._connection.execute(
-                """
-                SELECT sequence, event_type, payload, previous_hash, event_hash, created_at
-                FROM audit_events
-                WHERE run_id = ?
-                ORDER BY sequence
-                """,
-                (run_id,),
-            ).fetchall()
+            verification = self._read_chain(run_id).verification
         except Exception:
             failed = True
         if failed:
             self._raise_unavailable()
+        return verification
+
+    def _read_chain(self, run_id: str) -> _ChainSnapshot:
+        rows = self._connection.execute(
+            """
+            SELECT run_id, sequence, event_type, payload,
+                   previous_hash, event_hash, created_at
+            FROM audit_events
+            WHERE run_id = ?
+               OR (typeof(run_id) != 'text' AND CAST(run_id AS TEXT) = ?)
+            ORDER BY sequence
+            """,
+            (run_id, run_id),
+        ).fetchall()
+        return self._decode_chain(run_id, rows)
+
+    def _decode_chain(self, run_id: str, rows: list[tuple[Any, ...]]) -> _ChainSnapshot:
+        events: list[AuditEvent] = []
         previous_hash = ""
         expected_sequence = 1
         for row in rows:
-            row_invalid = False
             try:
-                sequence = int(row[0])
-                event_type = str(row[1])
-                payload_json = str(row[2])
-                row_previous_hash = str(row[3])
-                row_event_hash = str(row[4])
-                created_at_text = str(row[5])
+                if (
+                    len(row) != 7
+                    or type(row[0]) is not str
+                    or type(row[1]) is not int
+                    or any(type(row[index]) is not str for index in range(2, 7))
+                ):
+                    raise ValueError
+                stored_run_id = row[0]
+                sequence = row[1]
+                event_type = row[2]
+                payload_json = row[3]
+                row_previous_hash = row[4]
+                row_event_hash = row[5]
+                created_at_text = row[6]
+                if stored_run_id != run_id or not self._metadata_is_safe(event_type):
+                    raise ValueError
                 self._decode_canonical_payload(payload_json)
-                self._parse_timestamp(created_at_text)
+                created_at = self._parse_timestamp(created_at_text)
             except Exception:
-                row_invalid = True
-            if row_invalid:
-                return AuditVerification(False, expected_sequence)
+                return _ChainSnapshot(
+                    tuple(events), AuditVerification(False, expected_sequence)
+                )
             expected_hash = self._hash_event(
                 run_id,
                 sequence,
@@ -246,10 +279,23 @@ class AuditStore:
                 or row_previous_hash != previous_hash
                 or row_event_hash != expected_hash
             ):
-                return AuditVerification(False, expected_sequence)
+                return _ChainSnapshot(
+                    tuple(events), AuditVerification(False, expected_sequence)
+                )
+            events.append(
+                AuditEvent(
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type=event_type,
+                    redacted_payload=self._decode_canonical_payload(payload_json),
+                    previous_hash=row_previous_hash,
+                    event_hash=row_event_hash,
+                    created_at=created_at,
+                )
+            )
             previous_hash = row_event_hash
             expected_sequence += 1
-        return AuditVerification(True, None)
+        return _ChainSnapshot(tuple(events), AuditVerification(True, None))
 
     @staticmethod
     def _hash_event(
@@ -291,6 +337,9 @@ class AuditStore:
 
     def _contains_secret(self, value: str) -> bool:
         return any(secret in value for secret in self._secrets)
+
+    def _metadata_is_safe(self, value: object) -> bool:
+        return type(value) is str and not self._contains_secret(value)
 
     @staticmethod
     def _canonical_payload(payload: Any) -> str:
