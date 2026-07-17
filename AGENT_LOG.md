@@ -85,7 +85,7 @@
 
 ## T06 — Redacted Hash-Chained Audit Store
 
-- 时间：2026-07-17 16:43–18:20 +08:00
+- 时间：2026-07-17 16:43–19:02 +08:00
 - 分支 / MR：`codex/t06-audit-store` / [GitLab !6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6)
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
 - 关键 prompt/context：全新实现代理仅获得 T06 task brief、隔离工作树、基线 `6679dbd`、两个允许文件、严格 RED→GREEN、SQLite 真实存储、秘密非披露、稳定异常、中文 Conventional Commits 与报告契约；规格、安全和整分支审查代理均只读相应版本的冻结差异包。实现同时兼容调用方现有 `sqlite3.Connection` 与零参 factory，不关闭调用方连接；普通 SHA-256 哈希链是计划锁定算法，不擅自替换为 HMAC。
@@ -95,5 +95,6 @@
 - 整分支宽审与修复：宽审用真实 `AFTER INSERT DELETE/UPDATE` trigger 证明 append 可在新行已消失或被改写时返回成功，并指出 SAVEPOINT 后 `KeyboardInterrupt/SystemExit` 会绕过清理。`12ce19b fix(audit): 校验写入后置条件并清理中断` 在 RELEASE 前重读完整链并严格比对候选事件，以异常类型无关的 finally 清理 SAVEPOINT，同时让进程控制异常原样传播；全量增至 451 passed。
 - 最终独立复审：规格、安全和整分支审查均批准，Critical 0、Important 0、Minor 2。保留 Minor 为 list/verify 的只读重入范围尚未统一拒绝，以及 append 为保证坏链 fail-closed 每次重验完整 run，长链累计 O(N²)；两项不破坏当前安全契约，留待出现容量需求或统一重入策略时处理。
 - 根代理新鲜验证：Python 3.12.3；T06 聚焦 74 passed；完整测试 451 passed；Ruff check/format、mypy（`src` + T06 测试）、`git diff --check 6679dbd..12ce19b` 全部 exit 0；过程文档修改前工作树干净，最终实现差异仅含 `src/safefix/governance/audit.py` 与 `tests/unit/test_audit.py`。
+- 合并结果：MR !6 合并到 `main`，合并提交 `8699d37`；主工作区快进后确认 `12ce19b` 已进入主线，复跑 T06 聚焦为 74 passed、完整测试为 451 passed，Ruff check/format、mypy、pip check、`git diff --check` 全部 exit 0。
 - 人工裁决：所有外部 metadata/payload 只要可能携带 configured secret 就稳定 fail closed；调用方事务所有权通过内部 SAVEPOINT 保留，T07 仍必须把审计 append 失败视为拒绝条件。未进行学生手工代码修改，所有生产与测试变更均由受约束子代理完成并经根代理验证。
 - 经验：防篡改审计不能只在读取时提供可选 verify；append 自身必须验证旧链和 INSERT 后置条件。SQLite trigger、动态类型、共享连接并发、同线程重入和进程控制中断都会制造“API 返回成功但审计记录不存在”的路径，必须用真实 SQLite 行为而非 mock 调用次数锁定。
