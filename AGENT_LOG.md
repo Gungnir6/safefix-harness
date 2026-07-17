@@ -82,3 +82,18 @@
 - 合并结果：MR !5 合并到 `main`，合并提交 `ff7c17f`；主工作区快进后确认分支头 `63ac64a` 已进入主线，复跑完整测试为 377 passed，Ruff check/format、mypy、pip check 全部 exit 0。
 - 人工裁决：`denied_programs` 永久拒绝；`allowed_programs` 只表示配置身份，不能越过更早风险；授权匹配与风险 basename 分离；无法可靠解析的 shell、解释器、未知 Git 和文件搬运至少审批；精确 validator 仅在永久危险检查后允许。未进行学生手工代码修改，所有生产与测试变更均由受约束子代理完成并经主代理验证。
 - 经验：策略引擎不能依靠不断扩张的危险字符串黑名单；自动允许面必须由精确身份和明确安全执行形态定义，所有不透明行为保守审批。路径规范化、嵌套命令最高严重度聚合、敏感源搬运和 Git 外部扩展入口必须作为同一策略边界测试，而不是分别依赖后续执行器补救。
+
+## T06 — Redacted Hash-Chained Audit Store
+
+- 时间：2026-07-17 16:43–18:20 +08:00
+- 分支 / MR：`codex/t06-audit-store` / [GitLab !6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6)
+- Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
+- 关键 prompt/context：全新实现代理仅获得 T06 task brief、隔离工作树、基线 `6679dbd`、两个允许文件、严格 RED→GREEN、SQLite 真实存储、秘密非披露、稳定异常、中文 Conventional Commits 与报告契约；规格、安全和整分支审查代理均只读相应版本的冻结差异包。实现同时兼容调用方现有 `sqlite3.Connection` 与零参 factory，不关闭调用方连接；普通 SHA-256 哈希链是计划锁定算法，不擅自替换为 HMAC。
+- 初始实现：生产模块创建前，指定篡改测试因 `ModuleNotFoundError: safefix.governance.audit` 精确 RED；`65f54d0 feat(audit): 添加脱敏防篡改审计日志` 建立递归 payload 脱敏、canonical JSON、UTC 时间、逐 run sequence、SHA-256 previous-hash 链、SQLite schema、append/list/verify 和稳定 `AuditUnavailable`。初始聚焦 29 passed、全量 406 passed。
+- 第一轮独立审查与修复：规格审查发现坏链仍可继续 append；安全审查发现 metadata secret 可落库、list 不验证完整链、共享连接并发 SAVEPOINT 可让成功事件消失、SQLite 动态类型可被 `int()`/`str()` 掩盖，以及占位符可能重新包含 configured secret。根代理定向探针逐项复现后，`c1e04c4 fix(audit): 收紧审计链与并发安全` 引入共享严格链 snapshot、metadata fail-closed、原始 SQLite 类型校验、按 connection identity 的 striped `RLock`、唯一 SAVEPOINT、外层事务 sentinel 与真实并发测试；全量增至 440 passed。
+- 第二轮安全审查与修复：复审发现读取恶意 canonical payload 时未最终扫描 configured secret，并用自定义 `sqlite3.Connection.execute()` 回调复现同线程重入 append 内层成功后被外层回滚。`9067a95 fix(audit): 阻止重入写入与读取泄密` 增加读取端最终秘密检查和 thread-local connection-id 重入守卫，覆盖同 store、同连接双 store 及 `BaseException` 后守卫恢复；全量增至 445 passed。
+- 整分支宽审与修复：宽审用真实 `AFTER INSERT DELETE/UPDATE` trigger 证明 append 可在新行已消失或被改写时返回成功，并指出 SAVEPOINT 后 `KeyboardInterrupt/SystemExit` 会绕过清理。`12ce19b fix(audit): 校验写入后置条件并清理中断` 在 RELEASE 前重读完整链并严格比对候选事件，以异常类型无关的 finally 清理 SAVEPOINT，同时让进程控制异常原样传播；全量增至 451 passed。
+- 最终独立复审：规格、安全和整分支审查均批准，Critical 0、Important 0、Minor 2。保留 Minor 为 list/verify 的只读重入范围尚未统一拒绝，以及 append 为保证坏链 fail-closed 每次重验完整 run，长链累计 O(N²)；两项不破坏当前安全契约，留待出现容量需求或统一重入策略时处理。
+- 根代理新鲜验证：Python 3.12.3；T06 聚焦 74 passed；完整测试 451 passed；Ruff check/format、mypy（`src` + T06 测试）、`git diff --check 6679dbd..12ce19b` 全部 exit 0；过程文档修改前工作树干净，最终实现差异仅含 `src/safefix/governance/audit.py` 与 `tests/unit/test_audit.py`。
+- 人工裁决：所有外部 metadata/payload 只要可能携带 configured secret 就稳定 fail closed；调用方事务所有权通过内部 SAVEPOINT 保留，T07 仍必须把审计 append 失败视为拒绝条件。未进行学生手工代码修改，所有生产与测试变更均由受约束子代理完成并经根代理验证。
+- 经验：防篡改审计不能只在读取时提供可选 verify；append 自身必须验证旧链和 INSERT 后置条件。SQLite trigger、动态类型、共享连接并发、同线程重入和进程控制中断都会制造“API 返回成功但审计记录不存在”的路径，必须用真实 SQLite 行为而非 mock 调用次数锁定。
