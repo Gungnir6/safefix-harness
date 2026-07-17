@@ -86,7 +86,7 @@
 ## T06 — Redacted Hash-Chained Audit Store
 
 - 时间：2026-07-17 16:43–18:20 +08:00
-- 分支 / MR：`codex/t06-audit-store` / 待创建
+- 分支 / MR：`codex/t06-audit-store` / [GitLab !6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6)
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
 - 关键 prompt/context：全新实现代理仅获得 T06 task brief、隔离工作树、基线 `6679dbd`、两个允许文件、严格 RED→GREEN、SQLite 真实存储、秘密非披露、稳定异常、中文 Conventional Commits 与报告契约；规格、安全和整分支审查代理均只读相应版本的冻结差异包。实现同时兼容调用方现有 `sqlite3.Connection` 与零参 factory，不关闭调用方连接；普通 SHA-256 哈希链是计划锁定算法，不擅自替换为 HMAC。
 - 初始实现：生产模块创建前，指定篡改测试因 `ModuleNotFoundError: safefix.governance.audit` 精确 RED；`65f54d0 feat(audit): 添加脱敏防篡改审计日志` 建立递归 payload 脱敏、canonical JSON、UTC 时间、逐 run sequence、SHA-256 previous-hash 链、SQLite schema、append/list/verify 和稳定 `AuditUnavailable`。初始聚焦 29 passed、全量 406 passed。
