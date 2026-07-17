@@ -170,8 +170,24 @@ class ApprovalStateMachine:
         plaintext_token: str,
         action: Action,
     ) -> ApprovalRequest:
+        current = self.get(approval_id)
+        if current.status is not ApprovalStatus.PENDING:
+            raise ApprovalAlreadyUsed(_ALREADY_USED_MESSAGE)
+        self._verify_token_hash(current.one_time_token_hash, plaintext_token)
+        supplied_json, supplied_digest = self._prepare_approval_action(action)
+        if not hmac.compare_digest(
+            current.action_hash, supplied_digest
+        ) or not hmac.compare_digest(current.frozen_action_json, supplied_json):
+            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
+        decided_at = self._read_clock()
         return self._run_write(
-            lambda: self._approve(approval_id, plaintext_token, action)
+            lambda: self._approve(
+                approval_id,
+                plaintext_token,
+                supplied_json,
+                supplied_digest,
+                decided_at,
+            )
         )
 
     def _initialize_schema(self) -> None:
@@ -271,11 +287,17 @@ class ApprovalStateMachine:
             raise ValueError
         for schema in ("sqlite_master", "sqlite_temp_master"):
             triggers = self._connection.execute(
-                f"SELECT name FROM {schema} WHERE type = 'trigger' AND tbl_name = ?",
-                ("approval_requests",),
+                f"SELECT tbl_name, sql FROM {schema} WHERE type = 'trigger'"
             ).fetchall()
-            if triggers:
-                raise ValueError
+            for trigger in triggers:
+                if (
+                    len(trigger) != 2
+                    or type(trigger[0]) is not str
+                    or type(trigger[1]) is not str
+                    or trigger[0].casefold() == "approval_requests"
+                    or "approval_requests" in trigger[1].casefold()
+                ):
+                    raise ValueError
 
     def _prepare_request(
         self,
@@ -370,26 +392,14 @@ class ApprovalStateMachine:
         self,
         approval_id: str,
         plaintext_token: str,
-        action: Action,
+        supplied_json: str,
+        supplied_digest: str,
+        decided_at: datetime,
     ) -> ApprovalRequest:
         stored = self._read_one(approval_id)
         if stored.status is not ApprovalStatus.PENDING:
             raise ApprovalAlreadyUsed(_ALREADY_USED_MESSAGE)
-        if type(plaintext_token) is not str:
-            raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
-        supplied_hash = hashlib.sha256(plaintext_token.encode("utf-8")).hexdigest()
-        if not hmac.compare_digest(stored.one_time_token_hash, supplied_hash):
-            raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
-        action_boundary_failed = False
-        supplied_json = ""
-        supplied_digest = ""
-        try:
-            supplied_json = action.model_dump_json(exclude_none=True)
-            supplied_digest = action_digest(action)
-        except Exception:
-            action_boundary_failed = True
-        if action_boundary_failed:
-            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
+        self._verify_token_hash(stored.one_time_token_hash, plaintext_token)
         digest_mismatch = not hmac.compare_digest(stored.action_hash, supplied_digest)
         json_mismatch = not hmac.compare_digest(
             stored.frozen_action_json, supplied_json
@@ -397,7 +407,6 @@ class ApprovalStateMachine:
         if digest_mismatch or json_mismatch:
             raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
 
-        decided_at = self._normalize_timestamp(self._clock())
         cursor = self._connection.execute(
             "UPDATE approval_requests SET status = ?, decided_at = ? "
             "WHERE id = ? AND status = ?",
@@ -424,6 +433,39 @@ class ApprovalStateMachine:
         if persisted != expected:
             raise ValueError
         return self._to_request(persisted)
+
+    @staticmethod
+    def _verify_token_hash(expected_hash: str, plaintext_token: str) -> None:
+        if type(plaintext_token) is not str:
+            raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
+        supplied_hash = hashlib.sha256(plaintext_token.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(expected_hash, supplied_hash):
+            raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
+
+    @staticmethod
+    def _prepare_approval_action(action: Action) -> tuple[str, str]:
+        failed = False
+        supplied_json = ""
+        supplied_digest = ""
+        try:
+            supplied_json = action.model_dump_json(exclude_none=True)
+            supplied_digest = action_digest(action)
+        except Exception:
+            failed = True
+        if failed:
+            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
+        return supplied_json, supplied_digest
+
+    def _read_clock(self) -> datetime:
+        failed = False
+        value: datetime | None = None
+        try:
+            value = self._normalize_timestamp(self._clock())
+        except Exception:
+            failed = True
+        if failed or value is None:
+            self._raise_unavailable()
+        return value
 
     def _read_one(self, approval_id: str) -> _StoredApproval:
         if type(approval_id) is not str or not approval_id:
@@ -576,12 +618,12 @@ class ApprovalStateMachine:
         failure: BaseException | None = None
         result: _T | None = None
         savepoint_name = f"safefix_approval_write_{next(_SAVEPOINT_COUNTER)}"
-        savepoint_active = False
+        savepoint_active = True
         try:
             self._connection.execute(f"SAVEPOINT {savepoint_name}")
-            savepoint_active = True
             self._lock_and_verify_write_schema()
             result = operation()
+            self._verify_schema()
             self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             savepoint_active = False
         except BaseException as error:
@@ -599,14 +641,17 @@ class ApprovalStateMachine:
         self._verify_schema()
 
     def _cleanup_savepoint(self, savepoint_name: str) -> None:
-        try:
-            self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
-        except BaseException:
-            pass
-        try:
-            self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
-        except BaseException:
-            pass
+        statements = (
+            f"ROLLBACK TO SAVEPOINT {savepoint_name}",
+            f"RELEASE SAVEPOINT {savepoint_name}",
+        )
+        for statement in statements:
+            for _attempt in range(2):
+                try:
+                    self._connection.execute(statement)
+                    break
+                except BaseException:
+                    pass
 
     @classmethod
     def _propagate_failure(cls, failure: BaseException) -> NoReturn:

@@ -1,7 +1,7 @@
 import hashlib
 import sqlite3
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -252,7 +252,7 @@ def test_cleanup_base_exception_preserves_original_and_recovers(
     assert captured.value is operation_signal
     assert len(connection.savepoint_names) == 1
     savepoint_name = connection.savepoint_names[0]
-    assert connection.rollback_names == [savepoint_name]
+    assert connection.rollback_names == [savepoint_name, savepoint_name]
     assert connection.release_names == [savepoint_name]
     with pytest.raises(sqlite3.OperationalError):
         connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
@@ -262,6 +262,135 @@ def test_cleanup_base_exception_preserves_original_and_recovers(
         is ApprovalStatus.APPROVED
     )
     connection.close()
+
+
+@pytest.mark.parametrize("callback_kind", ["clock", "action"])
+def test_caller_callback_cannot_install_approval_trigger(
+    callback_kind: str,
+    risky_action: RunProcessAction,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    clock = _TriggerInstallingClock(
+        connection,
+        install_on_call=3 if callback_kind == "clock" else None,
+    )
+    store = ApprovalStateMachine(connection, clock=clock)
+    first = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    second_action = risky_action.model_copy(update={"id": "a2"})
+    second = store.request("run-1", second_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    approval_action = (
+        cast(
+            Action,
+            _TriggerInstallingAction(
+                connection,
+                risky_action.model_dump_json(exclude_none=True),
+            ),
+        )
+        if callback_kind == "action"
+        else risky_action
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.approve(first.id, first.token, approval_action)
+
+    assert _approval_states(connection) == sorted(
+        [(first.id, "PENDING", None), (second.id, "PENDING", None)]
+    )
+    assert all(
+        event.event_type != "APPROVAL_APPROVED"
+        for event in store._audit.list_events("run-1")
+    )
+    connection.close()
+
+
+def test_audit_trigger_cannot_cross_update_another_approval(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    first = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    second_action = risky_action.model_copy(update={"id": "a2"})
+    second = store.request("run-1", second_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    connection.execute(
+        """
+        CREATE TRIGGER audit_approves_another_request
+        AFTER INSERT ON audit_events
+        WHEN NEW.event_type = 'APPROVAL_APPROVED'
+        BEGIN
+            UPDATE approval_requests
+            SET status = 'APPROVED', decided_at = '2026-07-17T00:00:00.000000Z'
+            WHERE id != json_extract(NEW.payload, '$.approval_id')
+              AND status = 'PENDING';
+        END
+        """
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.approve(first.id, first.token, risky_action)
+
+    assert _approval_states(connection) == sorted(
+        [(first.id, "PENDING", None), (second.id, "PENDING", None)]
+    )
+    assert all(
+        event.event_type != "APPROVAL_APPROVED"
+        for event in store._audit.list_events("run-1")
+    )
+
+
+def test_savepoint_after_execute_exception_is_cleaned_and_recovers(
+    risky_action: RunProcessAction,
+) -> None:
+    connection, store, challenge = _interruptible_approval(risky_action)
+    signal = KeyboardInterrupt()
+    connection.savepoint_after_signal = signal
+
+    _assert_interrupted_approval_recovers(
+        connection,
+        store,
+        challenge,
+        risky_action,
+        signal,
+        expected_rollback_attempts=1,
+        expected_release_attempts=1,
+    )
+
+
+def test_rollback_before_execute_exception_is_retried_and_recovers(
+    risky_action: RunProcessAction,
+) -> None:
+    connection, store, challenge = _interruptible_approval(risky_action)
+    signal = KeyboardInterrupt()
+    connection.operation_signal = signal
+    connection.rollback_before_signal = SystemExit("cleanup")
+
+    _assert_interrupted_approval_recovers(
+        connection,
+        store,
+        challenge,
+        risky_action,
+        signal,
+        expected_rollback_attempts=2,
+        expected_release_attempts=1,
+    )
+
+
+def test_release_before_execute_exception_is_retried_and_recovers(
+    risky_action: RunProcessAction,
+) -> None:
+    connection, store, challenge = _interruptible_approval(risky_action)
+    signal = SystemExit()
+    connection.operation_signal = signal
+    connection.release_before_signal = KeyboardInterrupt("cleanup")
+
+    _assert_interrupted_approval_recovers(
+        connection,
+        store,
+        challenge,
+        risky_action,
+        signal,
+        expected_rollback_attempts=1,
+        expected_release_attempts=2,
+    )
 
 
 class _ExplodingAction:
@@ -287,11 +416,46 @@ class _CleanupBaseException(BaseException):
     pass
 
 
+class _TriggerInstallingClock:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        install_on_call: int | None,
+    ) -> None:
+        self._connection = connection
+        self._install_on_call = install_on_call
+        self._calls = 0
+
+    def __call__(self) -> datetime:
+        self._calls += 1
+        if self._calls == self._install_on_call:
+            _install_cross_row_trigger(self._connection, "callback_trigger")
+        return datetime(2026, 7, 17, 12, 0, self._calls, tzinfo=UTC)
+
+
+class _TriggerInstallingAction:
+    def __init__(self, connection: sqlite3.Connection, canonical_json: str) -> None:
+        self._connection = connection
+        self._canonical_json = canonical_json
+        self._installed = False
+
+    def model_dump_json(self, *, exclude_none: bool = False) -> str:
+        del exclude_none
+        if not self._installed:
+            _install_cross_row_trigger(self._connection, "action_callback_trigger")
+            self._installed = True
+        return self._canonical_json
+
+
 class _InterruptingApprovalConnection(sqlite3.Connection):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.operation_signal: BaseException | None = None
         self.rollback_signal: BaseException | None = None
+        self.savepoint_after_signal: BaseException | None = None
+        self.rollback_before_signal: BaseException | None = None
+        self.release_before_signal: BaseException | None = None
         self.savepoint_names: list[str] = []
         self.rollback_names: list[str] = []
         self.release_names: list[str] = []
@@ -305,9 +469,18 @@ class _InterruptingApprovalConnection(sqlite3.Connection):
         normalized = " ".join(sql.split())
         if normalized.startswith("SAVEPOINT "):
             self.savepoint_names.append(normalized.split()[1])
+            if self.savepoint_after_signal is not None:
+                signal = self.savepoint_after_signal
+                self.savepoint_after_signal = None
+                super().execute(sql, parameters)
+                raise signal
         elif normalized.startswith("ROLLBACK TO SAVEPOINT "):
             savepoint_name = normalized.split()[3]
             self.rollback_names.append(savepoint_name)
+            if self.rollback_before_signal is not None:
+                signal = self.rollback_before_signal
+                self.rollback_before_signal = None
+                raise signal
             result = super().execute(sql, parameters)
             if self.rollback_signal is not None:
                 signal = self.rollback_signal
@@ -316,6 +489,10 @@ class _InterruptingApprovalConnection(sqlite3.Connection):
             return result
         elif normalized.startswith("RELEASE SAVEPOINT "):
             self.release_names.append(normalized.split()[2])
+            if self.release_before_signal is not None:
+                signal = self.release_before_signal
+                self.release_before_signal = None
+                raise signal
         if self.operation_signal is not None and normalized.startswith(
             "UPDATE approval_requests SET status = ?, decided_at = ?"
         ):
@@ -324,3 +501,70 @@ class _InterruptingApprovalConnection(sqlite3.Connection):
             super().execute(sql, parameters)
             raise signal
         return super().execute(sql, parameters)
+
+
+def _install_cross_row_trigger(
+    connection: sqlite3.Connection,
+    trigger_name: str,
+) -> None:
+    connection.execute(
+        f"""
+        CREATE TRIGGER {trigger_name}
+        AFTER UPDATE ON approval_requests
+        WHEN NEW.status = 'APPROVED'
+        BEGIN
+            UPDATE approval_requests
+            SET status = 'APPROVED', decided_at = NEW.decided_at
+            WHERE id != NEW.id AND status = 'PENDING';
+        END
+        """
+    )
+
+
+def _approval_states(connection: sqlite3.Connection) -> list[tuple[object, ...]]:
+    return connection.execute(
+        "SELECT id, status, decided_at FROM approval_requests ORDER BY id"
+    ).fetchall()
+
+
+def _interruptible_approval(
+    risky_action: RunProcessAction,
+) -> tuple[
+    _InterruptingApprovalConnection,
+    ApprovalStateMachine,
+    object,
+]:
+    connection = sqlite3.connect(":memory:", factory=_InterruptingApprovalConnection)
+    assert isinstance(connection, _InterruptingApprovalConnection)
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    connection.clear_tracking()
+    return connection, store, challenge
+
+
+def _assert_interrupted_approval_recovers(
+    connection: _InterruptingApprovalConnection,
+    store: ApprovalStateMachine,
+    challenge: Any,
+    risky_action: RunProcessAction,
+    signal: BaseException,
+    *,
+    expected_rollback_attempts: int,
+    expected_release_attempts: int,
+) -> None:
+    with pytest.raises(type(signal)) as captured:
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert captured.value is signal
+    assert len(connection.savepoint_names) == 1
+    savepoint_name = connection.savepoint_names[0]
+    assert connection.rollback_names == [savepoint_name] * expected_rollback_attempts
+    assert connection.release_names == [savepoint_name] * expected_release_attempts
+    with pytest.raises(sqlite3.OperationalError):
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+    assert (
+        store.approve(challenge.id, challenge.token, risky_action).status
+        is ApprovalStatus.APPROVED
+    )
+    connection.close()
