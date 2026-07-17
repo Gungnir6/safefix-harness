@@ -71,7 +71,7 @@
 ## T05 — Three-Level Policy Engine
 
 - 时间：2026-07-16–2026-07-17 15:46 +08:00
-- 分支 / MR：`codex/t05-policy-engine` / Pending
+- 分支 / MR：`codex/t05-policy-engine` / [GitLab !5](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/5)
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
 - 关键 prompt/context：全新实现代理仅获得 T05 task brief、隔离工作树、基线 `6959692`、两个允许文件、严格 RED→GREEN、中文 Conventional Commits 和报告契约；续修代理只接收冻结审查问题与可复现输入。规格、安全、代码质量和整分支审查代理均只读同一版本的冻结 `BASE..HEAD` 差异包。
 - 初始实现：生产模块创建前，聚焦测试因 `ModuleNotFoundError: safefix.governance.policy` 精确 RED；`44c625e feat(governance): 添加确定性动作策略分类` 建立三态决定、稳定 rule ID、文件边界映射、validator/配置程序与永久拒绝/审批顺序，首轮策略 GREEN 为 45 passed、全量为 241 passed。
