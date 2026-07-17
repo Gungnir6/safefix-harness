@@ -19,6 +19,14 @@ _CONNECTION_LOCKS = tuple(threading.RLock() for _ in range(64))
 _SAVEPOINT_COUNTER = itertools.count()
 
 
+class _AppendThreadState(threading.local):
+    def __init__(self) -> None:
+        self.active_connection_ids: set[int] = set()
+
+
+_APPEND_THREAD_STATE = _AppendThreadState()
+
+
 class AuditUnavailable(RuntimeError):
     """Raised when an audit operation cannot be completed safely."""
 
@@ -110,7 +118,15 @@ class AuditStore:
 
     def append(self, run_id: str, event_type: str, payload: Any) -> AuditEvent:
         with self._lock:
-            return self._append_locked(run_id, event_type, payload)
+            connection_id = id(self._connection)
+            active_connection_ids = _APPEND_THREAD_STATE.active_connection_ids
+            if connection_id in active_connection_ids:
+                self._raise_unavailable()
+            active_connection_ids.add(connection_id)
+            try:
+                return self._append_locked(run_id, event_type, payload)
+            finally:
+                active_connection_ids.remove(connection_id)
 
     def _append_locked(self, run_id: str, event_type: str, payload: Any) -> AuditEvent:
         if not self._metadata_is_safe(run_id) or not self._metadata_is_safe(event_type):
@@ -353,7 +369,8 @@ class AuditStore:
     def _decode_canonical_payload(self, payload: str) -> Any:
         value = json.loads(payload, parse_constant=self._reject_json_constant)
         if (
-            self._canonical_payload(value) != payload
+            self._contains_secret(payload)
+            or self._canonical_payload(value) != payload
             or self._canonical_payload(self._redact(value)) != payload
         ):
             raise ValueError

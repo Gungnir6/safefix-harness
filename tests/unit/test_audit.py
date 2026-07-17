@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError
 from datetime import UTC, timedelta, timezone
 from pathlib import Path
@@ -792,6 +793,93 @@ def test_failed_append_preserves_explicit_outer_transaction_and_sentinel() -> No
     ]
 
 
+@pytest.mark.parametrize(
+    ("configured_secret", "injected_payload"),
+    [
+        ("#2", {"[REDACTED]": 1, "[REDACTED]#2": 2}),
+        ("REDACTED", {"token": "[REDACTED]"}),
+    ],
+)
+def test_reading_rejects_canonical_payload_containing_configured_secret(
+    configured_secret: str, injected_payload: object
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection, configured_secret_values=[configured_secret])
+    event = store.append("run", "ACTION", {"value": 1})
+    payload = json.dumps(injected_payload, sort_keys=True, separators=(",", ":"))
+    created_at = connection.execute(
+        "SELECT created_at FROM audit_events WHERE run_id = ?", ("run",)
+    ).fetchone()[0]
+    forged_hash = _event_hash(
+        "run", 1, "ACTION", payload, created_at, event.previous_hash
+    )
+    connection.execute(
+        "UPDATE audit_events SET payload = ?, event_hash = ? WHERE run_id = ?",
+        (payload, forged_hash, "run"),
+    )
+    rows_before = connection.execute("SELECT * FROM audit_events").fetchall()
+
+    verification = store.verify_chain("run")
+    assert verification.valid is False
+    assert verification.first_invalid_sequence == 1
+    with pytest.raises(AuditUnavailable) as list_failure:
+        store.list_events("run")
+    with pytest.raises(AuditUnavailable) as append_failure:
+        store.append("run", "NEXT", {"value": 2})
+    assert configured_secret not in repr(list_failure.value)
+    assert configured_secret not in repr(append_failure.value)
+    assert list_failure.value.__cause__ is None
+    assert list_failure.value.__context__ is None
+    assert append_failure.value.__cause__ is None
+    assert append_failure.value.__context__ is None
+    assert connection.execute("SELECT * FROM audit_events").fetchall() == rows_before
+
+
+@pytest.mark.parametrize("store_count", [1, 2], ids=["same-store", "two-stores"])
+def test_same_thread_reentrant_append_never_returns_a_disappearing_event(
+    store_count: int,
+) -> None:
+    connection = sqlite3.connect(":memory:", factory=_ReentrantInsertConnection)
+    assert isinstance(connection, _ReentrantInsertConnection)
+    outer_store = AuditStore(connection)
+    inner_store = outer_store if store_count == 1 else AuditStore(connection)
+    connection.reentrant_store = inner_store
+
+    try:
+        outer_result: AuditEvent | AuditUnavailable = outer_store.append(
+            "run", "OUTER", {"value": "outer"}
+        )
+    except AuditUnavailable as error:
+        outer_result = error
+
+    assert connection.reentry_attempted is True
+    assert isinstance(connection.inner_result, AuditUnavailable)
+    assert str(connection.inner_result) == "Audit storage is unavailable"
+    assert connection.inner_result.__cause__ is None
+    assert connection.inner_result.__context__ is None
+    final_events = outer_store.list_events("run")
+    assert outer_store.verify_chain("run").valid is True
+    for returned in (outer_result, connection.inner_result):
+        if isinstance(returned, AuditEvent):
+            assert any(
+                stored.sequence == returned.sequence
+                and stored.event_hash == returned.event_hash
+                for stored in final_events
+            )
+
+
+def test_append_reentrancy_guard_is_cleared_after_base_exception() -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.append("run", "INTERRUPTED", _InterruptingMapping())
+
+    recovered = store.append("run", "RECOVERED", {"value": 1})
+    assert recovered.sequence == 1
+    assert store.verify_chain("run").valid is True
+
+
 class _PausingInsertConnection(sqlite3.Connection):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -840,6 +928,40 @@ class _BarrierInsertConnection(sqlite3.Connection):
         ):
             self.insert_barrier.wait(timeout=2)
         return super().execute(sql, parameters)
+
+
+class _ReentrantInsertConnection(sqlite3.Connection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.reentrant_store: AuditStore | None = None
+        self.reentry_attempted = False
+        self.inner_result: AuditEvent | AuditUnavailable | None = None
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        if (
+            self.reentrant_store is not None
+            and not self.reentry_attempted
+            and sql.strip().startswith("INSERT INTO audit_events")
+        ):
+            self.reentry_attempted = True
+            try:
+                self.inner_result = self.reentrant_store.append(
+                    "run", "INNER", {"value": "inner"}
+                )
+            except AuditUnavailable as error:
+                self.inner_result = error
+        return super().execute(sql, parameters)
+
+
+class _InterruptingMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        raise KeyboardInterrupt
+
+    def __len__(self) -> int:
+        return 1
 
 
 def _event_hash(
