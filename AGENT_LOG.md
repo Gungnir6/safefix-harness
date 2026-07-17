@@ -67,3 +67,17 @@
 - 延期 Minor：`ScriptedMockLLM` 接受裸 `str` 时会按字符形成脚本；当前 `ModelResponse` 已冻结但测试只显式修改 `ModelMessage`。两项不影响生产契约与合并，记录供后续测试清理。
 - 后续约束：T12 AgentLoop、T13 provider 与日志/错误采集层不得用未脱敏的 `capture_locals` 记录调用者 frame；应禁用该选项或在持久化/上报前递归脱敏。
 - 经验：不可信解析边界应按处理阶段而非异常类型分类；安全异常既要区分可重试输入错误与内部故障，也要覆盖 formatter 和 `BaseException` 原样传播时的 `finally` 局部变量清理。
+
+## T05 — Three-Level Policy Engine
+
+- 时间：2026-07-16–2026-07-17 15:46 +08:00
+- 分支 / MR：`codex/t05-policy-engine` / Pending
+- Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
+- 关键 prompt/context：全新实现代理仅获得 T05 task brief、隔离工作树、基线 `6959692`、两个允许文件、严格 RED→GREEN、中文 Conventional Commits 和报告契约；续修代理只接收冻结审查问题与可复现输入。规格、安全、代码质量和整分支审查代理均只读同一版本的冻结 `BASE..HEAD` 差异包。
+- 初始实现：生产模块创建前，聚焦测试因 `ModuleNotFoundError: safefix.governance.policy` 精确 RED；`44c625e feat(governance): 添加确定性动作策略分类` 建立三态决定、稳定 rule ID、文件边界映射、validator/配置程序与永久拒绝/审批顺序，首轮策略 GREEN 为 45 passed、全量为 241 passed。
+- 安全评审修复：多轮独立审查用真实决策探针证明 basename 授权冒充、解释器与 shell 内嵌执行、根/系统路径别名、Git alias/分页/写出选项、包管理器变体、Windows 8.3 路径、凭据计算属性和 shell 引号状态等降级路径。修复提交依次为 `1a0d503 fix(governance): 收紧策略绕过防护`、`2204d34 fix(governance): 封堵嵌套命令策略绕过`、`3a640c8 fix(governance): 完善命令参数边界`、`224d696 fix(governance): 修正引号与Git分页边界`、`0da385a fix(governance): 修正Git可选分页参数语义`。
+- 合并门禁修复：整分支审查发现配置允许的文件搬运可复制敏感源、表面只读 Git 仍可由仓库/全局配置触发外部执行；`6a6ff31 fix(governance): 收紧文件搬运与Git读取` 复用 `WorkspaceBoundary` 的敏感模式永久拒绝敏感搬运，普通搬运与所有非 validator Git 调用保守审批。
+- 最终独立复审：规范、安全和整分支审查均 `APPROVED`，Critical 0、Important 0、Minor 0；确认永久拒绝优先级、精确 validator、安全授权身份、不透明执行默认审批、敏感文件搬运、Git 副作用和稳定脱敏决定均满足 T05。
+- 根代理新鲜验证：Python 3.12.3；377 passed；Ruff check/format、mypy（`src` + T05 测试）、`git diff --check` 全部 exit 0；过程文档修改前工作树干净，最终实现差异仅含 `src/safefix/governance/policy.py` 与 `tests/unit/test_policy.py`。
+- 人工裁决：`denied_programs` 永久拒绝；`allowed_programs` 只表示配置身份，不能越过更早风险；授权匹配与风险 basename 分离；无法可靠解析的 shell、解释器、未知 Git 和文件搬运至少审批；精确 validator 仅在永久危险检查后允许。未进行学生手工代码修改，所有生产与测试变更均由受约束子代理完成并经主代理验证。
+- 经验：策略引擎不能依靠不断扩张的危险字符串黑名单；自动允许面必须由精确身份和明确安全执行形态定义，所有不透明行为保守审批。路径规范化、嵌套命令最高严重度聚合、敏感源搬运和 Git 外部扩展入口必须作为同一策略边界测试，而不是分别依赖后续执行器补救。

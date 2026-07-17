@@ -540,7 +540,7 @@ Record the T04 hash and required evidence after both reviews.
 - Consumes: `Action`, `PolicyDecision`, `WorkspaceBoundary`, `SafeFixSettings`.
 - Produces: `PolicyEngine.decide(action: Action) -> PolicyDecision` with stable rule IDs and outcomes `ALLOW`, `REQUIRE_APPROVAL`, `DENY`.
 
-- [ ] **Step 1: Write failing table-driven classification tests**
+- [x] **Step 1: Write failing table-driven classification tests**
 
 ```python
 import pytest
@@ -564,13 +564,13 @@ def test_process_risk_matrix(policy: PolicyEngine, program: str, args: tuple[str
     assert rule in decision.rule_ids
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/unit/test_policy.py -v`
 
 Expected: FAIL because `PolicyEngine` does not exist.
 
-- [ ] **Step 3: Implement ordered deterministic rules**
+- [x] **Step 3: Implement ordered deterministic rules**
 
 Evaluate permanent-deny rules before approval rules and approval rules before allows. Deny privilege escalation, credential readers, system paths and destructive root targets. Require approval for deletion, installers, network clients, Git writes and unconfigured programs. Allow only structured file actions that pass `WorkspaceBoundary` and exact configured validators.
 
@@ -583,7 +583,7 @@ def decide(self, action: Action) -> PolicyDecision:
     return self._deny_by_default(action, "POLICY_NO_MATCH")
 ```
 
-- [ ] **Step 4: Add bypass and explanation tests**
+- [x] **Step 4: Add bypass and explanation tests**
 
 Test executable case variations on Windows, path-like program names, Shell metacharacters embedded in arguments, unknown programs, delete-like Python/Node inline execution, and configured validator argument mismatch. Every decision must include a nonempty explanation and stable rule ID.
 
@@ -591,7 +591,7 @@ Run: `python -m pytest tests/unit/test_policy.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(governance): 添加确定性动作策略分类`
 
@@ -1509,7 +1509,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T02 | Completed (RED evidence caveat) | `d238023`, `f6998f5`, `c335360`; plan `95104ab`; merge `bf675b0` | [!2](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/2) | Spec and quality final reviews APPROVED (0/0/0); exception-chain and traceback-local disclosure findings fixed; merged and reverified on `main` |
 | T03 | Completed | `762a073`, `b322870`, `fea9a51`, `1e585fe`, `2be70e4`, `c38f3bc`; plan `a822e82`, `abc0fac`; merge `8b34b10` | [!4](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/4) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 2 Minor); strict JSON, staged exception classification, bounded feedback and traceback-local disclosure findings fixed; merged and reverified on `main`; mock bare-string and ModelResponse immutability-test Minors deferred |
 | T04 | Completed | `91dbd88`, `94c0edd`, `49895de`, `325aa1b`; plan `6031621`, `dad25df`; merge `10cd964` | [!3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; merged and reverified on `main`; Hypothesis oracle design Minor deferred |
-| T05 | Pending | — | — | — |
+| T05 | Completed (pending MR) | `44c625e`, `1a0d503`, `2204d34`, `3a640c8`, `224d696`, `0da385a`, `6a6ff31` | Pending | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 0 Minor); authorization identity, nested shell/interpreter, normalized system paths, Git side effects, sensitive file transfer and disclosure findings fixed |
 | T06 | Pending | — | — | — |
 | T07 | Pending | — | — | — |
 | T08 | Pending | — | — | — |
