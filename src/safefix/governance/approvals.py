@@ -628,8 +628,13 @@ class ApprovalStateMachine:
             savepoint_active = False
         except BaseException as error:
             failure = error
+        cleanup_process_control = None
         if savepoint_active:
-            self._cleanup_savepoint(savepoint_name)
+            cleanup_process_control = self._cleanup_savepoint(savepoint_name)
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            self._propagate_failure(failure)
+        if cleanup_process_control is not None:
+            self._propagate_failure(cleanup_process_control)
         if failure is not None:
             self._propagate_failure(failure)
         if result is None:
@@ -640,7 +645,8 @@ class ApprovalStateMachine:
         self._connection.execute("UPDATE approval_requests SET id = id WHERE 0")
         self._verify_schema()
 
-    def _cleanup_savepoint(self, savepoint_name: str) -> None:
+    def _cleanup_savepoint(self, savepoint_name: str) -> BaseException | None:
+        process_control: BaseException | None = None
         statements = (
             f"ROLLBACK TO SAVEPOINT {savepoint_name}",
             f"RELEASE SAVEPOINT {savepoint_name}",
@@ -650,8 +656,12 @@ class ApprovalStateMachine:
                 try:
                     self._connection.execute(statement)
                     break
-                except BaseException:
-                    pass
+                except BaseException as error:
+                    if process_control is None and isinstance(
+                        error, (KeyboardInterrupt, SystemExit)
+                    ):
+                        process_control = error
+        return process_control
 
     @classmethod
     def _propagate_failure(cls, failure: BaseException) -> NoReturn:

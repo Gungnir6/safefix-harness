@@ -10,6 +10,7 @@ from safefix.domain import Action, ApprovalStatus, RiskLevel, RunProcessAction
 from safefix.governance.approvals import (
     ActionMismatch,
     ApprovalAlreadyUsed,
+    ApprovalChallenge,
     ApprovalStateMachine,
     ApprovalUnavailable,
     InvalidApprovalTransition,
@@ -393,6 +394,65 @@ def test_release_before_execute_exception_is_retried_and_recovers(
     )
 
 
+@pytest.mark.parametrize(
+    ("cleanup_step", "signal"),
+    [
+        ("rollback", KeyboardInterrupt()),
+        ("release", SystemExit()),
+    ],
+)
+def test_cleanup_process_control_wins_over_storage_failure(
+    cleanup_step: str,
+    signal: BaseException,
+    risky_action: RunProcessAction,
+) -> None:
+    connection, store, challenge = _interruptible_approval(risky_action)
+    connection.execute(
+        "CREATE TRIGGER reject_approval_audit BEFORE INSERT ON audit_events "
+        "WHEN NEW.event_type = 'APPROVAL_APPROVED' "
+        "BEGIN SELECT RAISE(ABORT, 'audit blocked'); END"
+    )
+    if cleanup_step == "rollback":
+        connection.rollback_before_signal = signal
+        expected_rollback_attempts = 2
+        expected_release_attempts = 1
+    else:
+        connection.release_before_signal = signal
+        expected_rollback_attempts = 1
+        expected_release_attempts = 2
+
+    with pytest.raises(type(signal)) as captured:
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert captured.value is signal
+    savepoint_name = connection.savepoint_names[0]
+    approval_rollbacks = [
+        name
+        for name in connection.rollback_names
+        if name.startswith("safefix_approval_write_")
+    ]
+    approval_releases = [
+        name
+        for name in connection.release_names
+        if name.startswith("safefix_approval_write_")
+    ]
+    assert approval_rollbacks == [savepoint_name] * expected_rollback_attempts
+    assert approval_releases == [savepoint_name] * expected_release_attempts
+    with pytest.raises(sqlite3.OperationalError):
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+    assert all(
+        event.event_type != "APPROVAL_APPROVED"
+        for event in store._audit.list_events("run-1")
+    )
+    connection.execute("DROP TRIGGER reject_approval_audit")
+    assert (
+        store.approve(challenge.id, challenge.token, risky_action).status
+        is ApprovalStatus.APPROVED
+    )
+    connection.close()
+
+
 class _ExplodingAction:
     def __init__(
         self,
@@ -477,7 +537,9 @@ class _InterruptingApprovalConnection(sqlite3.Connection):
         elif normalized.startswith("ROLLBACK TO SAVEPOINT "):
             savepoint_name = normalized.split()[3]
             self.rollback_names.append(savepoint_name)
-            if self.rollback_before_signal is not None:
+            if self.rollback_before_signal is not None and savepoint_name.startswith(
+                "safefix_approval_write_"
+            ):
                 signal = self.rollback_before_signal
                 self.rollback_before_signal = None
                 raise signal
@@ -488,8 +550,11 @@ class _InterruptingApprovalConnection(sqlite3.Connection):
                 raise signal
             return result
         elif normalized.startswith("RELEASE SAVEPOINT "):
-            self.release_names.append(normalized.split()[2])
-            if self.release_before_signal is not None:
+            savepoint_name = normalized.split()[2]
+            self.release_names.append(savepoint_name)
+            if self.release_before_signal is not None and savepoint_name.startswith(
+                "safefix_approval_write_"
+            ):
                 signal = self.release_before_signal
                 self.release_before_signal = None
                 raise signal
@@ -532,7 +597,7 @@ def _interruptible_approval(
 ) -> tuple[
     _InterruptingApprovalConnection,
     ApprovalStateMachine,
-    object,
+    ApprovalChallenge,
 ]:
     connection = sqlite3.connect(":memory:", factory=_InterruptingApprovalConnection)
     assert isinstance(connection, _InterruptingApprovalConnection)
