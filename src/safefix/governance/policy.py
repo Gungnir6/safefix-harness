@@ -371,14 +371,23 @@ def _split_shell_segments(command_text: str) -> tuple[str, ...]:
 
 def _mask_single_quoted_text(command_text: str) -> str:
     masked: list[str] = []
-    in_single_quote = False
+    quote: str | None = None
     index = 0
     while index < len(command_text):
         character = command_text[index]
-        if character == "'":
-            in_single_quote = not in_single_quote
+        if character == "\\" and quote != "'":
             masked.append(" ")
-        elif in_single_quote:
+            if index + 1 < len(command_text):
+                masked.append(" ")
+                index += 2
+                continue
+        if character == "'" and quote != '"':
+            quote = None if quote == "'" else "'"
+            masked.append(" ")
+        elif character == '"' and quote != "'":
+            quote = None if quote == '"' else '"'
+            masked.append(character)
+        elif quote == "'":
             masked.append(" ")
         else:
             masked.append(character)
@@ -472,6 +481,38 @@ def _git_config_commands(args: Sequence[str]) -> tuple[str, ...]:
     return tuple(commands)
 
 
+def _git_pager_commands(args: Sequence[str]) -> tuple[str, ...]:
+    commands: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            break
+        value: str | None = None
+        if arg.startswith("--open-files-in-pager="):
+            value = arg.partition("=")[2]
+        elif arg in {"--open-files-in-pager", "-O"}:
+            if index + 1 < len(args):
+                value = args[index + 1]
+                index += 1
+        elif arg.startswith("-O") and len(arg) > 2:
+            value = arg[2:]
+        if value:
+            commands.append(value.strip().strip("'\""))
+        index += 1
+    return tuple(commands)
+
+
+def _git_options(args: Sequence[str]) -> tuple[str, ...]:
+    options: list[str] = []
+    for arg in args:
+        if arg == "--":
+            break
+        if arg.startswith("-"):
+            options.append(arg)
+    return tuple(options)
+
+
 def _expanded_commands(
     identity: str, args: Sequence[str], *, depth: int = 0
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -488,6 +529,11 @@ def _expanded_commands(
     if identity == "git":
         for configured_command in _git_config_commands(args):
             for nested_identity, nested_args in _shell_commands(configured_command):
+                expanded.extend(
+                    _expanded_commands(nested_identity, nested_args, depth=depth + 1)
+                )
+        for pager_command in _git_pager_commands(args):
+            for nested_identity, nested_args in _shell_commands(pager_command):
                 expanded.extend(
                     _expanded_commands(nested_identity, nested_args, depth=depth + 1)
                 )
@@ -639,16 +685,16 @@ def _git_approval_rule(identity: str, args: Sequence[str]) -> str | None:
     if identity != "git":
         return None
     subcommand, configuration = _git_invocation(args)
-    if any(arg == "--output" or arg.startswith("--output=") for arg in args):
+    options = _git_options(args)
+    if any(arg == "--output" or arg.startswith("--output=") for arg in options):
         return "CMD_GIT_WRITE"
-    unsafe_read_options = {"--paginate", "-p", "--ext-diff", "--textconv"}
-    if configuration or any(arg in unsafe_read_options for arg in args):
-        return "CMD_GIT_COMMAND"
     if subcommand in _GIT_NETWORK_SUBCOMMANDS:
         return "CMD_NETWORK"
     if subcommand in _GIT_WRITE_SUBCOMMANDS:
         return "CMD_GIT_WRITE"
     if subcommand in _GIT_SAFE_READ_SUBCOMMANDS:
+        if configuration or options:
+            return "CMD_GIT_COMMAND"
         return None
     return "CMD_GIT_COMMAND"
 

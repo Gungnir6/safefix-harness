@@ -817,6 +817,8 @@ def test_environment_reader_variants_are_permanently_denied(
         "echo 'safe; sudo id'",
         "echo '$(sudo id)'",
         "echo '`sudo id`'",
+        r'echo "\$(sudo id)"',
+        r'echo "\`sudo id\`"',
     ],
 )
 def test_shell_literals_do_not_create_nested_commands(
@@ -830,6 +832,77 @@ def test_shell_literals_do_not_create_nested_commands(
 
     assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
     assert decision.rule_ids == ("CMD_SHELL_COMMAND",)
+
+
+def test_apostrophe_inside_double_quotes_does_not_hide_command_substitution(
+    policy: PolicyEngine,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="quoted-substitution",
+            reason="test",
+            program="bash",
+            args=("-c", 'echo "it\'s $(sudo id)"'),
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_PRIVILEGE_ESCALATION",)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("grep", '--open-files-in-pager="sudo id"', "needle"),
+        ("grep", "--open-files-in-pager", "sudo id", "needle"),
+        ("grep", "-Osudo id", "needle"),
+        ("grep", "-O", "sudo id", "needle"),
+    ],
+)
+def test_git_visible_pager_commands_apply_permanent_rules(
+    policy: PolicyEngine, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="git-pager", reason="test", program="git", args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_PRIVILEGE_ESCALATION",)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("grep", "--open-files-in-pager"),
+        ("status", "--future-read-option"),
+        ("show", "-1"),
+    ],
+)
+def test_git_safe_reads_with_options_default_to_approval(
+    policy: PolicyEngine, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="git-read-option", reason="test", program="git", args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_GIT_COMMAND",)
+
+
+def test_git_double_dash_keeps_following_dash_argument_positional(
+    policy: PolicyEngine,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="git-positional",
+            reason="test",
+            program="git",
+            args=("show", "--", "-named-path"),
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.ALLOW
+    assert decision.rule_ids == ("CMD_CONFIGURED_PROGRAM",)
 
 
 @pytest.mark.parametrize(
