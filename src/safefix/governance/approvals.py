@@ -259,9 +259,7 @@ class ApprovalStateMachine:
                     f'PRAGMA index_info("{name}")'
                 ).fetchall()
             )
-            if index[2:] == (1, "u", 0) and signature == (
-                "one_time_token_hash",
-            ):
+            if index[2:] == (1, "u", 0) and signature == ("one_time_token_hash",):
                 has_token_unique = True
             if (
                 name == "idx_approval_requests_status_expires_at"
@@ -271,6 +269,13 @@ class ApprovalStateMachine:
                 has_expiry_index = True
         if not has_token_unique or not has_expiry_index:
             raise ValueError
+        for schema in ("sqlite_master", "sqlite_temp_master"):
+            triggers = self._connection.execute(
+                f"SELECT name FROM {schema} WHERE type = 'trigger' AND tbl_name = ?",
+                ("approval_requests",),
+            ).fetchall()
+            if triggers:
+                raise ValueError
 
     def _prepare_request(
         self,
@@ -287,8 +292,7 @@ class ApprovalStateMachine:
             or type(rule_ids) is not tuple
             or not rule_ids
             or any(
-                type(rule_id) is not str or not rule_id.strip()
-                for rule_id in rule_ids
+                type(rule_id) is not str or not rule_id.strip() for rule_id in rule_ids
             )
             or type(ttl_seconds) is not int
             or ttl_seconds <= 0
@@ -376,14 +380,17 @@ class ApprovalStateMachine:
         supplied_hash = hashlib.sha256(plaintext_token.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(stored.one_time_token_hash, supplied_hash):
             raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
+        action_boundary_failed = False
+        supplied_json = ""
+        supplied_digest = ""
         try:
             supplied_json = action.model_dump_json(exclude_none=True)
             supplied_digest = action_digest(action)
         except Exception:
-            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE) from None
-        digest_mismatch = not hmac.compare_digest(
-            stored.action_hash, supplied_digest
-        )
+            action_boundary_failed = True
+        if action_boundary_failed:
+            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
+        digest_mismatch = not hmac.compare_digest(stored.action_hash, supplied_digest)
         json_mismatch = not hmac.compare_digest(
             stored.frozen_action_json, supplied_json
         )
@@ -490,9 +497,7 @@ class ApprovalStateMachine:
         if expires_at <= created_at:
             raise ValueError
         decided_at = (
-            None
-            if decided_at_text is None
-            else self._parse_timestamp(decided_at_text)
+            None if decided_at_text is None else self._parse_timestamp(decided_at_text)
         )
         if (status is ApprovalStatus.PENDING) != (decided_at is None):
             raise ValueError
@@ -556,49 +561,66 @@ class ApprovalStateMachine:
         }
 
     def _run_write(self, operation: Callable[[], _T]) -> _T:
-        failure: ApprovalError | None = None
-        unavailable = False
-        result: _T | None = None
-        connection_id = id(self._connection)
         with self._lock:
-            active_ids = _WRITE_THREAD_STATE.active_connection_ids
-            if connection_id in active_ids:
+            connection_id = id(self._connection)
+            active = _WRITE_THREAD_STATE.active_connection_ids
+            if connection_id in active:
                 self._raise_unavailable()
-            active_ids.add(connection_id)
-            savepoint_name = f"safefix_approval_write_{next(_SAVEPOINT_COUNTER)}"
-            savepoint_active = False
+            active.add(connection_id)
             try:
-                self._connection.execute(f"SAVEPOINT {savepoint_name}")
-                savepoint_active = True
-                result = operation()
-                self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
-                savepoint_active = False
-            except ApprovalError as error:
-                failure = error
-            except Exception:
-                unavailable = True
+                return self._run_savepoint(operation)
             finally:
-                if savepoint_active:
-                    self._cleanup_savepoint(savepoint_name)
-                active_ids.remove(connection_id)
+                active.remove(connection_id)
+
+    def _run_savepoint(self, operation: Callable[[], _T]) -> _T:
+        failure: BaseException | None = None
+        result: _T | None = None
+        savepoint_name = f"safefix_approval_write_{next(_SAVEPOINT_COUNTER)}"
+        savepoint_active = False
+        try:
+            self._connection.execute(f"SAVEPOINT {savepoint_name}")
+            savepoint_active = True
+            self._lock_and_verify_write_schema()
+            result = operation()
+            self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            savepoint_active = False
+        except BaseException as error:
+            failure = error
+        if savepoint_active:
+            self._cleanup_savepoint(savepoint_name)
         if failure is not None:
-            failure.__traceback__ = None
-            raise failure from None
-        if unavailable:
-            self._raise_unavailable()
+            self._propagate_failure(failure)
         if result is None:
             self._raise_unavailable()
         return result
 
+    def _lock_and_verify_write_schema(self) -> None:
+        self._connection.execute("UPDATE approval_requests SET id = id WHERE 0")
+        self._verify_schema()
+
     def _cleanup_savepoint(self, savepoint_name: str) -> None:
         try:
             self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
-        except Exception:
+        except BaseException:
             pass
         try:
             self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
-        except Exception:
+        except BaseException:
             pass
+
+    @classmethod
+    def _propagate_failure(cls, failure: BaseException) -> NoReturn:
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise failure
+        if isinstance(failure, ApprovalError):
+            failure.__cause__ = None
+            failure.__context__ = None
+            failure.__suppress_context__ = False
+            failure.__traceback__ = None
+            raise failure
+        if isinstance(failure, Exception):
+            cls._raise_unavailable()
+        raise failure
 
     def _contains_secret(self, value: str) -> bool:
         return any(secret in value for secret in self._secrets)
