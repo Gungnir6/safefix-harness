@@ -689,6 +689,152 @@ def test_shell_and_interpreter_execution_modes_never_inherit_program_allow(
 @pytest.mark.parametrize(
     ("program", "args"),
     [
+        ("python", ("-",)),
+        ("python", ("-i",)),
+        ("node", ("--inspect",)),
+    ],
+)
+def test_all_interpreter_entry_modes_require_approval(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="interpreter-mode", reason="test", program=program, args=args
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_INLINE_CODE",)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("powershell", ("-Command", "Remove-Item", "-Recurse", r"C:\Windows")),
+        ("pwsh", ("-c", "Remove-Item", "-Recurse", r"C:\Windows")),
+        ("cmd", ("/c", "del", r"C:\Windows\System32\config")),
+    ],
+)
+def test_windows_shell_command_flags_join_all_remaining_arguments(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="windows-shell", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_SYSTEM_DESTRUCTION",)
+
+
+@pytest.mark.parametrize(
+    ("args", "rule"),
+    [
+        (("diff", "--output", "result.patch"), "CMD_GIT_WRITE"),
+        (("diff", "--output=result.patch"), "CMD_GIT_WRITE"),
+        (("--paginate", "log"), "CMD_GIT_COMMAND"),
+        (("-p", "show", "HEAD"), "CMD_GIT_COMMAND"),
+        (("diff", "--ext-diff"), "CMD_GIT_COMMAND"),
+        (("diff", "--textconv"), "CMD_GIT_COMMAND"),
+        (("-c", "color.ui=false", "status"), "CMD_GIT_COMMAND"),
+    ],
+)
+def test_git_read_commands_with_side_effect_hooks_require_approval(
+    policy: PolicyEngine, args: tuple[str, ...], rule: str
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="git-option", reason="test", program="git", args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == (rule,)
+
+
+@pytest.mark.parametrize(
+    ("args", "rule"),
+    [
+        (("-c", "core.pager=sudo id", "--paginate", "log"), "CMD_PRIVILEGE_ESCALATION"),
+        (("-C", "repo", "credential", "fill"), "CMD_CREDENTIAL_ACCESS"),
+    ],
+)
+def test_git_global_options_cannot_hide_permanent_denials(
+    policy: PolicyEngine, args: tuple[str, ...], rule: str
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="git-permanent", reason="test", program="git", args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == (rule,)
+
+
+def test_ambiguous_windows_short_system_path_requires_approval(
+    policy: PolicyEngine,
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="short-path",
+            reason="test",
+            program="cp",
+            args=("payload", r"C:\PROGRA~1\Vendor\target"),
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_AMBIGUOUS_SYSTEM_PATH",)
+    assert "PROGRA~1" not in decision.explanation
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
+        ("get-content", ("Env:PATH",)),
+        ("gc", ("Env:PATH",)),
+        ("gci", ("Env:",)),
+        (
+            "python",
+            (
+                "-c",
+                "print(getattr(__import__('os'), 'environ', {}))",
+            ),
+        ),
+    ],
+)
+def test_environment_reader_variants_are_permanently_denied(
+    policy: PolicyEngine, program: str, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="env-reader", reason="test", program=program, args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.DENY
+    assert decision.rule_ids == ("CMD_CREDENTIAL_ACCESS",)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "safe; sudo id"',
+        "echo 'safe; sudo id'",
+        "echo '$(sudo id)'",
+        "echo '`sudo id`'",
+    ],
+)
+def test_shell_literals_do_not_create_nested_commands(
+    policy: PolicyEngine, command: str
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(
+            id="shell-literal", reason="test", program="bash", args=("-c", command)
+        )
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_SHELL_COMMAND",)
+
+
+@pytest.mark.parametrize(
+    ("program", "args"),
+    [
         ("node", ("--print", "process['env']")),
         ("node", ("-p", 'process["env"]')),
         ("python", ("-c", "import os as o; print(getattr(o, 'environ'))")),

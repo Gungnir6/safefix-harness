@@ -45,7 +45,7 @@ _CREDENTIAL_PROGRAMS = frozenset(
     }
 )
 _FILE_READER_PROGRAMS = frozenset(
-    {"cat", "type", "more", "less", "head", "tail", "get-content"}
+    {"cat", "type", "more", "less", "head", "tail", "get-content", "gc"}
 )
 _SHELL_PROGRAMS = frozenset({"cmd", "powershell", "pwsh", "sh", "bash", "zsh", "fish"})
 _DELETE_PROGRAMS = frozenset(
@@ -179,7 +179,7 @@ _NODE_SUBPROCESS_DELETE = re.compile(
 )
 _PYTHON_CREDENTIAL_READ = re.compile(
     r"(?:\b[a-zA-Z_]\w*\.environ|os\.getenv\s*\(|keyring\.|"
-    r"getattr\s*\(\s*[a-zA-Z_]\w*\s*,\s*['\"]environ['\"]\s*\)|"
+    r"getattr\s*\([\s\S]{0,512}?['\"]environ['\"]|"
     r"open\s*\([^)]*(?:\.env|\.ssh|\.pem|credentials?|id_(?:rsa|ed25519)))",
     re.IGNORECASE,
 )
@@ -202,8 +202,8 @@ _SUBCOMMAND_START = re.compile(
     r"(?:\$\(|`)\s*(?:command\s+|exec\s+)?([^\s;&|()`]+)", re.IGNORECASE
 )
 _QUOTED_VALUE = re.compile(r"(['\"])(.*?)\1")
-_COMMAND_SPLIT = re.compile(r"(?:&&|\|\||[;&|\r\n]+)")
 _COMMAND_WRAPPERS = frozenset({"command", "exec", "builtin", "nohup"})
+_WINDOWS_SHORT_COMPONENT = re.compile(r"[^\\/:]*~\d+(?:\.[^\\/:]+)?$")
 _POSIX_SYSTEM_ROOTS = frozenset(
     {
         "bin",
@@ -288,13 +288,6 @@ def _argument_text(args: Sequence[str]) -> str:
     return " ".join(args)
 
 
-def _first_non_option(args: Sequence[str]) -> str | None:
-    for arg in args:
-        if not arg.startswith("-"):
-            return arg.casefold()
-    return None
-
-
 def _inline_code(identity: str, args: Sequence[str]) -> str | None:
     flags: tuple[str, ...]
     if _PYTHON_PROGRAM.fullmatch(identity):
@@ -335,13 +328,67 @@ def _shell_command_text(identity: str, args: Sequence[str]) -> str | None:
                 and "c" in folded[1:]
             )
         if is_command_flag:
+            if identity in {"cmd", "powershell", "pwsh"}:
+                return " ".join(args[index + 1 :])
             return args[index + 1] if index + 1 < len(args) else ""
     return None
 
 
+def _split_shell_segments(command_text: str) -> tuple[str, ...]:
+    segments: list[str] = []
+    start = 0
+    quote: str | None = None
+    index = 0
+    while index < len(command_text):
+        character = command_text[index]
+        if character == "\\" and quote != "'":
+            index += 2
+            continue
+        if quote is not None:
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character in {";", "&", "|", "\r", "\n"}:
+            segment = command_text[start:index].strip()
+            if segment:
+                segments.append(segment)
+            if index + 1 < len(command_text):
+                pair = command_text[index : index + 2]
+                if pair in {"&&", "||", "\r\n"}:
+                    index += 1
+            start = index + 1
+        index += 1
+    final = command_text[start:].strip()
+    if final:
+        segments.append(final)
+    return tuple(segments)
+
+
+def _mask_single_quoted_text(command_text: str) -> str:
+    masked: list[str] = []
+    in_single_quote = False
+    index = 0
+    while index < len(command_text):
+        character = command_text[index]
+        if character == "'":
+            in_single_quote = not in_single_quote
+            masked.append(" ")
+        elif in_single_quote:
+            masked.append(" ")
+        else:
+            masked.append(character)
+        index += 1
+    return "".join(masked)
+
+
 def _shell_commands(command_text: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
     commands: list[tuple[str, tuple[str, ...]]] = []
-    for segment in _COMMAND_SPLIT.split(command_text):
+    for segment in _split_shell_segments(command_text):
         tokens = [
             token.strip("'\"") for token in _COMMAND_TOKEN.findall(segment.strip())
         ]
@@ -356,7 +403,7 @@ def _shell_commands(command_text: str) -> tuple[tuple[str, tuple[str, ...]], ...
         commands.append((_risk_program_identity(tokens[0]), tuple(tokens[1:])))
     commands.extend(
         (_risk_program_identity(program), ())
-        for program in _SUBCOMMAND_START.findall(command_text)
+        for program in _SUBCOMMAND_START.findall(_mask_single_quoted_text(command_text))
     )
     return tuple(commands)
 
@@ -393,13 +440,35 @@ def _git_invocation(args: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
     return None, tuple(configuration)
 
 
-def _git_alias_commands(args: Sequence[str]) -> tuple[str, ...]:
+def _git_config_commands(args: Sequence[str]) -> tuple[str, ...]:
     _, configuration = _git_invocation(args)
     commands: list[str] = []
     for item in configuration:
         key, separator, value = item.partition("=")
-        if separator and key.casefold().startswith("alias.") and value.startswith("!"):
+        if not separator:
+            continue
+        folded_key = key.casefold()
+        if folded_key.startswith("alias.") and value.startswith("!"):
             commands.append(value[1:])
+            continue
+        command_keys = (
+            folded_key == "core.pager"
+            or folded_key.startswith("pager.")
+            or folded_key
+            in {
+                "core.editor",
+                "sequence.editor",
+                "diff.external",
+                "core.sshcommand",
+                "gpg.program",
+                "credential.helper",
+            }
+            or (folded_key.startswith("diff.") and folded_key.endswith(".command"))
+            or (folded_key.startswith("difftool.") and folded_key.endswith(".cmd"))
+            or (folded_key.startswith("mergetool.") and folded_key.endswith(".cmd"))
+        )
+        if command_keys and value:
+            commands.append(value)
     return tuple(commands)
 
 
@@ -417,8 +486,8 @@ def _expanded_commands(
                 _expanded_commands(nested_identity, nested_args, depth=depth + 1)
             )
     if identity == "git":
-        for alias_text in _git_alias_commands(args):
-            for nested_identity, nested_args in _shell_commands(alias_text):
+        for configured_command in _git_config_commands(args):
+            for nested_identity, nested_args in _shell_commands(configured_command):
                 expanded.extend(
                     _expanded_commands(nested_identity, nested_args, depth=depth + 1)
                 )
@@ -472,6 +541,21 @@ def _targets_root_or_system(args: Sequence[str]) -> bool:
     return any(_is_system_or_escape_path(arg) for arg in args)
 
 
+def _has_ambiguous_windows_short_path(identity: str, args: Sequence[str]) -> bool:
+    if identity not in _SYSTEM_MUTATION_PROGRAMS | _DELETE_PROGRAMS:
+        return False
+    for candidate in args:
+        raw = candidate.strip().strip("'\"")
+        if not _is_windows_absolute_path(raw):
+            continue
+        if any(
+            _WINDOWS_SHORT_COMPONENT.fullmatch(component)
+            for component in re.split(r"[\\/]", raw)
+        ):
+            return True
+    return False
+
+
 def _is_system_destruction(identity: str, args: Sequence[str]) -> bool:
     if identity in _SYSTEM_DESTRUCTION_PROGRAMS:
         return True
@@ -505,12 +589,12 @@ def _is_system_destruction(identity: str, args: Sequence[str]) -> bool:
 def _is_credential_access(identity: str, args: Sequence[str]) -> bool:
     if identity in _CREDENTIAL_PROGRAMS:
         return True
-    if identity in {"get-childitem", "gci"} and any(
+    if identity in {"get-content", "gc", "get-childitem", "gci"} and any(
         arg.casefold().startswith("env:") for arg in args
     ):
         return True
-    first = _first_non_option(args)
-    if identity == "git" and first is not None and first.startswith("credential"):
+    git_subcommand, _ = _git_invocation(args) if identity == "git" else (None, ())
+    if git_subcommand is not None and git_subcommand.startswith("credential"):
         return True
     code = _inline_code(identity, args)
     if code is not None:
@@ -555,7 +639,10 @@ def _git_approval_rule(identity: str, args: Sequence[str]) -> str | None:
     if identity != "git":
         return None
     subcommand, configuration = _git_invocation(args)
-    if any(item.casefold().startswith("alias.") for item in configuration):
+    if any(arg == "--output" or arg.startswith("--output=") for arg in args):
+        return "CMD_GIT_WRITE"
+    unsafe_read_options = {"--paginate", "-p", "--ext-diff", "--textconv"}
+    if configuration or any(arg in unsafe_read_options for arg in args):
         return "CMD_GIT_COMMAND"
     if subcommand in _GIT_NETWORK_SUBCOMMANDS:
         return "CMD_NETWORK"
@@ -570,17 +657,9 @@ def _is_interpreter_execution(identity: str, args: Sequence[str]) -> bool:
     if identity in _SHELL_PROGRAMS:
         return True
     if _PYTHON_PROGRAM.fullmatch(identity):
-        if not args:
-            return True
-        if any(arg in {"-c", "-m"} or arg.startswith("-c") for arg in args):
-            return True
-        return any(not arg.startswith("-") for arg in args)
+        return True
     if identity in {"node", "nodejs"}:
-        if not args:
-            return True
-        if _inline_code(identity, args) is not None:
-            return True
-        return any(not arg.startswith("-") for arg in args)
+        return True
     return False
 
 
@@ -705,7 +784,12 @@ class PolicyEngine:
             )
 
         for program, command_args in commands:
-            if _is_delete_command(program, command_args):
+            if _has_ambiguous_windows_short_path(program, command_args):
+                rule = "CMD_AMBIGUOUS_SYSTEM_PATH"
+                explanation = (
+                    "An ambiguous Windows short path in a mutation requires approval."
+                )
+            elif _is_delete_command(program, command_args):
                 rule = "CMD_DELETE"
                 explanation = "Deletion commands require explicit approval."
             elif _is_install(program, command_args):
