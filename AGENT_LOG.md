@@ -79,5 +79,6 @@
 - 合并门禁修复：整分支审查发现配置允许的文件搬运可复制敏感源、表面只读 Git 仍可由仓库/全局配置触发外部执行；`6a6ff31 fix(governance): 收紧文件搬运与Git读取` 复用 `WorkspaceBoundary` 的敏感模式永久拒绝敏感搬运，普通搬运与所有非 validator Git 调用保守审批。
 - 最终独立复审：规范、安全和整分支审查均 `APPROVED`，Critical 0、Important 0、Minor 0；确认永久拒绝优先级、精确 validator、安全授权身份、不透明执行默认审批、敏感文件搬运、Git 副作用和稳定脱敏决定均满足 T05。
 - 根代理新鲜验证：Python 3.12.3；377 passed；Ruff check/format、mypy（`src` + T05 测试）、`git diff --check` 全部 exit 0；过程文档修改前工作树干净，最终实现差异仅含 `src/safefix/governance/policy.py` 与 `tests/unit/test_policy.py`。
+- 合并结果：MR !5 合并到 `main`，合并提交 `ff7c17f`；主工作区快进后确认分支头 `63ac64a` 已进入主线，复跑完整测试为 377 passed，Ruff check/format、mypy、pip check 全部 exit 0。
 - 人工裁决：`denied_programs` 永久拒绝；`allowed_programs` 只表示配置身份，不能越过更早风险；授权匹配与风险 basename 分离；无法可靠解析的 shell、解释器、未知 Git 和文件搬运至少审批；精确 validator 仅在永久危险检查后允许。未进行学生手工代码修改，所有生产与测试变更均由受约束子代理完成并经主代理验证。
 - 经验：策略引擎不能依靠不断扩张的危险字符串黑名单；自动允许面必须由精确身份和明确安全执行形态定义，所有不透明行为保守审批。路径规范化、嵌套命令最高严重度聚合、敏感源搬运和 Git 外部扩展入口必须作为同一策略边界测试，而不是分别依赖后续执行器补救。
