@@ -854,9 +854,7 @@ def test_apostrophe_inside_double_quotes_does_not_hide_command_substitution(
     "args",
     [
         ("grep", '--open-files-in-pager="sudo id"', "needle"),
-        ("grep", "--open-files-in-pager", "sudo id", "needle"),
         ("grep", "-Osudo id", "needle"),
-        ("grep", "-O", "sudo id", "needle"),
     ],
 )
 def test_git_visible_pager_commands_apply_permanent_rules(
@@ -868,6 +866,24 @@ def test_git_visible_pager_commands_apply_permanent_rules(
 
     assert decision.outcome is DecisionOutcome.DENY
     assert decision.rule_ids == ("CMD_PRIVILEGE_ESCALATION",)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("grep", "--open-files-in-pager", "sudo"),
+        ("grep", "-O", "sudo"),
+    ],
+)
+def test_git_bare_optional_pager_does_not_consume_the_pattern(
+    policy: PolicyEngine, args: tuple[str, ...]
+) -> None:
+    decision = policy.decide(
+        RunProcessAction(id="git-bare-pager", reason="test", program="git", args=args)
+    )
+
+    assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert decision.rule_ids == ("CMD_GIT_COMMAND",)
 
 
 @pytest.mark.parametrize(

@@ -491,10 +491,6 @@ def _git_pager_commands(args: Sequence[str]) -> tuple[str, ...]:
         value: str | None = None
         if arg.startswith("--open-files-in-pager="):
             value = arg.partition("=")[2]
-        elif arg in {"--open-files-in-pager", "-O"}:
-            if index + 1 < len(args):
-                value = args[index + 1]
-                index += 1
         elif arg.startswith("-O") and len(arg) > 2:
             value = arg[2:]
         if value:
