@@ -142,66 +142,82 @@ class AuditStore:
             self._raise_unavailable()
 
         transaction_failed = False
-        savepoint_started = False
         savepoint_name = f"safefix_audit_append_{next(_SAVEPOINT_COUNTER)}"
         try:
             self._connection.execute(f"SAVEPOINT {savepoint_name}")
-            savepoint_started = True
-            snapshot = self._read_chain(run_id)
-            if not snapshot.verification.valid:
-                raise ValueError
-            sequence = len(snapshot.events) + 1
-            previous_hash = (
-                "" if not snapshot.events else snapshot.events[-1].event_hash
-            )
-            created_at = datetime.now(UTC)
-            created_at_text = self._format_timestamp(created_at)
-            event_hash = self._hash_event(
-                run_id,
-                sequence,
-                event_type,
-                payload_json,
-                created_at_text,
-                previous_hash,
-            )
-            self._connection.execute(
-                """
-                INSERT INTO audit_events (
-                    run_id, sequence, event_type, payload,
-                    previous_hash, event_hash, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
+            savepoint_active = True
+            try:
+                snapshot = self._read_chain(run_id)
+                if not snapshot.verification.valid:
+                    raise ValueError
+                sequence = len(snapshot.events) + 1
+                previous_hash = (
+                    "" if not snapshot.events else snapshot.events[-1].event_hash
+                )
+                created_at = datetime.now(UTC)
+                created_at_text = self._format_timestamp(created_at)
+                event_hash = self._hash_event(
                     run_id,
                     sequence,
                     event_type,
                     payload_json,
-                    previous_hash,
-                    event_hash,
                     created_at_text,
-                ),
-            )
-            self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                    previous_hash,
+                )
+                candidate = AuditEvent(
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type=event_type,
+                    redacted_payload=json.loads(payload_json),
+                    previous_hash=previous_hash,
+                    event_hash=event_hash,
+                    created_at=created_at,
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO audit_events (
+                        run_id, sequence, event_type, payload,
+                        previous_hash, event_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        sequence,
+                        event_type,
+                        payload_json,
+                        previous_hash,
+                        event_hash,
+                        created_at_text,
+                    ),
+                )
+                persisted = self._read_chain(run_id)
+                if (
+                    not persisted.verification.valid
+                    or len(persisted.events) != sequence
+                    or persisted.events[-1] != candidate
+                ):
+                    raise ValueError
+                self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                savepoint_active = False
+            finally:
+                if savepoint_active:
+                    self._cleanup_savepoint(savepoint_name)
         except Exception:
             transaction_failed = True
-            if savepoint_started:
-                try:
-                    self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
-                    self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
-                except Exception:
-                    pass
         if transaction_failed:
             self._raise_unavailable()
 
-        return AuditEvent(
-            run_id=run_id,
-            sequence=sequence,
-            event_type=event_type,
-            redacted_payload=json.loads(payload_json),
-            previous_hash=previous_hash,
-            event_hash=event_hash,
-            created_at=created_at,
-        )
+        return candidate
+
+    def _cleanup_savepoint(self, savepoint_name: str) -> None:
+        try:
+            self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        except Exception:
+            pass
+        try:
+            self._connection.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        except Exception:
+            pass
 
     def list_events(self, run_id: str) -> list[AuditEvent]:
         with self._lock:

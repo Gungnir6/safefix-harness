@@ -880,6 +880,98 @@ def test_append_reentrancy_guard_is_cleared_after_base_exception() -> None:
     assert store.verify_chain("run").valid is True
 
 
+@pytest.mark.parametrize("sabotage", ["delete", "update"])
+def test_append_verifies_candidate_persisted_unchanged_before_success(
+    sabotage: str,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    store = AuditStore(connection)
+    store.append("run", "FIRST", {"value": 1})
+    rows_before = connection.execute(
+        "SELECT * FROM audit_events WHERE run_id = ? ORDER BY sequence", ("run",)
+    ).fetchall()
+    if sabotage == "delete":
+        trigger_body = """
+            DELETE FROM audit_events
+            WHERE run_id = NEW.run_id AND sequence = NEW.sequence;
+        """
+    else:
+        trigger_body = """
+            UPDATE audit_events SET event_type = 'TAMPERED'
+            WHERE run_id = NEW.run_id AND sequence = NEW.sequence;
+        """
+    connection.execute(
+        f"""
+        CREATE TRIGGER sabotage_candidate
+        AFTER INSERT ON audit_events
+        WHEN NEW.sequence = 2
+        BEGIN
+            {trigger_body}
+        END
+        """
+    )
+
+    with pytest.raises(AuditUnavailable) as captured:
+        store.append("run", "SECOND", {"value": 2})
+
+    assert str(captured.value) == "Audit storage is unavailable"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert (
+        connection.execute(
+            "SELECT * FROM audit_events WHERE run_id = ? ORDER BY sequence", ("run",)
+        ).fetchall()
+        == rows_before
+    )
+    assert store.verify_chain("run").valid is True
+    connection.execute("DROP TRIGGER sabotage_candidate")
+    recovered = store.append("run", "RECOVERED", {"value": 2})
+    assert recovered.sequence == 2
+    assert store.list_events("run")[-1] == recovered
+    assert store.verify_chain("run").valid is True
+
+
+@pytest.mark.parametrize("signal_type", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("has_outer_transaction", [False, True])
+def test_insert_base_exception_cleans_savepoint_and_preserves_outer_transaction(
+    signal_type: type[BaseException], has_outer_transaction: bool
+) -> None:
+    connection = sqlite3.connect(":memory:", factory=_InterruptingInsertConnection)
+    assert isinstance(connection, _InterruptingInsertConnection)
+    store = AuditStore(connection)
+    if has_outer_transaction:
+        connection.execute("CREATE TABLE interrupt_sentinel (value TEXT NOT NULL)")
+        connection.commit()
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO interrupt_sentinel VALUES ('preserve-me')")
+    signal = signal_type()
+    connection.next_insert_interrupt = signal
+
+    with pytest.raises(signal_type) as captured:
+        store.append("run", "INTERRUPTED", {"value": 1})
+
+    assert captured.value is signal
+    assert len(connection.savepoint_names) == 1
+    interrupted_savepoint = connection.savepoint_names[0]
+    assert connection.rollback_names == [interrupted_savepoint]
+    assert connection.release_names == [interrupted_savepoint]
+    assert connection.in_transaction is has_outer_transaction
+    assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+    if has_outer_transaction:
+        assert connection.execute(
+            "SELECT value FROM interrupt_sentinel"
+        ).fetchall() == [("preserve-me",)]
+
+    recovered = store.append("run", "RECOVERED", {"value": 2})
+    assert recovered.sequence == 1
+    assert store.list_events("run") == [recovered]
+    assert store.verify_chain("run").valid is True
+    assert connection.in_transaction is has_outer_transaction
+    if has_outer_transaction:
+        connection.commit()
+        assert store.list_events("run") == [recovered]
+
+
 class _PausingInsertConnection(sqlite3.Connection):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -962,6 +1054,31 @@ class _InterruptingMapping(Mapping[str, object]):
 
     def __len__(self) -> int:
         return 1
+
+
+class _InterruptingInsertConnection(sqlite3.Connection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.next_insert_interrupt: BaseException | None = None
+        self.savepoint_names: list[str] = []
+        self.rollback_names: list[str] = []
+        self.release_names: list[str] = []
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        normalized = sql.strip()
+        if normalized.startswith("SAVEPOINT "):
+            self.savepoint_names.append(normalized.split()[1])
+        elif normalized.startswith("ROLLBACK TO SAVEPOINT "):
+            self.rollback_names.append(normalized.split()[3])
+        elif normalized.startswith("RELEASE SAVEPOINT "):
+            self.release_names.append(normalized.split()[2])
+        if self.next_insert_interrupt is not None and normalized.startswith(
+            "INSERT INTO audit_events"
+        ):
+            signal = self.next_insert_interrupt
+            self.next_insert_interrupt = None
+            raise signal
+        return super().execute(sql, parameters)
 
 
 def _event_hash(
