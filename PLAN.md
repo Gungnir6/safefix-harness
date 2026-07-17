@@ -611,7 +611,7 @@ Record the T05 hash and required evidence after both reviews.
 - Consumes: JSON-serializable event payloads and a SQLite connection factory.
 - Produces: `AuditStore.append(run_id, event_type, payload) -> AuditEvent`; `list_events(run_id)`; `verify_chain(run_id) -> AuditVerification`.
 
-- [ ] **Step 1: Write failing tamper-detection test**
+- [x] **Step 1: Write failing tamper-detection test**
 
 ```python
 import sqlite3
@@ -629,13 +629,13 @@ def test_audit_chain_detects_modified_payload() -> None:
     assert result.first_invalid_sequence == 1
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/unit/test_audit.py -v`
 
 Expected: FAIL because `AuditStore` does not exist.
 
-- [ ] **Step 3: Implement redaction and hash chaining**
+- [x] **Step 3: Implement redaction and hash chaining**
 
 Canonicalize redacted JSON with sorted keys and compact separators. Hash `run_id`, sequence, event type, redacted payload, timestamp and previous hash. Redact keys matching token/key/secret/password/authorization and values matching configured secret values before persistence.
 
@@ -645,7 +645,7 @@ event_hash = hashlib.sha256(
 ).hexdigest()
 ```
 
-- [ ] **Step 4: Add isolation and fail-closed tests**
+- [x] **Step 4: Add isolation and fail-closed tests**
 
 Test separate chains per run, empty-chain validity, Key redaction, deterministic sequence, and transaction failure. Expose `AuditUnavailable`; later dangerous-action code must treat it as a deny condition.
 
@@ -653,7 +653,7 @@ Run: `python -m pytest tests/unit/test_audit.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(audit): 添加脱敏防篡改审计日志`
 
@@ -1510,7 +1510,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T03 | Completed | `762a073`, `b322870`, `fea9a51`, `1e585fe`, `2be70e4`, `c38f3bc`; plan `a822e82`, `abc0fac`; merge `8b34b10` | [!4](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/4) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 2 Minor); strict JSON, staged exception classification, bounded feedback and traceback-local disclosure findings fixed; merged and reverified on `main`; mock bare-string and ModelResponse immutability-test Minors deferred |
 | T04 | Completed | `91dbd88`, `94c0edd`, `49895de`, `325aa1b`; plan `6031621`, `dad25df`; merge `10cd964` | [!3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; merged and reverified on `main`; Hypothesis oracle design Minor deferred |
 | T05 | Completed | `44c625e`, `1a0d503`, `2204d34`, `3a640c8`, `224d696`, `0da385a`, `6a6ff31`; plan `7b12b89`, `63ac64a`; merge `ff7c17f` | [!5](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/5) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 0 Minor); authorization identity, nested shell/interpreter, normalized system paths, Git side effects, sensitive file transfer and disclosure findings fixed; merged and reverified on `main` |
-| T06 | Pending | — | — | — |
+| T06 | In review | `65f54d0`, `c1e04c4`, `9067a95`, `12ce19b`; plan `1d0a0c3` | [!6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 2 Minor); metadata/payload disclosure, forged-chain reads, dynamic SQLite types, concurrent/reentrant writes, post-insert trigger tampering and interrupted savepoint cleanup findings fixed; read-only reentry scope and long-chain O(N²) Minors deferred |
 | T07 | Pending | — | — | — |
 | T08 | Pending | — | — | — |
 | T09 | Pending | — | — | — |
