@@ -130,15 +130,31 @@ class ApprovalStateMachine:
     ) -> None:
         self._connection = connection
         self._clock = clock
-        self._secrets = tuple(
-            sorted({value for value in configured_secret_values if value})
-        )
         self._lock = _CONNECTION_LOCKS[id(connection) % len(_CONNECTION_LOCKS)]
+        secrets_outcome = self._normalize_constructor_outcome(
+            self._capture_call(
+                lambda: tuple(
+                    sorted({value for value in configured_secret_values if value})
+                )
+            )
+        )
+        configured_secret_values = ()
+        secrets = self._resolve_outcome(secrets_outcome)
+        secrets_outcome = _CallOutcome()
+        self._secrets = secrets
+        secrets = ()
+        initialization_outcome = self._normalize_constructor_outcome(
+            self._capture_call(self._initialize)
+        )
+        self._resolve_outcome(initialization_outcome)
+
+    def _initialize(self) -> bool:
         self._audit = AuditStore(
-            connection,
+            self._connection,
             configured_secret_values=self._secrets,
         )
         self._initialize_schema()
+        return True
 
     def request(
         self,
@@ -777,6 +793,14 @@ class ApprovalStateMachine:
         except BaseException as failure:
             failure.__traceback__ = None
             return _CallOutcome(failure=failure)
+
+    @staticmethod
+    def _normalize_constructor_outcome(
+        outcome: _CallOutcome[_T],
+    ) -> _CallOutcome[_T]:
+        if isinstance(outcome.failure, Exception):
+            return _CallOutcome(failure=ApprovalUnavailable(_UNAVAILABLE_MESSAGE))
+        return outcome
 
     @classmethod
     def _resolve_outcome(cls, outcome: _CallOutcome[_T]) -> _T:

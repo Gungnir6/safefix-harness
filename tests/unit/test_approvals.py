@@ -868,6 +868,13 @@ def test_request_rejects_audit_trigger_tampering(
     effect: str,
 ) -> None:
     store = ApprovalStateMachine(connection)
+    existing = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    approval_rows_before = connection.execute(
+        "SELECT * FROM approval_requests ORDER BY id"
+    ).fetchall()
+    audit_rows_before = connection.execute(
+        "SELECT * FROM audit_events ORDER BY run_id, sequence"
+    ).fetchall()
     trigger_sql = (
         "DELETE FROM audit_events WHERE run_id = NEW.run_id AND sequence = NEW.sequence"
         if effect == "delete"
@@ -880,11 +887,79 @@ def test_request_rejects_audit_trigger_tampering(
     )
 
     with pytest.raises(ApprovalUnavailable):
-        store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+        store.request(
+            "run-1",
+            risky_action.model_copy(update={"id": "a2"}),
+            RiskLevel.MEDIUM,
+            ("RULE",),
+            300,
+        )
 
+    assert existing.request.status is ApprovalStatus.PENDING
     assert (
-        connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0] == 0
+        connection.execute("SELECT * FROM approval_requests ORDER BY id").fetchall()
+        == approval_rows_before
     )
+    assert (
+        connection.execute(
+            "SELECT * FROM audit_events ORDER BY run_id, sequence"
+        ).fetchall()
+        == audit_rows_before
+    )
+
+
+def test_constructor_bad_approval_schema_never_leaks_configured_secret(
+    connection: sqlite3.Connection,
+) -> None:
+    secret = "constructor-approval-schema-sentinel"
+    connection.execute(f'CREATE TABLE approval_requests ("{secret}" TEXT)')
+
+    with pytest.raises(BaseException) as captured:
+        ApprovalStateMachine(connection, configured_secret_values=(secret,))
+
+    assert type(captured.value) is ApprovalUnavailable
+    _assert_sensitive_approval_failure(
+        captured,
+        (secret, "CREATE TABLE", "table approval_requests"),
+        "Approval storage is unavailable",
+    )
+
+
+def test_constructor_bad_audit_schema_maps_error_and_never_leaks_secret(
+    connection: sqlite3.Connection,
+) -> None:
+    secret = "constructor-audit-schema-sentinel"
+    connection.execute(f'CREATE TABLE audit_events ("{secret}" TEXT)')
+
+    with pytest.raises(BaseException) as captured:
+        ApprovalStateMachine(connection, configured_secret_values=(secret,))
+
+    assert type(captured.value) is ApprovalUnavailable
+    _assert_sensitive_approval_failure(
+        captured,
+        (secret, "CREATE TABLE", "table audit_events", "Audit storage is unavailable"),
+        "Approval storage is unavailable",
+    )
+
+
+@pytest.mark.parametrize("signal_type", [KeyboardInterrupt, SystemExit])
+def test_constructor_process_control_never_leaks_secret(
+    connection: sqlite3.Connection,
+    signal_type: type[BaseException],
+) -> None:
+    secret = "constructor-process-control-sentinel"
+    signal = signal_type()
+    configured_values = _InterruptingSecretValues(secret, signal)
+
+    with pytest.raises(signal_type) as captured:
+        ApprovalStateMachine(
+            connection,
+            configured_secret_values=configured_values,
+        )
+
+    assert captured.value is signal
+    _assert_sensitive_approval_failure(captured, (secret,))
+    ApprovalStateMachine(connection)
 
 
 def test_approve_rejects_approval_table_after_update_tampering(
@@ -1496,6 +1571,19 @@ class _ExplodingAction:
 
 class _CleanupBaseException(BaseException):
     pass
+
+
+class _InterruptingSecretValues:
+    def __init__(self, secret: str, signal: BaseException) -> None:
+        self._secret = secret
+        self._signal = signal
+
+    def __iter__(self) -> Iterator[str]:
+        raise self._signal
+        yield self._secret
+
+    def __repr__(self) -> str:
+        return f"_InterruptingSecretValues(secret={self._secret!r})"
 
 
 class _TriggerInstallingClock:
