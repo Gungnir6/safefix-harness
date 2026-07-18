@@ -102,7 +102,7 @@
 ## T07 — Persistent HITL Approval State Machine
 
 - 时间：2026-07-17–2026-07-18 +08:00
-- 分支 / MR：`codex/t07-approval-state-machine` / MR 待创建。
+- 分支 / MR：`t07-approval-state-machine` / MR 待创建。
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
 - 关键 prompt/context：实现代理仅获得 T07 task brief、隔离工作树、基线 `5ff7a83`、两个允许的生产/测试文件、冻结动作、单次 token、SQLite 持久化、T06 审计失败必须阻止状态转换、秘密非披露、中文 Conventional Commits 与报告契约；规格、安全和整分支审查代理均只读相应版本的冻结 `BASE..HEAD` 差异包。
 - 初始实现与审查修复：`a953456 feat(approval): 添加持久化审批请求` 建立只保存 SHA-256 token digest 的持久化请求；后续提交 `06995fd`、`4be5161`、`bb86c20`、`da73da4`、`503abb2`、`f5e45d8` 依次收紧公开错误边界、SQLite trigger/SAVEPOINT 竞态、进程控制异常清理、冻结动作单次批准、终态持久化和跨 store 并发事务语义。

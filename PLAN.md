@@ -663,7 +663,7 @@ Record the T06 hash and required evidence after both reviews.
 
 ### Task 07: Persistent HITL Approval State Machine
 
-**Branch/PR:** `codex/t07-approval-state-machine`
+**Branch/PR:** `t07-approval-state-machine`
 
 **Files:**
 - Create: `src/safefix/governance/approvals.py`

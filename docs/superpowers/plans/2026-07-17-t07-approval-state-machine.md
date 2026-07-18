@@ -744,4 +744,4 @@ git commit -m "docs(process): 记录 T07 实现与审查"
 
 - [ ] **Step 6: Invoke finishing-a-development-branch**
 
-After fresh verification, present the four standard integration options. Recommend option 2: push `codex/t07-approval-state-machine` and create a GitLab merge request targeting `main`. Preserve the worktree until the MR is merged and reverified.
+After fresh verification, present the four standard integration options. Recommend option 2: push `t07-approval-state-machine` and create a GitLab merge request targeting `main`. Preserve the worktree until the MR is merged and reverified.
