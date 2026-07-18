@@ -732,7 +732,7 @@ Record the T07 hash and required evidence after both reviews.
 
 ### Task 08: Bounded Filesystem Tools and Registry
 
-**Branch/PR:** `codex/t08-filesystem-tools`
+**Branch/PR:** `t08-filesystem-tools`
 
 **Files:**
 - Create: `src/safefix/tools/__init__.py`
