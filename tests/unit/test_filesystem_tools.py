@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import traceback as traceback_module
 from typing import Any, SupportsIndex
 
 import pytest
@@ -614,6 +615,62 @@ async def test_list_files_supports_configured_workspace_alias_absolute_path(
     assert result.stdout_summary == "subdir/ok.txt"
 
 
+def test_list_files_canonical_branch_does_not_chain_sensitive_context(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    target = real_workspace / "subdir"
+    target.mkdir(parents=True)
+    alias = workspace / "PRIVATE-CONFIGURED-SENTINEL"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    tool = ListFilesTool(WorkspaceBoundary(alias, ()))
+    real_relative_to = Path.relative_to
+    interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
+
+    def interrupting_relative_to(
+        path: Path, *other: Any, **kwargs: Any
+    ) -> Path:
+        if path == target and other == (real_workspace,):
+            raise interrupt
+        return real_relative_to(path, *other, **kwargs)
+
+    monkeypatch.setattr(Path, "relative_to", interrupting_relative_to)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        tool._execute_sync(
+            ListFilesAction(
+                id="list-context",
+                reason="inspect",
+                path=str(target),
+                limit=100,
+            )
+        )
+
+    propagated = error_info.value
+    assert propagated is interrupt
+    assert propagated.__cause__ is None
+    assert propagated.__context__ is None
+    rendered = "".join(traceback_module.format_exception(propagated))
+    assert "PRIVATE-CONFIGURED-SENTINEL" not in rendered
+    _assert_filesystem_frames_are_clean(
+        propagated,
+        {
+            "configured_workspace",
+            "workspace",
+            "target",
+            "base",
+            "relative",
+            "current",
+            "components",
+            "component",
+        },
+        ("PRIVATE-CONFIGURED-SENTINEL",),
+    )
+
+
 @pytest.mark.asyncio
 async def test_list_files_rejects_workspace_escape(
     boundary: WorkspaceBoundary,
@@ -1221,6 +1278,91 @@ def test_read_file_clears_success_helper_traceback(
         error_info.value,
         {"output", "started_ns"},
         ("PRIVATE-OUTPUT-CONTENT",),
+    )
+
+
+def test_read_file_io_mapping_does_not_chain_sensitive_context(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "private-io.txt"
+    target.write_text("content", encoding="utf-8")
+    interrupt = SystemExit("EXPECTED-INTERRUPT")
+
+    def failing_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        raise OSError("PRIVATE-IO-CONTEXT-SENTINEL")
+
+    def interrupting_io_failure(action_id: str) -> ToolResult:
+        raise interrupt
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    monkeypatch.setattr(
+        filesystem_module, "_io_failure", interrupting_io_failure
+    )
+    with pytest.raises(SystemExit) as error_info:
+        ReadFileTool(boundary)._execute_sync(
+            ReadFileAction(
+                id="read-io-context",
+                reason="inspect",
+                path="private-io.txt",
+                start_line=1,
+                end_line=200,
+            )
+        )
+
+    propagated = error_info.value
+    assert propagated is interrupt
+    assert propagated.__cause__ is None
+    assert propagated.__context__ is None
+    rendered = "".join(traceback_module.format_exception(propagated))
+    assert "PRIVATE-IO-CONTEXT-SENTINEL" not in rendered
+    _assert_filesystem_frames_are_clean(
+        propagated,
+        {"requested_path", "target", "verified_target", "raw", "text"},
+        ("PRIVATE-IO-CONTEXT-SENTINEL", "private-io.txt"),
+    )
+
+
+def test_read_file_decode_mapping_does_not_chain_content_context(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (workspace / "binary.bin").write_bytes(b"PRIVATE-DECODE-CONTENT\xff")
+    interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
+
+    class InterruptingToolResult:
+        @classmethod
+        def failure(
+            cls, action_id: str, error_type: str, message: str
+        ) -> Any:
+            raise interrupt
+
+    monkeypatch.setattr(
+        filesystem_module, "ToolResult", InterruptingToolResult
+    )
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        ReadFileTool(boundary)._execute_sync(
+            ReadFileAction(
+                id="read-decode-context",
+                reason="inspect",
+                path="binary.bin",
+                start_line=1,
+                end_line=200,
+            )
+        )
+
+    propagated = error_info.value
+    assert propagated is interrupt
+    assert propagated.__cause__ is None
+    assert propagated.__context__ is None
+    rendered = "".join(traceback_module.format_exception(propagated))
+    assert "PRIVATE-DECODE-CONTENT" not in rendered
+    _assert_filesystem_frames_are_clean(
+        propagated,
+        {"requested_path", "target", "verified_target", "raw", "text"},
+        ("PRIVATE-DECODE-CONTENT", "binary.bin"),
     )
 
 

@@ -196,12 +196,11 @@ def _contains_directory_link(
     components: tuple[str, ...] = ()
     component = ""
     try:
-        try:
-            relative = target.relative_to(configured_workspace)
+        if target.is_relative_to(configured_workspace):
             base = configured_workspace
-        except ValueError:
-            relative = target.relative_to(workspace)
+        else:
             base = workspace
+        relative = target.relative_to(base)
         current = base
         components = relative.parts
         for component in components:
@@ -284,6 +283,7 @@ class ListFilesTool:
         selected: list[str] = []
         output = ""
         truncated = False
+        failure_type = ""
         try:
             action_id = action.id
             requested_path = action.path
@@ -374,9 +374,12 @@ class ListFilesTool:
                     )
                 return _success(action_id, output, started_ns)
             except _PATH_ERRORS:
-                return _path_denied(action_id)
+                failure_type = "path"
             except Exception:
-                return _io_failure(action_id)
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            return _io_failure(action_id)
         finally:
             del (
                 self,
@@ -403,6 +406,7 @@ class ListFilesTool:
                 selected,
                 output,
                 truncated,
+                failure_type,
             )
 
 
@@ -452,6 +456,8 @@ class ReadFileTool:
         text = ""
         lines: list[str] = []
         output = ""
+        decode_failed = False
+        failure_type = ""
         try:
             try:
                 action_id = action.id
@@ -483,6 +489,8 @@ class ReadFileTool:
                         raw = stream.read()
                     text = raw.decode("utf-8", errors="strict")
                 except UnicodeDecodeError:
+                    decode_failed = True
+                if decode_failed:
                     return ToolResult.failure(
                         action_id,
                         "BINARY_FILE",
@@ -499,9 +507,12 @@ class ReadFileTool:
                     )
                 return _success(action_id, output, started_ns)
             except _PATH_ERRORS:
-                return _path_denied(action_id)
+                failure_type = "path"
             except Exception:
-                return _io_failure(action_id)
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            return _io_failure(action_id)
         finally:
             del (
                 self,
@@ -518,4 +529,6 @@ class ReadFileTool:
                 text,
                 lines,
                 output,
+                decode_failed,
+                failure_type,
             )
