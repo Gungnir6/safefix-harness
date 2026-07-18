@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
-from typing import Any
+from typing import Any, SupportsIndex
 
 import pytest
 
+import safefix.tools.filesystem as filesystem_module
 from safefix.domain import ListFilesAction, ReadFileAction, ToolResult
 from safefix.governance.paths import WorkspaceBoundary
 from safefix.tools.filesystem import FilesystemLimits, ListFilesTool, ReadFileTool
@@ -22,17 +22,30 @@ def boundary(workspace: Path) -> WorkspaceBoundary:
     return WorkspaceBoundary(workspace, (".env", "**/*.pem", "**/.ssh/**"))
 
 
-def _filesystem_sync_frame_locals(error: BaseException) -> dict[str, Any]:
+def _filesystem_frame_locals(
+    error: BaseException,
+) -> list[tuple[str, dict[str, Any]]]:
     traceback = error.__traceback__
+    frames: list[tuple[str, dict[str, Any]]] = []
     while traceback is not None:
         frame = traceback.tb_frame
-        if (
-            frame.f_code.co_name == "_execute_sync"
-            and frame.f_globals.get("__name__") == "safefix.tools.filesystem"
-        ):
-            return dict(frame.f_locals)
+        if frame.f_globals.get("__name__") == "safefix.tools.filesystem":
+            frames.append((frame.f_code.co_name, dict(frame.f_locals)))
         traceback = traceback.tb_next
-    raise AssertionError("filesystem sync traceback frame was not found")
+    assert frames, "filesystem traceback frame was not found"
+    return frames
+
+
+def _assert_filesystem_frames_are_clean(
+    error: BaseException,
+    sensitive_names: set[str],
+    sensitive_fragments: tuple[str, ...],
+) -> None:
+    for _, frame_locals in _filesystem_frame_locals(error):
+        assert sensitive_names.isdisjoint(frame_locals)
+        rendered = repr(frame_locals)
+        for fragment in sensitive_fragments:
+            assert fragment not in rendered
 
 
 def test_filesystem_limits_are_positive() -> None:
@@ -59,6 +72,54 @@ def test_ignored_directories_require_safe_relative_posix_paths(
         match="^ignored directories must be safe relative POSIX paths$",
     ):
         ListFilesTool(boundary, ignored_directories=ignored)
+
+
+def test_ignored_directory_normalization_clears_generated_traceback_frames(
+    boundary: WorkspaceBoundary,
+) -> None:
+    class InterruptingComponent(str):
+        def __hash__(self) -> int:
+            raise KeyboardInterrupt("PRIVATE-INTERRUPT")
+
+    class InterruptingDirectory(str):
+        def split(
+            self,
+            separator: str | None = None,
+            maxsplit: SupportsIndex = -1,
+        ) -> list[str]:
+            return [InterruptingComponent("PRIVATE-COMPONENT")]
+
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        ListFilesTool(
+            boundary,
+            ignored_directories=(InterruptingDirectory("safe"),),
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"directories", "directory", "components", "component", "path"},
+        ("PRIVATE-COMPONENT",),
+    )
+
+
+def test_ignored_directory_matching_clears_generated_traceback_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InterruptingIgnored(str):
+        def casefold(self) -> str:
+            raise SystemExit("PRIVATE-INTERRUPT")
+
+    monkeypatch.setattr(filesystem_module, "_CASE_INSENSITIVE_PATHS", True)
+    with pytest.raises(SystemExit) as error_info:
+        filesystem_module._is_ignored_directory(
+            ".", (InterruptingIgnored("PRIVATE-IGNORED"),)
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"relative", "ignored", "entry", "match_relative", "match_ignored"},
+        ("PRIVATE-IGNORED",),
+    )
 
 
 @pytest.mark.asyncio
@@ -286,38 +347,31 @@ async def test_list_files_rejects_inside_directory_symlink_root(
     )
 
 
-def _create_windows_junction_or_skip(junction: Path, target: Path) -> None:
-    if os.name != "nt" or not hasattr(Path, "is_junction"):
-        pytest.skip("junction detection is unavailable")
-    completed = subprocess.run(
-        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
-        check=False,
-        capture_output=True,
-    )
-    if completed.returncode != 0:
-        pytest.skip("junction creation is unavailable")
-
-
 @pytest.mark.asyncio
 async def test_list_files_rejects_junction_root(
-    workspace: Path, boundary: WorkspaceBoundary
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = workspace / "real"
-    target.mkdir()
-    (target / "secret.txt").write_text("secret", encoding="utf-8")
     junction = workspace / "junction"
-    _create_windows_junction_or_skip(junction, target)
-    try:
-        result = await ListFilesTool(boundary).execute(
-            ListFilesAction(
-                id="list-junction-root",
-                reason="inspect",
-                path="junction",
-                limit=100,
-            )
+    junction.mkdir()
+    (junction / "secret.txt").write_text("secret", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-junction-root",
+            reason="inspect",
+            path="junction",
+            limit=100,
         )
-    finally:
-        junction.rmdir()
+    )
 
     assert result == ToolResult.failure(
         "list-junction-root", "PATH_DENIED", "path access is denied"
@@ -326,22 +380,90 @@ async def test_list_files_rejects_junction_root(
 
 @pytest.mark.asyncio
 async def test_list_files_skips_junction_descendants(
-    workspace: Path, boundary: WorkspaceBoundary
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = workspace / "real"
     target.mkdir()
     (target / "ok.txt").write_text("ok", encoding="utf-8")
     junction = workspace / "junction"
-    _create_windows_junction_or_skip(junction, target)
-    try:
-        result = await ListFilesTool(boundary).execute(
-            ListFilesAction(id="list-junction", reason="inspect", limit=100)
-        )
-    finally:
-        junction.rmdir()
+    junction.mkdir()
+    (junction / "hidden.txt").write_text("hidden", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(id="list-junction", reason="inspect", limit=100)
+    )
 
     assert result.success is True
     assert result.stdout_summary == "real/ok.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_ancestor_directory_symlink(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real"
+    nested = target / "subdir"
+    nested.mkdir(parents=True)
+    (nested / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-ancestor-link",
+            reason="inspect",
+            path="linked/subdir",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-ancestor-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_simulated_ancestor_junction(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    nested = junction / "subdir"
+    nested.mkdir(parents=True)
+    (nested / "secret.txt").write_text("secret", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-ancestor-junction",
+            reason="inspect",
+            path="junction/subdir",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-ancestor-junction", "PATH_DENIED", "path access is denied"
+    )
 
 
 @pytest.mark.asyncio
@@ -375,15 +497,31 @@ async def test_list_files_rechecks_root_after_directory_validation(
     except OSError:
         pytest.skip("directory symlinks are unavailable")
     probe.unlink()
+    real_resolve = boundary.resolve
     real_is_dir = Path.is_dir
+    root_resolve_calls = 0
+    first_resolve_completed = False
+    swapped = False
 
-    def swapping_is_dir(path: Path) -> bool:
-        outcome = real_is_dir(path)
-        if path == root:
-            path.rmdir()
-            path.symlink_to(outside, target_is_directory=True)
+    def recording_resolve(candidate: str, access: Any) -> Path:
+        nonlocal first_resolve_completed, root_resolve_calls
+        if candidate == "victim":
+            root_resolve_calls += 1
+        outcome = real_resolve(candidate, access)
+        if candidate == "victim" and root_resolve_calls == 1:
+            first_resolve_completed = True
         return outcome
 
+    def swapping_is_dir(path: Path) -> bool:
+        nonlocal swapped
+        outcome = real_is_dir(path)
+        if path == root and first_resolve_completed and not swapped:
+            root.rmdir()
+            root.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return outcome
+
+    monkeypatch.setattr(boundary, "resolve", recording_resolve)
     monkeypatch.setattr(Path, "is_dir", swapping_is_dir)
     result = await ListFilesTool(boundary).execute(
         ListFilesAction(
@@ -394,6 +532,7 @@ async def test_list_files_rechecks_root_after_directory_validation(
     assert result == ToolResult.failure(
         "list-race", "PATH_DENIED", "path access is denied"
     )
+    assert root_resolve_calls == 2
 
 
 def test_list_files_clears_sensitive_traceback_locals(
@@ -416,7 +555,6 @@ def test_list_files_clears_sensitive_traceback_locals(
             ListFilesAction(id="list-interrupt", reason="inspect", limit=100)
         )
 
-    frame_locals = _filesystem_sync_frame_locals(error_info.value)
     sensitive_names = {
         "action",
         "requested_path",
@@ -438,7 +576,159 @@ def test_list_files_clears_sensitive_traceback_locals(
         "selected",
         "output",
     }
-    assert sensitive_names.isdisjoint(frame_locals)
+    _assert_filesystem_frames_are_clean(
+        error_info.value, sensitive_names, ("private-name",)
+    )
+
+
+def test_list_files_clears_relative_path_helper_traceback(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "private-relative-name.txt"
+    target.write_text("secret", encoding="utf-8")
+    tool = ListFilesTool(boundary)
+    real_relative_to = Path.relative_to
+
+    def interrupting_relative_to(
+        path: Path, *other: Any, **kwargs: Any
+    ) -> Path:
+        if path == target:
+            raise SystemExit("PRIVATE-INTERRUPT")
+        return real_relative_to(path, *other, **kwargs)
+
+    monkeypatch.setattr(Path, "relative_to", interrupting_relative_to)
+    with pytest.raises(SystemExit) as error_info:
+        tool._execute_sync(
+            ListFilesAction(id="list-relative", reason="inspect", limit=100)
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"root", "target"},
+        ("private-relative-name",),
+    )
+
+
+def test_list_files_clears_link_helper_tracebacks(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "private-link-name"
+    target.mkdir()
+    tool = ListFilesTool(boundary)
+    real_is_symlink = Path.is_symlink
+
+    def interrupting_is_symlink(path: Path) -> bool:
+        if path == target:
+            raise KeyboardInterrupt("PRIVATE-INTERRUPT")
+        return real_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", interrupting_is_symlink)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        tool._execute_sync(
+            ListFilesAction(
+                id="list-link-interrupt",
+                reason="inspect",
+                path="private-link-name",
+                limit=100,
+            )
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"workspace", "target", "current", "component", "path"},
+        ("private-link-name",),
+    )
+
+
+def test_list_files_clears_pattern_helper_traceback(
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupting_from_lines(pattern_factory: str, lines: Any) -> Any:
+        raise SystemExit("PRIVATE-INTERRUPT")
+
+    monkeypatch.setattr(
+        filesystem_module.pathspec.PathSpec,
+        "from_lines",
+        interrupting_from_lines,
+    )
+    with pytest.raises(SystemExit) as error_info:
+        ListFilesTool(boundary)._execute_sync(
+            ListFilesAction(
+                id="list-pattern-interrupt",
+                reason="inspect",
+                pattern="PRIVATE-PATTERN",
+                limit=100,
+            )
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value, {"pattern"}, ("PRIVATE-PATTERN",)
+    )
+
+
+def test_list_files_clears_lexical_path_helper_traceback(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "private-lexical-name"
+    target.mkdir()
+    tool = ListFilesTool(boundary)
+    real_is_absolute = Path.is_absolute
+    calls = 0
+
+    def interrupting_is_absolute(path: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt("PRIVATE-INTERRUPT")
+        return real_is_absolute(path)
+
+    monkeypatch.setattr(Path, "is_absolute", interrupting_is_absolute)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        tool._execute_sync(
+            ListFilesAction(
+                id="list-lexical-interrupt",
+                reason="inspect",
+                path="private-lexical-name",
+                limit=100,
+            )
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"workspace", "requested_path", "candidate"},
+        ("private-lexical-name",),
+    )
+
+
+def test_list_files_clears_ignored_path_helper_traceback(
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = ListFilesTool(boundary)
+
+    def interrupting_posix_path(candidate: str) -> Any:
+        raise SystemExit("PRIVATE-INTERRUPT")
+
+    monkeypatch.setattr(
+        filesystem_module, "PurePosixPath", interrupting_posix_path
+    )
+    with pytest.raises(SystemExit) as error_info:
+        tool._execute_sync(
+            ListFilesAction(id="list-ignored-interrupt", reason="inspect", limit=100)
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"relative", "ignored", "match_relative", "match_ignored", "parts"},
+        (".git",),
+    )
 
 
 @pytest.mark.asyncio
@@ -732,7 +1022,6 @@ def test_read_file_clears_sensitive_traceback_locals(
             )
         )
 
-    frame_locals = _filesystem_sync_frame_locals(error_info.value)
     sensitive_names = {
         "action",
         "requested_path",
@@ -744,7 +1033,47 @@ def test_read_file_clears_sensitive_traceback_locals(
         "lines",
         "output",
     }
-    assert sensitive_names.isdisjoint(frame_locals)
+    _assert_filesystem_frames_are_clean(
+        error_info.value, sensitive_names, ("private-name", "PRIVATE-FILE-CONTENT")
+    )
+
+
+def test_read_file_clears_success_helper_traceback(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (workspace / "private-output.txt").write_bytes(b"PRIVATE-OUTPUT-CONTENT")
+    tool = ReadFileTool(boundary)
+    real_monotonic_ns = filesystem_module.time.monotonic_ns
+    calls = 0
+
+    def interrupting_monotonic_ns() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt("PRIVATE-INTERRUPT")
+        return real_monotonic_ns()
+
+    monkeypatch.setattr(
+        filesystem_module.time, "monotonic_ns", interrupting_monotonic_ns
+    )
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        tool._execute_sync(
+            ReadFileAction(
+                id="read-success-interrupt",
+                reason="inspect",
+                path="private-output.txt",
+                start_line=1,
+                end_line=200,
+            )
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"output", "started_ns"},
+        ("PRIVATE-OUTPUT-CONTENT",),
+    )
 
 
 @pytest.mark.asyncio

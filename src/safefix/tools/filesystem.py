@@ -44,39 +44,70 @@ class FilesystemLimits:
 
 def _normalize_ignored_directories(directories: tuple[str, ...]) -> tuple[str, ...]:
     normalized = {".git"}
-    for directory in directories:
-        components = directory.split("/")
-        path = PurePosixPath(directory)
-        if (
-            not directory
-            or "\\" in directory
-            or path.is_absolute()
-            or any(component in {"", ".", ".."} for component in components)
-            or ":" in components[0]
-        ):
-            raise ValueError(
-                "ignored directories must be safe relative POSIX paths"
-            )
-        normalized.add(path.as_posix())
-    return tuple(sorted(normalized))
+    directory = ""
+    components: list[str] = []
+    component = ""
+    unsafe_component = False
+    path: PurePosixPath | None = None
+    try:
+        for directory in directories:
+            components = directory.split("/")
+            path = PurePosixPath(directory)
+            unsafe_component = False
+            for component in components:
+                if component in {"", ".", ".."}:
+                    unsafe_component = True
+                    break
+            if (
+                not directory
+                or "\\" in directory
+                or path.is_absolute()
+                or unsafe_component
+                or ":" in components[0]
+            ):
+                raise ValueError(
+                    "ignored directories must be safe relative POSIX paths"
+                )
+            normalized.add(path.as_posix())
+        return tuple(sorted(normalized))
+    finally:
+        del (
+            directories,
+            normalized,
+            directory,
+            components,
+            component,
+            unsafe_component,
+            path,
+        )
 
 
 def _relative_posix(root: Path, target: Path) -> str:
-    return target.relative_to(root).as_posix()
+    try:
+        return target.relative_to(root).as_posix()
+    finally:
+        del root, target
 
 
 def _lexical_path(workspace: Path, requested_path: str) -> Path:
-    candidate = Path(requested_path)
-    if not candidate.is_absolute():
-        candidate = workspace / candidate
-    return Path(os.path.abspath(candidate))
+    candidate: Path | None = None
+    try:
+        candidate = Path(requested_path)
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        return Path(os.path.abspath(candidate))
+    finally:
+        del workspace, requested_path, candidate
 
 
 def _compile_gitwildmatch(pattern: str) -> pathspec.PathSpec | None:
     try:
-        return pathspec.PathSpec.from_lines("gitwildmatch", (pattern,))
-    except Exception:
-        return None
+        try:
+            return pathspec.PathSpec.from_lines("gitwildmatch", (pattern,))
+        except Exception:
+            return None
+    finally:
+        del pattern
 
 
 def _path_denied(action_id: str) -> ToolResult:
@@ -88,40 +119,90 @@ def _io_failure(action_id: str) -> ToolResult:
 
 
 def _success(action_id: str, output: str, started_ns: int) -> ToolResult:
-    duration_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
-    return ToolResult(
-        action_id=action_id,
-        success=True,
-        stdout_summary=output,
-        duration_ms=duration_ms,
-    )
+    duration_ms = 0
+    try:
+        duration_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        return ToolResult(
+            action_id=action_id,
+            success=True,
+            stdout_summary=output,
+            duration_ms=duration_ms,
+        )
+    finally:
+        del action_id, output, started_ns, duration_ms
 
 
 def _is_ignored_directory(relative: str, ignored: tuple[str, ...]) -> bool:
-    match_relative = relative.casefold() if _CASE_INSENSITIVE_PATHS else relative
-    match_ignored = (
-        tuple(item.casefold() for item in ignored)
-        if _CASE_INSENSITIVE_PATHS
-        else ignored
-    )
-    parts = PurePosixPath(match_relative).parts
-    if ".git" in parts:
-        return True
-    return any(
-        match_relative == item or match_relative.startswith(f"{item}/")
-        for item in match_ignored
-    )
+    match_relative = ""
+    match_ignored: tuple[str, ...] = ()
+    casefolded_ignored: list[str] = []
+    entry = ""
+    parts: tuple[str, ...] = ()
+    item = ""
+    try:
+        match_relative = (
+            relative.casefold() if _CASE_INSENSITIVE_PATHS else relative
+        )
+        if _CASE_INSENSITIVE_PATHS:
+            for entry in ignored:
+                casefolded_ignored.append(entry.casefold())
+            match_ignored = tuple(casefolded_ignored)
+        else:
+            match_ignored = ignored
+        parts = PurePosixPath(match_relative).parts
+        if ".git" in parts:
+            return True
+        for item in match_ignored:
+            if match_relative == item or match_relative.startswith(f"{item}/"):
+                return True
+        return False
+    finally:
+        del (
+            relative,
+            ignored,
+            match_relative,
+            match_ignored,
+            casefolded_ignored,
+            entry,
+            parts,
+            item,
+        )
 
 
 def _raise_walk_error(error: OSError) -> None:
-    raise error
+    try:
+        raise error
+    finally:
+        del error
 
 
 def _is_directory_link(path: Path) -> bool:
-    junction_check = getattr(path, "is_junction", None)
-    return path.is_symlink() or (
-        junction_check is not None and bool(junction_check())
-    )
+    junction_check = None
+    try:
+        junction_check = getattr(path, "is_junction", None)
+        return path.is_symlink() or (
+            junction_check is not None and bool(junction_check())
+        )
+    finally:
+        del path, junction_check
+
+
+def _contains_directory_link(workspace: Path, target: Path) -> bool:
+    current: Path | None = None
+    components: tuple[str, ...] = ()
+    component = ""
+    try:
+        current = workspace
+        components = target.relative_to(workspace).parts
+        for component in components:
+            current /= component
+            if _is_directory_link(current):
+                return True
+            if not current.exists():
+                break
+        return False
+    finally:
+        del workspace, target, current, components, component
 
 
 class ListFilesTool:
@@ -158,6 +239,9 @@ class ListFilesTool:
             del typed_action
 
     def _execute_sync(self, action: ListFilesAction) -> ToolResult:
+        action_id = ""
+        limit = 0
+        started_ns = 0
         requested_path = ""
         pattern = ""
         matcher: pathspec.PathSpec | None = None
@@ -176,6 +260,7 @@ class ListFilesTool:
         matches: list[str] = []
         selected: list[str] = []
         output = ""
+        truncated = False
         try:
             action_id = action.id
             requested_path = action.path
@@ -192,7 +277,7 @@ class ListFilesTool:
             try:
                 root = self._boundary.resolve(requested_path, AccessKind.LIST)
                 lexical_root = _lexical_path(self._workspace, requested_path)
-                if _is_directory_link(lexical_root):
+                if _contains_directory_link(self._workspace, lexical_root):
                     return _path_denied(action_id)
                 if not root.exists():
                     return ToolResult.failure(
@@ -267,7 +352,11 @@ class ListFilesTool:
                 return _io_failure(action_id)
         finally:
             del (
+                self,
                 action,
+                action_id,
+                limit,
+                started_ns,
                 requested_path,
                 pattern,
                 matcher,
@@ -286,6 +375,7 @@ class ListFilesTool:
                 matches,
                 selected,
                 output,
+                truncated,
             )
 
 
@@ -320,6 +410,10 @@ class ReadFileTool:
             del typed_action
 
     def _execute_sync(self, action: ReadFileAction) -> ToolResult:
+        action_id = ""
+        start_line = 0
+        end_line = 0
+        started_ns = 0
         requested_path = ""
         target: Path | None = None
         verified_target: Path | None = None
@@ -380,7 +474,12 @@ class ReadFileTool:
                 return _io_failure(action_id)
         finally:
             del (
+                self,
                 action,
+                action_id,
+                start_line,
+                end_line,
+                started_ns,
                 requested_path,
                 target,
                 verified_target,
