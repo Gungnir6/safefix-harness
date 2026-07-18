@@ -11,8 +11,11 @@ from safefix.governance.approvals import (
     ActionMismatch,
     ApprovalAlreadyUsed,
     ApprovalChallenge,
+    ApprovalExpired,
+    ApprovalNotFound,
     ApprovalStateMachine,
     ApprovalUnavailable,
+    InvalidApprovalToken,
     InvalidApprovalTransition,
 )
 
@@ -63,6 +66,197 @@ def test_approval_token_is_single_use(
     approval_store.approve(challenge.id, challenge.token, risky_action)
     with pytest.raises(ApprovalAlreadyUsed):
         approval_store.approve(challenge.id, challenge.token, risky_action)
+
+
+def test_wrong_token_does_not_consume_pending_request(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    with pytest.raises(InvalidApprovalToken):
+        approval_store.approve(challenge.id, "wrong-token", risky_action)
+    assert approval_store.get(challenge.id).status is ApprovalStatus.PENDING
+    assert (
+        approval_store.approve(challenge.id, challenge.token, risky_action).status
+        is ApprovalStatus.APPROVED
+    )
+
+
+def test_action_mismatch_does_not_consume_pending_request(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    changed = risky_action.model_copy(update={"args": ("push",)})
+    with pytest.raises(ActionMismatch):
+        approval_store.approve(challenge.id, challenge.token, changed)
+    assert approval_store.get(challenge.id).status is ApprovalStatus.PENDING
+
+
+def test_approve_missing_id_is_stable_not_found(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    with pytest.raises(ApprovalNotFound) as captured:
+        approval_store.approve(
+            "00000000-0000-0000-0000-000000000001",
+            "unused-token",
+            risky_action,
+        )
+
+    assert str(captured.value) == "Approval request was not found"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_token_from_another_request_is_rejected(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    first = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    second_action = risky_action.model_copy(update={"id": "a2"})
+    second = approval_store.request(
+        "run-1", second_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+
+    with pytest.raises(InvalidApprovalToken):
+        approval_store.approve(first.id, second.token, risky_action)
+    with pytest.raises(InvalidApprovalToken):
+        approval_store.approve(second.id, first.token, second_action)
+
+    assert approval_store.get(first.id).status is ApprovalStatus.PENDING
+    assert approval_store.get(second.id).status is ApprovalStatus.PENDING
+
+
+def test_approved_request_replay_is_already_used(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    approval_store.approve(challenge.id, challenge.token, risky_action)
+
+    with pytest.raises(ApprovalAlreadyUsed) as captured:
+        approval_store.approve(challenge.id, challenge.token, risky_action)
+
+    assert str(captured.value) == "Approval request has already been used"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert sum(
+        event.event_type == "APPROVAL_APPROVED"
+        for event in approval_store._audit.list_events("run-1")
+    ) == 1
+
+
+def test_approve_sets_exact_decided_at(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    fixed = datetime(2026, 7, 17, 12, 34, 56, 123456, tzinfo=UTC)
+    store = ApprovalStateMachine(connection, clock=lambda: fixed)
+    challenge = store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+
+    approved = store.approve(challenge.id, challenge.token, risky_action)
+
+    assert approved.decided_at == fixed
+    assert store.get(challenge.id).decided_at == fixed
+
+
+def test_approved_audit_payload_excludes_capability_and_action(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE_B", "RULE_A"), 300
+    )
+    approved = approval_store.approve(challenge.id, challenge.token, risky_action)
+
+    event = approval_store._audit.list_events("run-1")[-1]
+    assert event.event_type == "APPROVAL_APPROVED"
+    assert event.redacted_payload == {
+        "action_hash": approved.action_hash,
+        "approval_id": challenge.id,
+        "risk_level": "MEDIUM",
+        "rule_ids": ["RULE_A", "RULE_B"],
+        "status": "APPROVED",
+    }
+    assert challenge.token not in repr(event)
+    assert approved.one_time_token_hash not in repr(event)
+    assert approved.frozen_action_json not in repr(event)
+
+
+@pytest.mark.parametrize("column", ["frozen_action_json", "action_hash"])
+def test_tampered_frozen_action_or_hash_fails_closed(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+    column: str,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    challenge = store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    tampered = (
+        risky_action.model_copy(update={"args": ("push",)}).model_dump_json(
+            exclude_none=True
+        )
+        if column == "frozen_action_json"
+        else hashlib.sha256(b"tampered-action").hexdigest()
+    )
+    connection.execute(
+        f"UPDATE approval_requests SET {column} = ? WHERE id = ?",
+        (tampered, challenge.id),
+    )
+
+    with pytest.raises(ApprovalUnavailable) as captured:
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert str(captured.value) == "Approval storage is unavailable"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    status = connection.execute(
+        "SELECT status FROM approval_requests WHERE id = ?", (challenge.id,)
+    ).fetchone()[0]
+    assert status != "APPROVED"
+
+
+def test_approve_expired_request_is_committed_before_approval_error(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    now = [datetime(2026, 7, 17, 12, 0, tzinfo=UTC)]
+    store = ApprovalStateMachine(connection, clock=lambda: now[0])
+    challenge = store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    now[0] = challenge.request.expires_at
+
+    with pytest.raises(ApprovalExpired) as captured:
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert str(captured.value) == "Approval request has expired"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    expired = store.get(challenge.id)
+    assert expired.status is ApprovalStatus.EXPIRED
+    assert expired.decided_at == now[0]
+    event = store._audit.list_events("run-1")[-1]
+    assert event.event_type == "APPROVAL_EXPIRED"
+    assert event.redacted_payload == {
+        "action_hash": expired.action_hash,
+        "approval_id": challenge.id,
+        "risk_level": "MEDIUM",
+        "rule_ids": ["RULE"],
+        "status": "EXPIRED",
+    }
 
 
 def test_request_persists_only_token_digest_and_returns_redacted_challenge_repr(

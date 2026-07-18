@@ -167,28 +167,15 @@ class ApprovalStateMachine:
     def approve(
         self,
         approval_id: str,
-        plaintext_token: str,
+        plaintext_token: object,
         action: Action,
     ) -> ApprovalRequest:
-        current = self.get(approval_id)
-        if current.status is not ApprovalStatus.PENDING:
-            raise ApprovalAlreadyUsed(_ALREADY_USED_MESSAGE)
-        self._verify_token_hash(current.one_time_token_hash, plaintext_token)
-        supplied_json, supplied_digest = self._prepare_approval_action(action)
-        if not hmac.compare_digest(
-            current.action_hash, supplied_digest
-        ) or not hmac.compare_digest(current.frozen_action_json, supplied_json):
-            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
-        decided_at = self._read_clock()
-        return self._run_write(
-            lambda: self._approve(
-                approval_id,
-                plaintext_token,
-                supplied_json,
-                supplied_digest,
-                decided_at,
-            )
+        request, expired = self._run_write(
+            lambda: self._approve(approval_id, plaintext_token, action)
         )
+        if expired:
+            self._raise_expired()
+        return request
 
     def _initialize_schema(self) -> None:
         failed = False
@@ -391,21 +378,22 @@ class ApprovalStateMachine:
     def _approve(
         self,
         approval_id: str,
-        plaintext_token: str,
-        supplied_json: str,
-        supplied_digest: str,
-        decided_at: datetime,
-    ) -> ApprovalRequest:
+        plaintext_token: object,
+        action: Action,
+    ) -> tuple[ApprovalRequest, bool]:
         stored = self._read_one(approval_id)
         if stored.status is not ApprovalStatus.PENDING:
             raise ApprovalAlreadyUsed(_ALREADY_USED_MESSAGE)
-        self._verify_token_hash(stored.one_time_token_hash, plaintext_token)
-        digest_mismatch = not hmac.compare_digest(stored.action_hash, supplied_digest)
-        json_mismatch = not hmac.compare_digest(
-            stored.frozen_action_json, supplied_json
-        )
-        if digest_mismatch or json_mismatch:
-            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
+        decided_at = self._read_clock()
+        if decided_at >= stored.expires_at:
+            return self._expire_during_approval(stored, decided_at), True
+        self._verify_token(stored.one_time_token_hash, plaintext_token)
+        try:
+            self._verify_action(stored, action)
+        except ActionMismatch:
+            raise
+        except Exception:
+            self._raise_action_mismatch()
 
         cursor = self._connection.execute(
             "UPDATE approval_requests SET status = ?, decided_at = ? "
@@ -432,29 +420,55 @@ class ApprovalStateMachine:
         persisted = self._read_one(stored.id)
         if persisted != expected:
             raise ValueError
+        return self._to_request(persisted), False
+
+    def _expire_during_approval(
+        self,
+        stored: _StoredApproval,
+        decided_at: datetime,
+    ) -> ApprovalRequest:
+        cursor = self._connection.execute(
+            "UPDATE approval_requests SET status = ?, decided_at = ? "
+            "WHERE id = ? AND status = ?",
+            (
+                ApprovalStatus.EXPIRED.value,
+                self._format_timestamp(decided_at),
+                stored.id,
+                ApprovalStatus.PENDING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ApprovalAlreadyUsed(_ALREADY_USED_MESSAGE)
+        expected = replace(
+            stored,
+            status=ApprovalStatus.EXPIRED,
+            decided_at=decided_at,
+        )
+        self._audit.append(
+            expected.run_id,
+            "APPROVAL_EXPIRED",
+            self._audit_payload(expected),
+        )
+        persisted = self._read_one(stored.id)
+        if persisted != expected:
+            raise ValueError
         return self._to_request(persisted)
 
-    @staticmethod
-    def _verify_token_hash(expected_hash: str, plaintext_token: str) -> None:
+    def _verify_token(self, stored_hash: str, plaintext_token: object) -> None:
         if type(plaintext_token) is not str:
-            raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
+            self._raise_invalid_token()
         supplied_hash = hashlib.sha256(plaintext_token.encode("utf-8")).hexdigest()
-        if not hmac.compare_digest(expected_hash, supplied_hash):
-            raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE)
+        if not hmac.compare_digest(stored_hash, supplied_hash):
+            self._raise_invalid_token()
 
-    @staticmethod
-    def _prepare_approval_action(action: Action) -> tuple[str, str]:
-        failed = False
-        supplied_json = ""
-        supplied_digest = ""
-        try:
-            supplied_json = action.model_dump_json(exclude_none=True)
-            supplied_digest = action_digest(action)
-        except Exception:
-            failed = True
-        if failed:
-            raise ActionMismatch(_ACTION_MISMATCH_MESSAGE)
-        return supplied_json, supplied_digest
+    def _verify_action(self, stored: _StoredApproval, action: Action) -> None:
+        frozen_json = action.model_dump_json(exclude_none=True)
+        if (
+            self._contains_secret(frozen_json)
+            or not hmac.compare_digest(stored.action_hash, action_digest(action))
+            or frozen_json != stored.frozen_action_json
+        ):
+            self._raise_action_mismatch()
 
     def _read_clock(self) -> datetime:
         failed = False
@@ -734,3 +748,15 @@ class ApprovalStateMachine:
     @staticmethod
     def _raise_unavailable() -> NoReturn:
         raise ApprovalUnavailable(_UNAVAILABLE_MESSAGE)
+
+    @staticmethod
+    def _raise_invalid_token() -> NoReturn:
+        raise InvalidApprovalToken(_INVALID_TOKEN_MESSAGE) from None
+
+    @staticmethod
+    def _raise_action_mismatch() -> NoReturn:
+        raise ActionMismatch(_ACTION_MISMATCH_MESSAGE) from None
+
+    @staticmethod
+    def _raise_expired() -> NoReturn:
+        raise ApprovalExpired(_EXPIRED_MESSAGE) from None
