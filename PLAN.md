@@ -673,7 +673,7 @@ Record the T06 hash and required evidence after both reviews.
 - Consumes: `Action`, `PolicyDecision(REQUIRE_APPROVAL)`, `action_digest`, `AuditStore`.
 - Produces: `ApprovalStateMachine.request(...) -> ApprovalChallenge`; `approve(id, plaintext_token, action) -> ApprovalRequest`; `reject(...)`; `expire_pending(now)`; single-use frozen-action verification.
 
-- [ ] **Step 1: Write failing replacement and replay tests**
+- [x] **Step 1: Write failing replacement and replay tests**
 
 ```python
 import pytest
@@ -696,13 +696,13 @@ def test_approval_token_is_single_use(approval_store, risky_action) -> None:
         approval_store.approve(challenge.id, challenge.token, risky_action)
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/unit/test_approvals.py -v`
 
 Expected: FAIL because approval storage does not exist.
 
-- [ ] **Step 3: Implement state transitions**
+- [x] **Step 3: Implement state transitions**
 
 Persist only a SHA-256 token digest, frozen action JSON and `action_digest`. Valid transitions are `PENDING -> APPROVED|REJECTED|EXPIRED|CANCELLED`; terminal states never transition. Compare token digests with `hmac.compare_digest`. Write an audit event in the same logical operation; if audit append fails, do not approve.
 
@@ -714,15 +714,15 @@ ALLOWED_TRANSITIONS = {
 }
 ```
 
-- [ ] **Step 4: Add persistence, expiry and concurrency tests**
+- [x] **Step 4: Add persistence, expiry and concurrency tests**
 
-Close/reopen the SQLite connection and prove pending requests survive. Test rejection feedback, expiry, wrong token, terminal transition rejection, and two concurrent approvals where exactly one succeeds.
+Close/reopen the SQLite connection and prove pending requests survive. Test rejection transition (without storing free-text feedback; T12 owns user-facing feedback), expiry, wrong token, terminal transition rejection, and two concurrent approvals where exactly one succeeds.
 
 Run: `python -m pytest tests/unit/test_approvals.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(approval): 实现持久化人工审批状态机`
 
@@ -1511,7 +1511,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T04 | Completed | `91dbd88`, `94c0edd`, `49895de`, `325aa1b`; plan `6031621`, `dad25df`; merge `10cd964` | [!3](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/3) | Final spec and quality reviews APPROVED (0 Critical / 0 Important / 1 Minor); Windows device/ADS, workspace symlink alias and exception-disclosure findings fixed; merged and reverified on `main`; Hypothesis oracle design Minor deferred |
 | T05 | Completed | `44c625e`, `1a0d503`, `2204d34`, `3a640c8`, `224d696`, `0da385a`, `6a6ff31`; plan `7b12b89`, `63ac64a`; merge `ff7c17f` | [!5](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/5) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 0 Minor); authorization identity, nested shell/interpreter, normalized system paths, Git side effects, sensitive file transfer and disclosure findings fixed; merged and reverified on `main` |
 | T06 | Completed | `65f54d0`, `c1e04c4`, `9067a95`, `12ce19b`; plan `1d0a0c3`, `0ddcc8f`; merge `8699d37` | [!6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 2 Minor); metadata/payload disclosure, forged-chain reads, dynamic SQLite types, concurrent/reentrant writes, post-insert trigger tampering and interrupted savepoint cleanup findings fixed; merged and reverified on `main`; read-only reentry scope and long-chain O(N²) Minors deferred |
-| T07 | Pending | — | — | — |
+| T07 | Ready for MR | `a953456`, `06995fd`, `4be5161`, `bb86c20`, `da73da4`, `503abb2`, `f5e45d8`, `95173fc`, `a92e61b`; plan `bbe6298`, `948c02e` | — | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 1 Minor); persistent frozen-action approval, single-use token digest, expiry/cancel/reject terminal states, transactional audit coupling, concurrency and traceback-local non-disclosure verified; different-stripe SQLite contention coverage Minor deferred |
 | T08 | Pending | — | — | — |
 | T09 | Pending | — | — | — |
 | T10 | Pending | — | — | — |

@@ -98,3 +98,17 @@
 - 合并结果：MR !6 合并到 `main`，合并提交 `8699d37`；主工作区快进后确认 `12ce19b` 已进入主线，复跑 T06 聚焦为 74 passed、完整测试为 451 passed，Ruff check/format、mypy、pip check、`git diff --check` 全部 exit 0。
 - 人工裁决：所有外部 metadata/payload 只要可能携带 configured secret 就稳定 fail closed；调用方事务所有权通过内部 SAVEPOINT 保留，T07 仍必须把审计 append 失败视为拒绝条件。未进行学生手工代码修改，所有生产与测试变更均由受约束子代理完成并经根代理验证。
 - 经验：防篡改审计不能只在读取时提供可选 verify；append 自身必须验证旧链和 INSERT 后置条件。SQLite trigger、动态类型、共享连接并发、同线程重入和进程控制中断都会制造“API 返回成功但审计记录不存在”的路径，必须用真实 SQLite 行为而非 mock 调用次数锁定。
+
+## T07 — Persistent HITL Approval State Machine
+
+- 时间：2026-07-17–2026-07-18 +08:00
+- 分支 / MR：`codex/t07-approval-state-machine` / MR 待创建。
+- Superpowers：`using-superpowers`、`using-git-worktrees`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`dispatching-parallel-agents`、`requesting-code-review`、`receiving-code-review`、`verification-before-completion`。
+- 关键 prompt/context：实现代理仅获得 T07 task brief、隔离工作树、基线 `5ff7a83`、两个允许的生产/测试文件、冻结动作、单次 token、SQLite 持久化、T06 审计失败必须阻止状态转换、秘密非披露、中文 Conventional Commits 与报告契约；规格、安全和整分支审查代理均只读相应版本的冻结 `BASE..HEAD` 差异包。
+- 初始实现与审查修复：`a953456 feat(approval): 添加持久化审批请求` 建立只保存 SHA-256 token digest 的持久化请求；后续提交 `06995fd`、`4be5161`、`bb86c20`、`da73da4`、`503abb2`、`f5e45d8` 依次收紧公开错误边界、SQLite trigger/SAVEPOINT 竞态、进程控制异常清理、冻结动作单次批准、终态持久化和跨 store 并发事务语义。
+- 秘密与异常边界修复：独立审查发现公开 request/approve/reject/get/cancel 的 traceback locals 可能保留 token、action 或标识符；`95173fc fix(approval): 隔离敏感错误帧` 以无敏感数据的 outcome 在安全帧外映射稳定公开异常。整分支审查继续发现构造器 frame 可能保留 configured secrets，且坏审计 schema 的 T06 `AuditUnavailable` 会越过 T07 边界；`a92e61b fix(approval): 隔离构造期秘密与错误` 将构造期初始化也纳入同一非披露和稳定异常契约。
+- 最终独立复审：规格、安全和整分支审查均批准合并，Critical 0、Important 0、Minor 1；确认冻结 action JSON 与 `action_digest` 双重校验、`hmac.compare_digest`、`PENDING -> APPROVED|REJECTED|EXPIRED|CANCELLED` 单向终态、审批与审计同一逻辑操作、失败回滚、SQLite 动态类型/trigger 后置条件、重入/并发和 traceback-local 非披露均满足 T07。
+- 根代理新鲜验证：最终 HEAD `a92e61b`；T07 聚焦 82 passed；完整测试 533 passed；Ruff check、Ruff format、mypy（13 source files）、pip check、`git diff --check` 全部 exit 0；过程文档修改前工作树干净，最终实现差异仅新增 T07 设计/计划、`src/safefix/governance/approvals.py` 与 `tests/unit/test_approvals.py`。
+- 延期 Minor：当前 CPython 环境中，两份文件连接的并发测试会映射到同一 striped lock，已验证生产 Python 锁序列化和最多一次成功，但没有直接覆盖不同 stripe 下的 SQLite 文件锁竞争。避免为测试引入白盒锁控制、多进程不稳定性或平台相关假设，留待并发基建统一时补充。
+- 人工裁决：严格保留调用方共享连接和事务所有权，内部使用 SAVEPOINT；只持久化 token 的 SHA-256 digest；拒绝不保存自由文本，用户可见反馈由 T12 生成；cancel 是可信控制面操作；审批公开 API 的普通异常、构造异常和 `capture_locals` 均不得披露 token、action、configured secrets 或数据库内部细节。
+- 经验：审批安全不是一次 `UPDATE`；必须同时冻结授权对象、保证 token 单次消费、把审计成功纳入提交条件，并在 INSERT/UPDATE trigger、共享连接、跨 store 重入、进程控制异常和异常帧 locals 下证明“失败即无状态变化”。构造器也属于公开安全边界，不能只审计业务方法。
