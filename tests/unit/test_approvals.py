@@ -1,13 +1,21 @@
 import hashlib
 import sqlite3
-from collections.abc import Iterator
+import threading
+import traceback
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from safefix.domain import Action, ApprovalStatus, RiskLevel, RunProcessAction
+from safefix.domain import (
+    Action,
+    ApprovalRequest,
+    ApprovalStatus,
+    RiskLevel,
+    RunProcessAction,
+)
 from safefix.governance.approvals import (
     ActionMismatch,
     ApprovalAlreadyUsed,
@@ -835,6 +843,437 @@ def test_cleanup_process_control_wins_over_storage_failure(
     connection.close()
 
 
+def test_approve_rolls_back_when_audit_append_fails(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    connection.execute(
+        "CREATE TRIGGER reject_approval_audit BEFORE INSERT ON audit_events "
+        "WHEN NEW.event_type = 'APPROVAL_APPROVED' "
+        "BEGIN SELECT RAISE(ABORT, 'audit blocked'); END"
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+
+
+@pytest.mark.parametrize("effect", ["delete", "rewrite"])
+def test_request_rejects_audit_trigger_tampering(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+    effect: str,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    trigger_sql = (
+        "DELETE FROM audit_events WHERE run_id = NEW.run_id AND sequence = NEW.sequence"
+        if effect == "delete"
+        else "UPDATE audit_events SET event_type = 'FORGED' "
+        "WHERE run_id = NEW.run_id AND sequence = NEW.sequence"
+    )
+    connection.execute(
+        "CREATE TRIGGER alter_approval_audit AFTER INSERT ON audit_events "
+        f"WHEN NEW.event_type = 'APPROVAL_REQUESTED' BEGIN {trigger_sql}; END"
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+
+    assert (
+        connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0] == 0
+    )
+
+
+def test_approve_rejects_approval_table_after_update_tampering(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    connection.execute(
+        """
+        CREATE TRIGGER rewrite_approval_decided_at
+        AFTER UPDATE ON approval_requests
+        WHEN NEW.status = 'APPROVED'
+        BEGIN
+            UPDATE approval_requests
+            SET decided_at = '2026-07-17T00:00:00.000000Z'
+            WHERE id = NEW.id;
+        END
+        """
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert connection.execute(
+        "SELECT status, decided_at FROM approval_requests WHERE id = ?",
+        (challenge.id,),
+    ).fetchone() == ("PENDING", None)
+    assert all(
+        event.event_type != "APPROVAL_APPROVED"
+        for event in store._audit.list_events("run-1")
+    )
+
+
+def test_same_store_concurrent_approve_has_one_success(
+    risky_action: RunProcessAction,
+) -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    barrier = threading.Barrier(3)
+    results: list[ApprovalRequest | BaseException] = []
+
+    def approve() -> None:
+        barrier.wait()
+        try:
+            results.append(store.approve(challenge.id, challenge.token, risky_action))
+        except BaseException as error:
+            results.append(error)
+
+    threads = [threading.Thread(target=approve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert (
+        sum(
+            isinstance(result, ApprovalRequest)
+            and result.status is ApprovalStatus.APPROVED
+            for result in results
+        )
+        == 1
+    )
+    assert sum(isinstance(result, ApprovalAlreadyUsed) for result in results) == 1
+    assert store.get(challenge.id).status is ApprovalStatus.APPROVED
+    connection.close()
+
+
+def test_two_stores_same_connection_share_write_lock(
+    risky_action: RunProcessAction,
+) -> None:
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    first_store = ApprovalStateMachine(connection)
+    second_store = ApprovalStateMachine(connection)
+    challenge = first_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    barrier = threading.Barrier(3)
+    results: list[ApprovalRequest | BaseException] = []
+
+    def approve(store: ApprovalStateMachine) -> None:
+        barrier.wait()
+        try:
+            results.append(store.approve(challenge.id, challenge.token, risky_action))
+        except BaseException as error:
+            results.append(error)
+
+    threads = [
+        threading.Thread(target=approve, args=(first_store,)),
+        threading.Thread(target=approve, args=(second_store,)),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    successes = [result for result in results if isinstance(result, ApprovalRequest)]
+    assert len(successes) == 1
+    assert successes[0].status is ApprovalStatus.APPROVED
+    assert sum(isinstance(result, ApprovalAlreadyUsed) for result in results) == 1
+    assert first_store.get(challenge.id).status is ApprovalStatus.APPROVED
+    connection.close()
+
+
+def test_two_connections_same_file_approve_at_most_once(
+    tmp_path: Path,
+    risky_action: RunProcessAction,
+) -> None:
+    database = tmp_path / "concurrent-approvals.sqlite3"
+    setup_connection = sqlite3.connect(database)
+    setup_store = ApprovalStateMachine(setup_connection)
+    challenge = setup_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    setup_connection.close()
+
+    barrier = threading.Barrier(3)
+    first_connection = sqlite3.connect(
+        database,
+        check_same_thread=False,
+    )
+    second_connection = sqlite3.connect(
+        database,
+        check_same_thread=False,
+    )
+    first_store = ApprovalStateMachine(first_connection)
+    second_store = ApprovalStateMachine(second_connection)
+    results: list[ApprovalRequest | BaseException] = []
+
+    def approve(store: ApprovalStateMachine) -> None:
+        barrier.wait()
+        try:
+            results.append(store.approve(challenge.id, challenge.token, risky_action))
+        except BaseException as error:
+            results.append(error)
+
+    threads = [
+        threading.Thread(target=approve, args=(first_store,)),
+        threading.Thread(target=approve, args=(second_store,)),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+    first_connection.close()
+    second_connection.close()
+
+    assert sum(isinstance(result, ApprovalRequest) for result in results) == 1
+    failures = [result for result in results if isinstance(result, BaseException)]
+    assert len(failures) == 1
+    assert isinstance(failures[0], (ApprovalAlreadyUsed, ApprovalUnavailable))
+    reopened_connection = sqlite3.connect(database)
+    reopened_store = ApprovalStateMachine(reopened_connection)
+    assert reopened_store.get(challenge.id).status is ApprovalStatus.APPROVED
+    assert reopened_store._audit.verify_chain("run-1").valid is True
+    assert [
+        event.event_type for event in reopened_store._audit.list_events("run-1")
+    ] == ["APPROVAL_REQUESTED", "APPROVAL_APPROVED"]
+    reopened_connection.close()
+
+
+def test_audit_failure_preserves_outer_transaction_sentinel(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    connection.execute("CREATE TABLE outer_sentinel (value TEXT NOT NULL)")
+    connection.execute("BEGIN")
+    connection.execute("INSERT INTO outer_sentinel VALUES ('preserved')")
+    connection.execute(
+        "CREATE TRIGGER reject_outer_approval_audit BEFORE INSERT ON audit_events "
+        "WHEN NEW.event_type = 'APPROVAL_APPROVED' "
+        "BEGIN SELECT RAISE(ABORT, 'audit blocked'); END"
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.approve(challenge.id, challenge.token, risky_action)
+
+    assert connection.in_transaction is True
+    assert connection.execute("SELECT value FROM outer_sentinel").fetchall() == [
+        ("preserved",)
+    ]
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+    connection.commit()
+    assert connection.execute("SELECT value FROM outer_sentinel").fetchall() == [
+        ("preserved",)
+    ]
+
+
+def test_connection_callback_reentrant_approve_is_rejected(
+    risky_action: RunProcessAction,
+) -> None:
+    connection = sqlite3.connect(
+        ":memory:",
+        factory=_ReentrantApprovalConnection,
+    )
+    assert isinstance(connection, _ReentrantApprovalConnection)
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    inner_errors: list[BaseException] = []
+
+    def reenter() -> None:
+        try:
+            store.approve(challenge.id, challenge.token, risky_action)
+        except BaseException as error:
+            inner_errors.append(error)
+
+    connection.before_approval_update = reenter
+    approved = store.approve(challenge.id, challenge.token, risky_action)
+
+    assert len(inner_errors) == 1
+    assert isinstance(inner_errors[0], ApprovalUnavailable)
+    assert approved.status is ApprovalStatus.APPROVED
+    assert store.get(challenge.id).status is ApprovalStatus.APPROVED
+    assert [event.event_type for event in store._audit.list_events("run-1")] == [
+        "APPROVAL_REQUESTED",
+        "APPROVAL_APPROVED",
+    ]
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("run_id", sqlite3.Binary(b"run-1")),
+        ("status", "UNKNOWN"),
+        ("risk_level", "LOW"),
+        ("rule_ids", '[ "RULE" ]'),
+        ("frozen_action_json", '{"type":"run_process"}'),
+        ("action_hash", "0" * 64),
+        ("created_at", "2026-07-17T12:00:00"),
+        ("expires_at", "2026-07-17T11:00:00Z"),
+        ("decided_at", "2026-07-17T12:00:00Z"),
+    ],
+)
+def test_tampered_pending_row_fails_closed(
+    connection: sqlite3.Connection,
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+    column: str,
+    value: object,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    connection.execute(
+        f"UPDATE approval_requests SET {column} = ? WHERE id = ?",
+        (value, challenge.id),
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        approval_store.get(challenge.id)
+
+    row_before = connection.execute(
+        "SELECT * FROM approval_requests WHERE id = ?", (challenge.id,)
+    ).fetchone()
+    audit_before = connection.execute(
+        "SELECT * FROM audit_events ORDER BY run_id, sequence"
+    ).fetchall()
+    for operation in (
+        lambda: approval_store.approve(challenge.id, challenge.token, risky_action),
+        lambda: approval_store.reject(challenge.id, challenge.token),
+        lambda: approval_store.cancel(challenge.id),
+        lambda: approval_store.expire_pending(datetime(2100, 1, 1, tzinfo=UTC)),
+    ):
+        try:
+            operation()
+        except ApprovalUnavailable:
+            pass
+        assert (
+            connection.execute(
+                "SELECT * FROM approval_requests WHERE id = ?", (challenge.id,)
+            ).fetchone()
+            == row_before
+        )
+        assert (
+            connection.execute(
+                "SELECT * FROM audit_events ORDER BY run_id, sequence"
+            ).fetchall()
+            == audit_before
+        )
+
+
+def test_terminal_row_without_decided_at_fails_closed(
+    connection: sqlite3.Connection,
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    connection.execute(
+        "UPDATE approval_requests SET status = 'APPROVED', decided_at = NULL "
+        "WHERE id = ?",
+        (challenge.id,),
+    )
+    row_before = connection.execute(
+        "SELECT * FROM approval_requests WHERE id = ?", (challenge.id,)
+    ).fetchone()
+    audit_before = connection.execute(
+        "SELECT * FROM audit_events ORDER BY run_id, sequence"
+    ).fetchall()
+
+    with pytest.raises(ApprovalUnavailable):
+        approval_store.get(challenge.id)
+    with pytest.raises(ApprovalUnavailable):
+        approval_store.approve(challenge.id, challenge.token, risky_action)
+
+    assert (
+        connection.execute(
+            "SELECT * FROM approval_requests WHERE id = ?", (challenge.id,)
+        ).fetchone()
+        == row_before
+    )
+    assert (
+        connection.execute(
+            "SELECT * FROM audit_events ORDER BY run_id, sequence"
+        ).fetchall()
+        == audit_before
+    )
+
+
+def test_configured_secret_never_leaks_from_approval_boundaries(
+    connection: sqlite3.Connection,
+) -> None:
+    secret = "approval-configured-sentinel-secret"
+    store = ApprovalStateMachine(connection, configured_secret_values=(secret,))
+    safe_action = RunProcessAction(
+        id="safe", reason="safe", program="git", args=("status",)
+    )
+    safe_challenge = store.request(
+        "safe-run", safe_action, RiskLevel.MEDIUM, ("SAFE_RULE",), 300
+    )
+    secret_action = RunProcessAction(
+        id="a-secret",
+        reason=f"reason-{secret}",
+        program="git",
+        args=("commit", secret),
+    )
+
+    with pytest.raises(ApprovalUnavailable) as captured:
+        store.request(
+            f"run-{secret}",
+            secret_action,
+            RiskLevel.MEDIUM,
+            (f"RULE-{secret}",),
+            300,
+        )
+
+    assert secret not in repr(safe_challenge)
+    assert secret not in repr(captured.value)
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    raw_approval_rows = connection.execute(
+        "SELECT * FROM approval_requests ORDER BY id"
+    ).fetchall()
+    raw_audit_rows = connection.execute(
+        "SELECT * FROM audit_events ORDER BY run_id, sequence"
+    ).fetchall()
+    assert secret not in repr(raw_approval_rows)
+    assert secret not in repr(raw_audit_rows)
+    assert secret not in "".join(
+        traceback.format_exception(
+            captured.type,
+            captured.value,
+            captured.tb,
+        )
+    )
+    captured_traceback = traceback.TracebackException.from_exception(
+        captured.value,
+        capture_locals=True,
+    )
+    approval_frames = [
+        frame
+        for frame in captured_traceback.stack
+        if frame.filename.replace("\\", "/").endswith(
+            "/safefix/governance/approvals.py"
+        )
+    ]
+    assert approval_frames
+    assert all(secret not in repr(frame.locals) for frame in approval_frames)
+
+
 class _ExplodingAction:
     def __init__(
         self,
@@ -947,6 +1386,25 @@ class _InterruptingApprovalConnection(sqlite3.Connection):
             self.operation_signal = None
             super().execute(sql, parameters)
             raise signal
+        return super().execute(sql, parameters)
+
+
+class _ReentrantApprovalConnection(sqlite3.Connection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.before_approval_update: Callable[[], None] | None = None
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        normalized = " ".join(sql.split())
+        if (
+            normalized.startswith(
+                "UPDATE approval_requests SET status = ?, decided_at = ?"
+            )
+            and self.before_approval_update is not None
+        ):
+            callback = self.before_approval_update
+            self.before_approval_update = None
+            callback()
         return super().execute(sql, parameters)
 
 

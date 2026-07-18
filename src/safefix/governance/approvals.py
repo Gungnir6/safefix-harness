@@ -145,6 +145,9 @@ class ApprovalStateMachine:
         prepared = self._prepare_request(
             run_id, action, risk_level, rule_ids, ttl_seconds
         )
+        if prepared is None:
+            del run_id, action, rule_ids, prepared
+            self._raise_unavailable()
         return self._run_write(lambda: self._insert_request(prepared))
 
     def get(self, approval_id: str) -> ApprovalRequest:
@@ -314,7 +317,7 @@ class ApprovalStateMachine:
         risk_level: RiskLevel,
         rule_ids: tuple[str, ...],
         ttl_seconds: int,
-    ) -> _PreparedRequest:
+    ) -> _PreparedRequest | None:
         if (
             type(run_id) is not str
             or not run_id.strip()
@@ -370,7 +373,7 @@ class ApprovalStateMachine:
         except Exception:
             failed = True
         if failed or prepared is None:
-            self._raise_unavailable()
+            return None
         return prepared
 
     def _insert_request(self, prepared: _PreparedRequest) -> ApprovalChallenge:
