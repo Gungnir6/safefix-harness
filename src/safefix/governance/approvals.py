@@ -177,6 +177,27 @@ class ApprovalStateMachine:
             self._raise_expired()
         return request
 
+    def reject(
+        self,
+        approval_id: str,
+        plaintext_token: object,
+    ) -> ApprovalRequest:
+        return self._run_write(lambda: self._reject(approval_id, plaintext_token))
+
+    def cancel(self, approval_id: str) -> ApprovalRequest:
+        return self._run_write(lambda: self._cancel(approval_id))
+
+    def expire_pending(self, now: datetime) -> tuple[ApprovalRequest, ...]:
+        invalid = False
+        decided_at: datetime | None = None
+        try:
+            decided_at = self._normalize_timestamp(now)
+        except Exception:
+            invalid = True
+        if invalid or decided_at is None:
+            self._raise_transition_conflict()
+        return self._run_write(lambda: self._expire_pending(decided_at))
+
     def _initialize_schema(self) -> None:
         failed = False
         try:
@@ -447,6 +468,95 @@ class ApprovalStateMachine:
         self._audit.append(
             expected.run_id,
             "APPROVAL_EXPIRED",
+            self._audit_payload(expected),
+        )
+        persisted = self._read_one(stored.id)
+        if persisted != expected:
+            raise ValueError
+        return self._to_request(persisted)
+
+    def _reject(
+        self,
+        approval_id: str,
+        plaintext_token: object,
+    ) -> ApprovalRequest:
+        stored = self._read_one(approval_id)
+        if stored.status is not ApprovalStatus.PENDING:
+            self._raise_transition_conflict()
+        self._verify_token(stored.one_time_token_hash, plaintext_token)
+        return self._transition_pending(
+            stored,
+            ApprovalStatus.REJECTED,
+            self._read_clock(),
+            "APPROVAL_REJECTED",
+        )
+
+    def _cancel(self, approval_id: str) -> ApprovalRequest:
+        stored = self._read_one(approval_id)
+        if stored.status is not ApprovalStatus.PENDING:
+            self._raise_transition_conflict()
+        return self._transition_pending(
+            stored,
+            ApprovalStatus.CANCELLED,
+            self._read_clock(),
+            "APPROVAL_CANCELLED",
+        )
+
+    def _expire_pending(
+        self,
+        decided_at: datetime,
+    ) -> tuple[ApprovalRequest, ...]:
+        rows = self._connection.execute(
+            "SELECT id FROM approval_requests "
+            "WHERE status = ? AND expires_at <= ? ORDER BY id",
+            (
+                ApprovalStatus.PENDING.value,
+                self._format_timestamp(decided_at),
+            ),
+        ).fetchall()
+        if any(len(row) != 1 or type(row[0]) is not str for row in rows):
+            raise ValueError
+        expired: list[ApprovalRequest] = []
+        for row in rows:
+            stored = self._read_one(row[0])
+            if (
+                stored.status is not ApprovalStatus.PENDING
+                or stored.expires_at > decided_at
+            ):
+                raise ValueError
+            expired.append(
+                self._transition_pending(
+                    stored,
+                    ApprovalStatus.EXPIRED,
+                    decided_at,
+                    "APPROVAL_EXPIRED",
+                )
+            )
+        return tuple(expired)
+
+    def _transition_pending(
+        self,
+        stored: _StoredApproval,
+        target: ApprovalStatus,
+        decided_at: datetime,
+        event_type: str,
+    ) -> ApprovalRequest:
+        cursor = self._connection.execute(
+            "UPDATE approval_requests SET status = ?, decided_at = ? "
+            "WHERE id = ? AND status = ?",
+            (
+                target.value,
+                self._format_timestamp(decided_at),
+                stored.id,
+                ApprovalStatus.PENDING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            self._raise_transition_conflict()
+        expected = replace(stored, status=target, decided_at=decided_at)
+        self._audit.append(
+            expected.run_id,
+            event_type,
             self._audit_payload(expected),
         )
         persisted = self._read_one(stored.id)
@@ -760,3 +870,7 @@ class ApprovalStateMachine:
     @staticmethod
     def _raise_expired() -> NoReturn:
         raise ApprovalExpired(_EXPIRED_MESSAGE) from None
+
+    @staticmethod
+    def _raise_transition_conflict() -> NoReturn:
+        raise InvalidApprovalTransition(_INVALID_TRANSITION_MESSAGE) from None

@@ -2,6 +2,7 @@ import hashlib
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -149,10 +150,13 @@ def test_approved_request_replay_is_already_used(
     assert str(captured.value) == "Approval request has already been used"
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
-    assert sum(
-        event.event_type == "APPROVAL_APPROVED"
-        for event in approval_store._audit.list_events("run-1")
-    ) == 1
+    assert (
+        sum(
+            event.event_type == "APPROVAL_APPROVED"
+            for event in approval_store._audit.list_events("run-1")
+        )
+        == 1
+    )
 
 
 def test_approve_sets_exact_decided_at(
@@ -161,9 +165,7 @@ def test_approve_sets_exact_decided_at(
 ) -> None:
     fixed = datetime(2026, 7, 17, 12, 34, 56, 123456, tzinfo=UTC)
     store = ApprovalStateMachine(connection, clock=lambda: fixed)
-    challenge = store.request(
-        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
-    )
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
 
     approved = store.approve(challenge.id, challenge.token, risky_action)
 
@@ -194,6 +196,196 @@ def test_approved_audit_payload_excludes_capability_and_action(
     assert approved.frozen_action_json not in repr(event)
 
 
+def test_reject_requires_token_and_returns_rejected(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    with pytest.raises(InvalidApprovalToken):
+        approval_store.reject(challenge.id, "wrong-token")
+    rejected = approval_store.reject(challenge.id, challenge.token)
+    assert rejected.status is ApprovalStatus.REJECTED
+    assert rejected.decided_at is not None
+
+
+def test_cancel_needs_no_token_but_only_pending_can_cancel(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    assert approval_store.cancel(challenge.id).status is ApprovalStatus.CANCELLED
+    with pytest.raises(InvalidApprovalTransition):
+        approval_store.cancel(challenge.id)
+
+
+@pytest.mark.parametrize(
+    ("transition", "expected_status", "expected_event"),
+    [
+        ("reject", ApprovalStatus.REJECTED, "APPROVAL_REJECTED"),
+        ("cancel", ApprovalStatus.CANCELLED, "APPROVAL_CANCELLED"),
+    ],
+)
+def test_reject_and_cancel_append_exact_audit_events(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+    transition: str,
+    expected_status: ApprovalStatus,
+    expected_event: str,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE_B", "RULE_A"), 300
+    )
+
+    if transition == "reject":
+        updated = approval_store.reject(challenge.id, challenge.token)
+    else:
+        updated = approval_store.cancel(challenge.id)
+
+    event = approval_store._audit.list_events("run-1")[-1]
+    assert event.event_type == expected_event
+    assert event.redacted_payload == {
+        "action_hash": updated.action_hash,
+        "approval_id": challenge.id,
+        "risk_level": "MEDIUM",
+        "rule_ids": ["RULE_A", "RULE_B"],
+        "status": expected_status.value,
+    }
+    assert challenge.token not in repr(event)
+    assert updated.one_time_token_hash not in repr(event)
+    assert updated.frozen_action_json not in repr(event)
+
+
+def test_expire_pending_uses_aware_utc_cutoff(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+    store = ApprovalStateMachine(connection, clock=lambda: now)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 60)
+    assert store.expire_pending(now + timedelta(seconds=59)) == ()
+    expired = store.expire_pending(now + timedelta(seconds=60))
+    assert [item.id for item in expired] == [challenge.id]
+    assert expired[0].status is ApprovalStatus.EXPIRED
+
+
+def test_expire_pending_rejects_naive_cutoff_with_stable_error(
+    approval_store: ApprovalStateMachine,
+) -> None:
+    with pytest.raises(InvalidApprovalTransition) as captured:
+        approval_store.expire_pending(datetime(2026, 7, 17, 12, 0))
+
+    assert str(captured.value) == "Approval transition is invalid"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        ApprovalStatus.APPROVED,
+        ApprovalStatus.REJECTED,
+        ApprovalStatus.EXPIRED,
+        ApprovalStatus.CANCELLED,
+    ],
+)
+@pytest.mark.parametrize("transition", ["reject", "cancel"])
+def test_reject_and_cancel_reject_every_terminal_state(
+    approval_store: ApprovalStateMachine,
+    risky_action: RunProcessAction,
+    terminal_status: ApprovalStatus,
+    transition: str,
+) -> None:
+    challenge = approval_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    if terminal_status is ApprovalStatus.APPROVED:
+        approval_store.approve(challenge.id, challenge.token, risky_action)
+    elif terminal_status is ApprovalStatus.REJECTED:
+        approval_store.reject(challenge.id, challenge.token)
+    elif terminal_status is ApprovalStatus.EXPIRED:
+        approval_store.expire_pending(challenge.request.expires_at)
+    else:
+        approval_store.cancel(challenge.id)
+
+    with pytest.raises(InvalidApprovalTransition) as captured:
+        if transition == "reject":
+            approval_store.reject(challenge.id, "wrong-token")
+        else:
+            approval_store.cancel(challenge.id)
+
+    assert str(captured.value) == "Approval transition is invalid"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_expire_pending_rolls_back_entire_stable_id_ordered_batch(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+    store = ApprovalStateMachine(connection, clock=lambda: now)
+    first = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 60)
+    second_action = risky_action.model_copy(update={"id": "a2"})
+    second = store.request("run-1", second_action, RiskLevel.MEDIUM, ("RULE",), 60)
+    ordered_ids = sorted([first.id, second.id])
+    connection.execute(
+        "CREATE TRIGGER block_second_expiry BEFORE INSERT ON audit_events "
+        "WHEN NEW.event_type = 'APPROVAL_EXPIRED' "
+        "AND json_extract(NEW.payload, '$.approval_id') = '"
+        f"{ordered_ids[1]}' "
+        "BEGIN SELECT RAISE(ABORT, 'audit blocked'); END"
+    )
+
+    with pytest.raises(ApprovalUnavailable):
+        store.expire_pending(now + timedelta(seconds=60))
+
+    assert _approval_states(connection) == sorted(
+        [(first.id, "PENDING", None), (second.id, "PENDING", None)]
+    )
+    assert all(
+        event.event_type != "APPROVAL_EXPIRED"
+        for event in store._audit.list_events("run-1")
+    )
+    connection.execute("DROP TRIGGER block_second_expiry")
+    expired = store.expire_pending(now + timedelta(seconds=60))
+    assert [item.id for item in expired] == ordered_ids
+
+
+def test_reopen_preserves_approval_and_valid_audit_chain(
+    tmp_path: Path,
+    risky_action: RunProcessAction,
+) -> None:
+    database = tmp_path / "approvals.sqlite3"
+    first_connection = sqlite3.connect(database)
+    first_store = ApprovalStateMachine(first_connection)
+    challenge = first_store.request(
+        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
+    )
+    first_connection.close()
+
+    second_connection = sqlite3.connect(database)
+    second_store = ApprovalStateMachine(second_connection)
+    approved = second_store.approve(challenge.id, challenge.token, risky_action)
+    assert approved.status is ApprovalStatus.APPROVED
+    second_connection.close()
+
+    third_connection = sqlite3.connect(database)
+    third_store = ApprovalStateMachine(third_connection)
+    assert third_store.get(challenge.id).status is ApprovalStatus.APPROVED
+    verification = third_store._audit.verify_chain("run-1")
+    assert verification.valid is True
+    assert verification.first_invalid_sequence is None
+    assert [event.event_type for event in third_store._audit.list_events("run-1")] == [
+        "APPROVAL_REQUESTED",
+        "APPROVAL_APPROVED",
+    ]
+    third_connection.close()
+
+
 @pytest.mark.parametrize("column", ["frozen_action_json", "action_hash"])
 def test_tampered_frozen_action_or_hash_fails_closed(
     connection: sqlite3.Connection,
@@ -201,9 +393,7 @@ def test_tampered_frozen_action_or_hash_fails_closed(
     column: str,
 ) -> None:
     store = ApprovalStateMachine(connection)
-    challenge = store.request(
-        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
-    )
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
     tampered = (
         risky_action.model_copy(update={"args": ("push",)}).model_dump_json(
             exclude_none=True
@@ -234,9 +424,7 @@ def test_approve_expired_request_is_committed_before_approval_error(
 ) -> None:
     now = [datetime(2026, 7, 17, 12, 0, tzinfo=UTC)]
     store = ApprovalStateMachine(connection, clock=lambda: now[0])
-    challenge = store.request(
-        "run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300
-    )
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
     now[0] = challenge.request.expires_at
 
     with pytest.raises(ApprovalExpired) as captured:
