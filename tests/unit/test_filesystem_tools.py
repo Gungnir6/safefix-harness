@@ -61,6 +61,27 @@ def test_default_filesystem_limits_are_locked() -> None:
     )
 
 
+def test_read_tool_constructor_clears_original_limits_traceback(
+    boundary: WorkspaceBoundary,
+) -> None:
+    class InterruptingLimits:
+        def __bool__(self) -> bool:
+            raise SystemExit("PRIVATE-LIMITS-INTERRUPT")
+
+        def __repr__(self) -> str:
+            return "PRIVATE-LIMITS-SENTINEL"
+
+    limits: Any = InterruptingLimits()
+    with pytest.raises(SystemExit) as error_info:
+        ReadFileTool(boundary, limits=limits)
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"self", "boundary", "limits"},
+        ("PRIVATE-LIMITS-SENTINEL",),
+    )
+
+
 @pytest.mark.parametrize(
     "ignored", [("",), ("../cache",), ("C:/cache",), (r"a\b",)]
 )
@@ -72,6 +93,48 @@ def test_ignored_directories_require_safe_relative_posix_paths(
         match="^ignored directories must be safe relative POSIX paths$",
     ):
         ListFilesTool(boundary, ignored_directories=ignored)
+
+
+def test_list_tool_constructor_clears_original_ignored_traceback(
+    boundary: WorkspaceBoundary,
+) -> None:
+    class InterruptingDirectory(str):
+        def split(
+            self,
+            separator: str | None = None,
+            maxsplit: SupportsIndex = -1,
+        ) -> list[str]:
+            raise KeyboardInterrupt("PRIVATE-IGNORED-INTERRUPT")
+
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        ListFilesTool(
+            boundary,
+            ignored_directories=(
+                InterruptingDirectory("PRIVATE-IGNORED-SENTINEL"),
+            ),
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"self", "boundary", "ignored_directories", "directories"},
+        ("PRIVATE-IGNORED-SENTINEL",),
+    )
+
+
+def test_list_tool_constructor_clears_validation_error_traceback(
+    boundary: WorkspaceBoundary,
+) -> None:
+    with pytest.raises(ValueError) as error_info:
+        ListFilesTool(
+            boundary,
+            ignored_directories=("../PRIVATE-VALIDATION-SENTINEL",),
+        )
+
+    _assert_filesystem_frames_are_clean(
+        error_info.value,
+        {"self", "boundary", "ignored_directories", "directories"},
+        ("PRIVATE-VALIDATION-SENTINEL",),
+    )
 
 
 def test_ignored_directory_normalization_clears_generated_traceback_frames(
@@ -464,6 +527,91 @@ async def test_list_files_rejects_simulated_ancestor_junction(
     assert result == ToolResult.failure(
         "list-ancestor-junction", "PATH_DENIED", "path access is denied"
     )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_symlink_before_dotdot(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real" / "nested"
+    target.mkdir(parents=True)
+    (workspace / "real" / "ok.txt").write_text("ok", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-link-dotdot",
+            reason="inspect",
+            path="linked/..",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-link-dotdot", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_simulated_junction_before_dotdot(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-junction-dotdot",
+            reason="inspect",
+            path="junction/..",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-junction-dotdot", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_supports_configured_workspace_alias_absolute_path(
+    workspace: Path,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    subdir = real_workspace / "subdir"
+    subdir.mkdir(parents=True)
+    (subdir / "ok.txt").write_text("ok", encoding="utf-8")
+    alias = workspace / "workspace-alias"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    alias_boundary = WorkspaceBoundary(alias, ())
+
+    result = await ListFilesTool(alias_boundary).execute(
+        ListFilesAction(
+            id="list-alias",
+            reason="inspect",
+            path=str(alias / "subdir"),
+            limit=100,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "subdir/ok.txt"
 
 
 @pytest.mark.asyncio

@@ -95,7 +95,7 @@ def _lexical_path(workspace: Path, requested_path: str) -> Path:
         candidate = Path(requested_path)
         if not candidate.is_absolute():
             candidate = workspace / candidate
-        return Path(os.path.abspath(candidate))
+        return candidate
     finally:
         del workspace, requested_path, candidate
 
@@ -187,13 +187,23 @@ def _is_directory_link(path: Path) -> bool:
         del path, junction_check
 
 
-def _contains_directory_link(workspace: Path, target: Path) -> bool:
+def _contains_directory_link(
+    configured_workspace: Path, workspace: Path, target: Path
+) -> bool:
+    base: Path | None = None
+    relative: Path | None = None
     current: Path | None = None
     components: tuple[str, ...] = ()
     component = ""
     try:
-        current = workspace
-        components = target.relative_to(workspace).parts
+        try:
+            relative = target.relative_to(configured_workspace)
+            base = configured_workspace
+        except ValueError:
+            relative = target.relative_to(workspace)
+            base = workspace
+        current = base
+        components = relative.parts
         for component in components:
             current /= component
             if _is_directory_link(current):
@@ -202,7 +212,16 @@ def _contains_directory_link(workspace: Path, target: Path) -> bool:
                 break
         return False
     finally:
-        del workspace, target, current, components, component
+        del (
+            configured_workspace,
+            workspace,
+            target,
+            base,
+            relative,
+            current,
+            components,
+            component,
+        )
 
 
 class ListFilesTool:
@@ -212,11 +231,15 @@ class ListFilesTool:
         *,
         ignored_directories: tuple[str, ...] = (),
     ) -> None:
-        self._boundary = boundary
-        self._ignored_directories = _normalize_ignored_directories(
-            ignored_directories
-        )
-        self._workspace = boundary.resolve(".", AccessKind.LIST)
+        try:
+            self._boundary = boundary
+            self._ignored_directories = _normalize_ignored_directories(
+                ignored_directories
+            )
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.LIST)
+        finally:
+            del self, boundary, ignored_directories
 
     @property
     def action_type(self) -> type[object]:
@@ -276,8 +299,12 @@ class ListFilesTool:
 
             try:
                 root = self._boundary.resolve(requested_path, AccessKind.LIST)
-                lexical_root = _lexical_path(self._workspace, requested_path)
-                if _contains_directory_link(self._workspace, lexical_root):
+                lexical_root = _lexical_path(
+                    self._configured_workspace, requested_path
+                )
+                if _contains_directory_link(
+                    self._configured_workspace, self._workspace, lexical_root
+                ):
                     return _path_denied(action_id)
                 if not root.exists():
                     return ToolResult.failure(
@@ -386,8 +413,11 @@ class ReadFileTool:
         *,
         limits: FilesystemLimits | None = None,
     ) -> None:
-        self._boundary = boundary
-        self._limits = limits or FilesystemLimits()
+        try:
+            self._boundary = boundary
+            self._limits = limits or FilesystemLimits()
+        finally:
+            del self, boundary, limits
 
     @property
     def action_type(self) -> type[object]:
