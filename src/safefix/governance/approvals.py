@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, NoReturn, TypeVar
+from typing import Any, Generic, NoReturn, TypeVar, cast
 
 from pydantic import TypeAdapter
 
@@ -110,6 +110,12 @@ class _PreparedRequest:
     token: str = field(repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class _CallOutcome(Generic[_T]):
+    value: _T | None = None
+    failure: BaseException | None = None
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -142,53 +148,72 @@ class ApprovalStateMachine:
         rule_ids: tuple[str, ...],
         ttl_seconds: int,
     ) -> ApprovalChallenge:
-        prepared = self._prepare_request(
-            run_id, action, risk_level, rule_ids, ttl_seconds
+        prepared_outcome = self._capture_call(
+            lambda: self._prepare_request(
+                run_id, action, risk_level, rule_ids, ttl_seconds
+            )
         )
+        run_id = ""
+        action = cast(Action, None)
+        rule_ids = ()
+        prepared = self._resolve_outcome(prepared_outcome)
+        prepared_outcome = _CallOutcome()
         if prepared is None:
-            del run_id, action, rule_ids, prepared
             self._raise_unavailable()
-        return self._run_write(lambda: self._insert_request(prepared))
+        prepared_for_write: _PreparedRequest = prepared
+        write_outcome = self._capture_call(
+            lambda: self._run_write(lambda: self._insert_request(prepared_for_write))
+        )
+        prepared = cast(_PreparedRequest, None)
+        prepared_for_write = cast(_PreparedRequest, None)
+        return self._resolve_outcome(write_outcome)
 
     def get(self, approval_id: str) -> ApprovalRequest:
-        failure: ApprovalError | None = None
-        result: ApprovalRequest | None = None
-        with self._lock:
-            try:
-                result = self._to_request(self._read_one(approval_id))
-            except ApprovalError as error:
-                failure = error
-            except Exception:
-                failure = ApprovalUnavailable(_UNAVAILABLE_MESSAGE)
-        if failure is not None:
-            failure.__traceback__ = None
-            raise failure from None
-        if result is None:
-            self._raise_unavailable()
-        return result
+        outcome = self._capture_call(lambda: self._get(approval_id))
+        approval_id = ""
+        return self._resolve_outcome(outcome)
 
     def approve(
         self,
         approval_id: str,
-        plaintext_token: object,
+        plaintext_token: str,
         action: Action,
     ) -> ApprovalRequest:
-        request, expired = self._run_write(
-            lambda: self._approve(approval_id, plaintext_token, action)
+        outcome = self._capture_call(
+            lambda: self._run_write(
+                lambda: self._approve(approval_id, plaintext_token, action)
+            )
         )
+        approval_id = ""
+        plaintext_token = ""
+        action = cast(Action, None)
+        resolved = self._resolve_outcome(outcome)
+        outcome = _CallOutcome()
+        request, expired = resolved
+        resolved = cast(tuple[ApprovalRequest, bool], None)
         if expired:
+            del request, expired
             self._raise_expired()
         return request
 
     def reject(
         self,
         approval_id: str,
-        plaintext_token: object,
+        plaintext_token: str,
     ) -> ApprovalRequest:
-        return self._run_write(lambda: self._reject(approval_id, plaintext_token))
+        outcome = self._capture_call(
+            lambda: self._run_write(lambda: self._reject(approval_id, plaintext_token))
+        )
+        approval_id = ""
+        plaintext_token = ""
+        return self._resolve_outcome(outcome)
 
     def cancel(self, approval_id: str) -> ApprovalRequest:
-        return self._run_write(lambda: self._cancel(approval_id))
+        outcome = self._capture_call(
+            lambda: self._run_write(lambda: self._cancel(approval_id))
+        )
+        approval_id = ""
+        return self._resolve_outcome(outcome)
 
     def expire_pending(self, now: datetime) -> tuple[ApprovalRequest, ...]:
         invalid = False
@@ -200,6 +225,10 @@ class ApprovalStateMachine:
         if invalid or decided_at is None:
             self._raise_transition_conflict()
         return self._run_write(lambda: self._expire_pending(decided_at))
+
+    def _get(self, approval_id: str) -> ApprovalRequest:
+        with self._lock:
+            return self._to_request(self._read_one(approval_id))
 
     def _initialize_schema(self) -> None:
         failed = False
@@ -740,6 +769,22 @@ class ApprovalStateMachine:
                 return self._run_savepoint(operation)
             finally:
                 active.remove(connection_id)
+
+    @staticmethod
+    def _capture_call(operation: Callable[[], _T]) -> _CallOutcome[_T]:
+        try:
+            return _CallOutcome(value=operation())
+        except BaseException as failure:
+            failure.__traceback__ = None
+            return _CallOutcome(failure=failure)
+
+    @classmethod
+    def _resolve_outcome(cls, outcome: _CallOutcome[_T]) -> _T:
+        if outcome.failure is not None:
+            cls._propagate_failure(outcome.failure)
+        if outcome.value is None:
+            cls._raise_unavailable()
+        return outcome.value
 
     def _run_savepoint(self, operation: Callable[[], _T]) -> _T:
         failure: BaseException | None = None

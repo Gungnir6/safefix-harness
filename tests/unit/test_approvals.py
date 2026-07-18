@@ -1274,6 +1274,207 @@ def test_configured_secret_never_leaks_from_approval_boundaries(
     assert all(secret not in repr(frame.locals) for frame in approval_frames)
 
 
+@pytest.mark.parametrize("token_source", ["wrong", "cross"])
+def test_approve_token_error_never_leaks_sensitive_frames(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+    token_source: str,
+) -> None:
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    if token_source == "cross":
+        other_action = risky_action.model_copy(update={"id": "a2"})
+        supplied_token = store.request(
+            "run-1", other_action, RiskLevel.MEDIUM, ("RULE",), 300
+        ).token
+    else:
+        supplied_token = "wrong-approval-token-sentinel"
+
+    with pytest.raises(InvalidApprovalToken) as captured:
+        store.approve(challenge.id, supplied_token, risky_action)
+
+    _assert_sensitive_approval_failure(
+        captured,
+        (supplied_token,),
+        "Approval token is invalid",
+    )
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+
+
+def test_approve_action_mismatch_never_leaks_sensitive_frames(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    secret = "approval-action-mismatch-sentinel"
+    store = ApprovalStateMachine(connection, configured_secret_values=(secret,))
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+    changed_action = risky_action.model_copy(
+        update={"reason": f"reason-{secret}", "args": ("push", secret)}
+    )
+
+    with pytest.raises(ActionMismatch) as captured:
+        store.approve(challenge.id, challenge.token, changed_action)
+
+    _assert_sensitive_approval_failure(
+        captured,
+        (secret,),
+        "Approval action does not match",
+    )
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+
+
+def test_reject_wrong_token_never_leaks_sensitive_frames(
+    connection: sqlite3.Connection,
+    risky_action: RunProcessAction,
+) -> None:
+    secret = "reject-wrong-token-sentinel"
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", risky_action, RiskLevel.MEDIUM, ("RULE",), 300)
+
+    with pytest.raises(InvalidApprovalToken) as captured:
+        store.reject(challenge.id, secret)
+
+    _assert_sensitive_approval_failure(
+        captured,
+        (secret,),
+        "Approval token is invalid",
+    )
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+
+
+def test_request_audit_failure_never_leaks_sensitive_frames(
+    connection: sqlite3.Connection,
+) -> None:
+    input_secret = "request-audit-input-sentinel"
+    trigger_secret = "request-audit-trigger-sentinel"
+    store = ApprovalStateMachine(connection)
+    secret_action = RunProcessAction(
+        id="a-secret",
+        reason=f"reason-{input_secret}",
+        program="git",
+        args=("commit", input_secret),
+    )
+    connection.execute(
+        "CREATE TRIGGER reject_sensitive_request_audit "
+        "BEFORE INSERT ON audit_events "
+        "WHEN NEW.event_type = 'APPROVAL_REQUESTED' "
+        f"BEGIN SELECT RAISE(ABORT, '{trigger_secret}'); END"
+    )
+
+    with pytest.raises(ApprovalUnavailable) as captured:
+        store.request(
+            f"run-{input_secret}",
+            secret_action,
+            RiskLevel.MEDIUM,
+            (f"RULE-{input_secret}",),
+            300,
+        )
+
+    _assert_sensitive_approval_failure(
+        captured,
+        (input_secret, trigger_secret),
+        "Approval storage is unavailable",
+    )
+    assert connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone() == (
+        0,
+    )
+    assert connection.execute("SELECT COUNT(*) FROM audit_events").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("signal_type", [KeyboardInterrupt, SystemExit])
+def test_approve_process_control_never_leaks_sensitive_frames_and_recovers(
+    risky_action: RunProcessAction,
+    signal_type: type[BaseException],
+) -> None:
+    action_secret = "approval-process-action-sentinel"
+    action = risky_action.model_copy(
+        update={"reason": f"reason-{action_secret}", "args": ("commit", action_secret)}
+    )
+    connection = sqlite3.connect(":memory:", factory=_InterruptingApprovalConnection)
+    assert isinstance(connection, _InterruptingApprovalConnection)
+    store = ApprovalStateMachine(connection)
+    challenge = store.request("run-1", action, RiskLevel.MEDIUM, ("RULE",), 300)
+    token_secret = challenge.token
+    signal = signal_type()
+    connection.clear_tracking()
+    connection.operation_signal = signal
+
+    with pytest.raises(signal_type) as captured:
+        store.approve(challenge.id, token_secret, action)
+
+    assert captured.value is signal
+    _assert_sensitive_approval_failure(
+        captured,
+        (token_secret, action_secret),
+    )
+    savepoint_name = connection.savepoint_names[0]
+    with pytest.raises(sqlite3.OperationalError):
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+    assert store.get(challenge.id).status is ApprovalStatus.PENDING
+    assert (
+        store.approve(challenge.id, token_secret, action).status
+        is ApprovalStatus.APPROVED
+    )
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "message"),
+    [
+        ("get", "Approval request was not found"),
+        ("cancel", "Approval request was not found"),
+    ],
+)
+def test_public_id_error_never_leaks_sensitive_frames(
+    connection: sqlite3.Connection,
+    method_name: str,
+    message: str,
+) -> None:
+    secret = f"{method_name}-approval-id-sentinel"
+    store = ApprovalStateMachine(connection)
+
+    with pytest.raises(ApprovalNotFound) as captured:
+        getattr(store, method_name)(secret)
+
+    _assert_sensitive_approval_failure(captured, (secret,), message)
+
+
+def test_public_token_annotations_are_str() -> None:
+    assert ApprovalStateMachine.approve.__annotations__["plaintext_token"] == "str"
+    assert ApprovalStateMachine.reject.__annotations__["plaintext_token"] == "str"
+
+
+def _assert_sensitive_approval_failure(
+    captured: Any,
+    secrets: tuple[str, ...],
+    message: str | None = None,
+) -> None:
+    if message is not None:
+        assert str(captured.value) == message
+        assert captured.value.__cause__ is None
+        assert captured.value.__context__ is None
+    rendered_error = repr(captured.value)
+    default_traceback = "".join(
+        traceback.format_exception(captured.type, captured.value, captured.tb)
+    )
+    captured_traceback = traceback.TracebackException.from_exception(
+        captured.value,
+        capture_locals=True,
+    )
+    approval_frames = [
+        frame
+        for frame in captured_traceback.stack
+        if frame.filename.replace("\\", "/").endswith(
+            "/safefix/governance/approvals.py"
+        )
+    ]
+    assert approval_frames
+    for secret in secrets:
+        assert secret not in rendered_error
+        assert secret not in default_traceback
+        assert all(secret not in repr(frame.locals) for frame in approval_frames)
+
+
 class _ExplodingAction:
     def __init__(
         self,
