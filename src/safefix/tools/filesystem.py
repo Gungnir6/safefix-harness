@@ -44,6 +44,8 @@ class FilesystemLimits:
             <= 0
         ):
             raise ValueError("filesystem limits must be positive")
+        if self.max_search_output_bytes < 11:
+            raise ValueError("search output limit must fit the truncation marker")
 
 
 def _normalize_ignored_directories(directories: tuple[str, ...]) -> tuple[str, ...]:
@@ -724,10 +726,6 @@ class SearchTextTool:
 
                 candidates.sort()
                 for relative in candidates:
-                    if scanned >= self._limits.max_search_files:
-                        truncated = True
-                        break
-                    scanned += 1
                     candidate_denied = False
                     try:
                         target = self._boundary.resolve(relative, AccessKind.READ)
@@ -790,6 +788,11 @@ class SearchTextTool:
                             break
                         continue
                     target = verified_target
+
+                    if scanned >= self._limits.max_search_files:
+                        truncated = True
+                        break
+                    scanned += 1
 
                     decode_failed = False
                     try:

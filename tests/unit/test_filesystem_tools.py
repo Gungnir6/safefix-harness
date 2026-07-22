@@ -6,6 +6,7 @@ import traceback as traceback_module
 from typing import Any, SupportsIndex
 
 import pytest
+from pydantic import ValidationError
 
 import safefix.tools.filesystem as filesystem_module
 from safefix.domain import (
@@ -78,6 +79,17 @@ def _assert_public_execute_interrupt_is_clean(
 def test_filesystem_limits_are_positive() -> None:
     with pytest.raises(ValueError, match="^filesystem limits must be positive$"):
         FilesystemLimits(max_read_bytes=0)
+
+
+@pytest.mark.parametrize("output_limit", range(1, 11))
+def test_filesystem_limits_require_space_for_search_truncation_marker(
+    output_limit: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="^search output limit must fit the truncation marker$",
+    ):
+        FilesystemLimits(max_search_output_bytes=output_limit)
 
 
 def test_default_filesystem_limits_are_locked() -> None:
@@ -2110,6 +2122,50 @@ async def test_search_text_output_limit_never_splits_unicode(
 
 
 @pytest.mark.asyncio
+async def test_search_text_output_limit_accepts_exact_truncation_marker_size(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "a.txt").write_text("hit!\n", encoding="utf-8")
+
+    result = await SearchTextTool(
+        boundary, limits=FilesystemLimits(max_search_output_bytes=11)
+    ).execute(
+        SearchTextAction(
+            id="search-marker-budget",
+            reason="find",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "[truncated]"
+    assert len(result.stdout_summary.encode("utf-8")) == 11
+
+
+@pytest.mark.asyncio
+async def test_search_text_removes_results_to_make_room_for_truncation_marker(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "a.txt").write_text("hit\nhit\n", encoding="utf-8")
+
+    result = await SearchTextTool(
+        boundary, limits=FilesystemLimits(max_search_output_bytes=22)
+    ).execute(
+        SearchTextAction(
+            id="search-marker-room",
+            reason="find",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "[truncated]"
+    assert len(result.stdout_summary.encode("utf-8")) <= 22
+
+
+@pytest.mark.asyncio
 async def test_search_text_enforces_file_scan_limit(
     workspace: Path, boundary: WorkspaceBoundary
 ) -> None:
@@ -2270,3 +2326,503 @@ async def test_search_text_maps_oserror_without_disclosing_details(
         "PRIVATE-SEARCH-PATTERN",
     ):
         assert sentinel not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sensitive_name", "valid_name"),
+    ((".env", "ok.txt"), ("z.pem", "a.txt")),
+)
+async def test_search_text_sensitive_candidates_do_not_consume_scan_limit(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    sensitive_name: str,
+    valid_name: str,
+) -> None:
+    (workspace / sensitive_name).write_text("hit-secret\n", encoding="utf-8")
+    (workspace / valid_name).write_text("hit\n", encoding="utf-8")
+
+    result = await SearchTextTool(
+        boundary, limits=FilesystemLimits(max_search_files=1)
+    ).execute(
+        SearchTextAction(
+            id="search-sensitive-quota",
+            reason="find",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == f"{valid_name}:1:hit"
+
+
+@pytest.mark.asyncio
+async def test_search_text_disappeared_candidate_does_not_consume_scan_limit(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disappeared = workspace / "a.txt"
+    disappeared.write_text("hit\n", encoding="utf-8")
+    (workspace / "b.txt").write_text("hit\n", encoding="utf-8")
+    real_exists = Path.exists
+
+    def simulated_exists(path: Path) -> bool:
+        if path == disappeared:
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", simulated_exists)
+    result = await SearchTextTool(
+        boundary, limits=FilesystemLimits(max_search_files=1)
+    ).execute(
+        SearchTextAction(
+            id="search-disappeared-quota",
+            reason="find",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "b.txt:1:hit"
+
+
+@pytest.mark.asyncio
+async def test_search_text_non_file_candidate_does_not_consume_scan_limit(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    non_file = workspace / "a.txt"
+    non_file.write_text("hit\n", encoding="utf-8")
+    (workspace / "b.txt").write_text("hit\n", encoding="utf-8")
+    real_is_file = Path.is_file
+
+    def simulated_is_file(path: Path) -> bool:
+        if path == non_file:
+            return False
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", simulated_is_file)
+    result = await SearchTextTool(
+        boundary, limits=FilesystemLimits(max_search_files=1)
+    ).execute(
+        SearchTextAction(
+            id="search-non-file-quota",
+            reason="find",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "b.txt:1:hit"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_path", ("a/../b", r"a\..\b"))
+async def test_search_text_rejects_original_parent_references(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    requested_path: str,
+) -> None:
+    target = workspace / "b"
+    target.mkdir()
+    (target / "match.txt").write_text("hit\n", encoding="utf-8")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-parent",
+            reason="find",
+            path=requested_path,
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-parent", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_rejects_direct_junction_root(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    (junction / "match.txt").write_text("hit\n", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-junction",
+            reason="find",
+            path="junction",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-junction", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_rejects_directory_symlink_ancestor(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    nested = workspace / "real" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "match.txt").write_text("hit\n", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(workspace / "real", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-link-ancestor",
+            reason="find",
+            path="linked/nested",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-link-ancestor", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_rejects_link_descendant_under_configured_alias(
+    workspace: Path,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    target = real_workspace / "target"
+    target.mkdir(parents=True)
+    (target / "match.txt").write_text("hit\n", encoding="utf-8")
+    alias = workspace / "workspace-alias"
+    linked = real_workspace / "linked"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await SearchTextTool(WorkspaceBoundary(alias, ())).execute(
+        SearchTextAction(
+            id="search-alias-link",
+            reason="find",
+            path=str(alias / "linked"),
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-alias-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_direct_file_glob_mismatch_returns_empty(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "match.txt").write_text("hit\n", encoding="utf-8")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-direct-glob",
+            reason="find",
+            path="match.txt",
+            pattern="hit",
+            file_glob="**/*.py",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == ""
+
+
+@pytest.mark.asyncio
+async def test_search_text_missing_root_has_fixed_failure(
+    boundary: WorkspaceBoundary,
+) -> None:
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-missing",
+            reason="find",
+            path="missing",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-missing", "NOT_FOUND", "requested path does not exist"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_directory_root_searches_descendants(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    root = workspace / "source"
+    root.mkdir()
+    (root / "match.txt").write_text("hit\n", encoding="utf-8")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-directory",
+            reason="find",
+            path="source",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "source/match.txt:1:hit"
+
+
+@pytest.mark.asyncio
+async def test_search_text_non_file_root_has_fixed_failure(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "special"
+    target.write_text("hit\n", encoding="utf-8")
+    real_is_file = Path.is_file
+    real_is_dir = Path.is_dir
+
+    def simulated_is_file(path: Path) -> bool:
+        if path == target:
+            return False
+        return real_is_file(path)
+
+    def simulated_is_dir(path: Path) -> bool:
+        if path == target:
+            return False
+        return real_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_file", simulated_is_file)
+    monkeypatch.setattr(Path, "is_dir", simulated_is_dir)
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-non-file-root",
+            reason="find",
+            path="special",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-non-file-root",
+        "NOT_FILE",
+        "requested path is not a file or directory",
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_public_execute_propagates_clean_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "PRIVATE-SEARCH-ROOT-SENTINEL"
+    workspace.mkdir()
+    tool = SearchTextTool(WorkspaceBoundary(workspace, ()))
+    interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
+
+    async def interrupting_to_thread(function: Any, *args: Any) -> Any:
+        raise interrupt
+
+    monkeypatch.setattr(filesystem_module.asyncio, "to_thread", interrupting_to_thread)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        await tool.execute(
+            SearchTextAction(
+                id="PRIVATE-SEARCH-ID-SENTINEL",
+                reason="find",
+                path="PRIVATE-SEARCH-PATH-SENTINEL",
+                pattern="PRIVATE-SEARCH-PATTERN-SENTINEL",
+                file_glob="PRIVATE-SEARCH-GLOB-SENTINEL",
+                max_results=50,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-SEARCH-ROOT-SENTINEL",
+            "PRIVATE-SEARCH-ID-SENTINEL",
+            "PRIVATE-SEARCH-PATH-SENTINEL",
+            "PRIVATE-SEARCH-PATTERN-SENTINEL",
+            "PRIVATE-SEARCH-GLOB-SENTINEL",
+        ),
+    )
+
+
+def test_search_sync_propagates_clean_system_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "PRIVATE-SEARCH-SYNC-ROOT"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace, ())
+    tool = SearchTextTool(boundary)
+    interrupt = SystemExit("EXPECTED-INTERRUPT")
+
+    def interrupting_resolve(candidate: str, access: Any) -> Path:
+        raise interrupt
+
+    monkeypatch.setattr(boundary, "resolve", interrupting_resolve)
+    with pytest.raises(SystemExit) as error_info:
+        tool._execute_sync(
+            SearchTextAction(
+                id="PRIVATE-SEARCH-SYNC-ID",
+                reason="find",
+                path="PRIVATE-SEARCH-SYNC-PATH",
+                pattern="PRIVATE-SEARCH-SYNC-PATTERN",
+                file_glob="PRIVATE-SEARCH-SYNC-GLOB",
+                max_results=50,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-SEARCH-SYNC-ROOT",
+            "PRIVATE-SEARCH-SYNC-ID",
+            "PRIVATE-SEARCH-SYNC-PATH",
+            "PRIVATE-SEARCH-SYNC-PATTERN",
+            "PRIVATE-SEARCH-SYNC-GLOB",
+        ),
+    )
+
+
+def test_search_io_mapping_does_not_chain_sensitive_context(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "private-search-io.txt"
+    target.write_text("PRIVATE-SEARCH-IO-CONTENT", encoding="utf-8")
+    interrupt = SystemExit("EXPECTED-INTERRUPT")
+
+    def failing_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        raise OSError("PRIVATE-SEARCH-IO-ERROR")
+
+    def interrupting_io_failure(action_id: str) -> ToolResult:
+        raise interrupt
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    monkeypatch.setattr(filesystem_module, "_io_failure", interrupting_io_failure)
+    with pytest.raises(SystemExit) as error_info:
+        SearchTextTool(boundary)._execute_sync(
+            SearchTextAction(
+                id="search-io-context",
+                reason="find",
+                path="private-search-io.txt",
+                pattern="PRIVATE-SEARCH-IO-PATTERN",
+                max_results=50,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "private-search-io",
+            "PRIVATE-SEARCH-IO-CONTENT",
+            "PRIVATE-SEARCH-IO-ERROR",
+            "PRIVATE-SEARCH-IO-PATTERN",
+        ),
+    )
+
+
+def test_search_decode_mapping_does_not_chain_content_context(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (workspace / "private-search-binary.bin").write_bytes(
+        b"PRIVATE-SEARCH-DECODE-CONTENT\xff"
+    )
+    interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
+
+    class InterruptingToolResult:
+        @classmethod
+        def failure(cls, action_id: str, error_type: str, message: str) -> Any:
+            raise interrupt
+
+    monkeypatch.setattr(filesystem_module, "ToolResult", InterruptingToolResult)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        SearchTextTool(boundary)._execute_sync(
+            SearchTextAction(
+                id="search-decode-context",
+                reason="find",
+                path="private-search-binary.bin",
+                pattern="PRIVATE-SEARCH-DECODE-PATTERN",
+                max_results=50,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "private-search-binary",
+            "PRIVATE-SEARCH-DECODE-CONTENT",
+            "PRIVATE-SEARCH-DECODE-PATTERN",
+        ),
+    )
+
+
+@pytest.mark.parametrize("pattern", ("", "\n", " \r\n "))
+def test_search_text_model_rejects_empty_or_newline_only_pattern(
+    pattern: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        SearchTextAction(
+            id="search-empty-pattern",
+            reason="find",
+            pattern=pattern,
+            max_results=50,
+        )
+
+
+@pytest.mark.asyncio
+async def test_search_text_treats_embedded_newline_pattern_literally(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "lines.txt").write_text("hit\nnext\n", encoding="utf-8")
+    action = SearchTextAction(
+        id="search-newline-pattern",
+        reason="find",
+        pattern="hit\nnext",
+        max_results=50,
+    )
+
+    result = await SearchTextTool(boundary).execute(action)
+
+    assert action.pattern == "hit\nnext"
+    assert result.success is True
+    assert result.stdout_summary == ""
