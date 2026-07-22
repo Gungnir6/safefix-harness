@@ -816,7 +816,7 @@ Implementation range: `789cf99..3003aa2`; design `d2e8f3c`; detailed plan `e3f98
 - Consumes: approved `RunProcessAction`, `RunValidationAction`, `ValidatorSettings`, `WorkspaceBoundary`, `ToolResult`.
 - Produces: `ProcessTool.execute(action) -> ToolResult`; `ValidatorRunner.run(validator_id) -> ToolResult`.
 
-- [ ] **Step 1: Write failing no-Shell and timeout tests**
+- [x] **Step 1: Write failing no-Shell and timeout tests**
 
 ```python
 import sys
@@ -842,13 +842,13 @@ async def test_process_timeout_returns_structured_error(process_tool) -> None:
     assert result.error_type == "PROCESS_TIMEOUT"
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python -m pytest tests/unit/test_process_tool.py tests/integration/test_validator_runner.py -v`
 
 Expected: FAIL because process tools do not exist.
 
-- [ ] **Step 3: Implement process execution**
+- [x] **Step 3: Implement process execution**
 
 Use `asyncio.create_subprocess_exec`, workspace `cwd`, `shell=False` by construction, a minimal inherited environment with configured additions, concurrent stdout/stderr collection, timeout termination and byte caps. Never log the full environment.
 
@@ -859,7 +859,7 @@ process = await asyncio.create_subprocess_exec(
 )
 ```
 
-- [ ] **Step 4: Implement validator lookup and tests**
+- [x] **Step 4: Implement validator lookup and tests**
 
 `ValidatorRunner` accepts only a configured validator ID and builds an exact process action from immutable settings. Test success and failing exit codes using a temporary Python project, unknown validator ID, output truncation, process-not-found and cancellation.
 
@@ -867,7 +867,7 @@ Run: `python -m pytest tests/unit/test_process_tool.py tests/integration/test_va
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(tools): 添加结构化验证进程执行`
 
@@ -887,7 +887,7 @@ Record the T09 hash and required evidence after both reviews.
 - Consumes: validator `ToolResult` values and previous `Feedback`.
 - Produces: `FeedbackEngine.from_results(results, changed_files, remaining_steps, remaining_repairs) -> Feedback`; `compare(previous, current) -> ProgressResult`; `should_stop(history, budget: BudgetState, action_digests=()) -> StopDecision | None`.
 
-- [ ] **Step 1: Write failing classification and progress tests**
+- [x] **Step 1: Write failing classification and progress tests**
 
 ```python
 from safefix.domain import BudgetState
@@ -909,13 +909,13 @@ def test_two_equal_failure_fingerprints_stop_no_progress(pytest_results) -> None
     assert decision.code == "NO_PROGRESS"
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/unit/test_feedback.py -v`
 
 Expected: FAIL because `FeedbackEngine` does not exist.
 
-- [ ] **Step 3: Implement normalized feedback**
+- [x] **Step 3: Implement normalized feedback**
 
 Classify results as test, lint, type, timeout, tool or policy failure using validator kind and error type. Strip volatile timestamps/paths, extract bounded failure lines, count recognizable failures and hash the normalized category/summary. Progress is fewer failures or a changed fingerprint with no new higher-severity category.
 
@@ -925,7 +925,7 @@ fingerprint = hashlib.sha256(
 ).hexdigest()
 ```
 
-- [ ] **Step 4: Add stop-condition tests**
+- [x] **Step 4: Add stop-condition tests**
 
 Test repeated action digest, two no-progress rounds, repair-round exhaustion, total-step exhaustion, time budget, success, and mixed validators where lint passes but tests regress.
 
@@ -933,7 +933,7 @@ Run: `python -m pytest tests/unit/test_feedback.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(feedback): 添加验证反馈与停机判断`
 
@@ -955,7 +955,7 @@ Record the T10 hash and required evidence after both reviews.
 - Consumes: SQLite connection and T01 `RunSnapshot`.
 - Produces: `MemoryRecord`; `MemoryStore.add/list/delete_project/search`; `RunStore.create/get/transition/save_snapshot`; compare-and-set transitions.
 
-- [ ] **Step 1: Write failing bounded retrieval test**
+- [x] **Step 1: Write failing bounded retrieval test**
 
 ```python
 import sqlite3
@@ -971,13 +971,13 @@ def test_memory_is_project_scoped_relevant_and_bounded() -> None:
     assert sum(len(item.content) for item in results) <= 80
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python -m pytest tests/unit/test_memory.py tests/unit/test_run_store.py -v`
 
 Expected: FAIL because memory and run stores do not exist.
 
-- [ ] **Step 3: Implement deterministic memory scoring**
+- [x] **Step 3: Implement deterministic memory scoring**
 
 Tokenize Unicode text into normalized words, compute keyword overlap, apply type weights and bounded time decay, then sort by score and stable ID. Never store full transcript, validator output or values flagged by the shared redactor.
 
@@ -985,7 +985,7 @@ Tokenize Unicode text into normalized words, compute keyword overlap, apply type
 score = keyword_overlap(query_tokens, record_tokens) * TYPE_WEIGHTS[record.type] + recency_score(record.created_at, now)
 ```
 
-- [ ] **Step 4: Implement run transitions and persistence tests**
+- [x] **Step 4: Implement run transitions and persistence tests**
 
 Allowed transitions are `CREATED -> RUNNING`, `RUNNING -> AWAITING_APPROVAL|SUCCESS|BLOCKED|NO_PROGRESS|BUDGET_EXCEEDED|FAILED|CANCELLED`, and `AWAITING_APPROVAL -> RUNNING|CANCELLED|FAILED`. Use transactions and expected-version compare-and-set. Test reopen persistence, invalid transitions, concurrent version conflict, project deletion and redaction rejection.
 
@@ -993,7 +993,7 @@ Run: `python -m pytest tests/unit/test_memory.py tests/unit/test_run_store.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(storage): 持久化项目记忆与运行状态`
 
@@ -1015,7 +1015,7 @@ Record the T11 hash and required evidence after both reviews.
 - Consumes: `LLMClient`, parser, policy, approvals, tool registry, feedback, memory, run store, audit, settings.
 - Produces: `ContextBuilder.build(snapshot) -> list[ModelMessage]`; async `AgentLoop.start(task) -> RunSnapshot`; `resume_approved`; `resume_rejected`; `cancel`.
 
-- [ ] **Step 1: Write failing dangerous-action pause test**
+- [x] **Step 1: Write failing dangerous-action pause test**
 
 ```python
 import pytest
@@ -1031,7 +1031,7 @@ async def test_loop_pauses_before_dangerous_tool_execution(loop_factory, git_com
     assert snapshot.pending_approval_id is not None
 ```
 
-- [ ] **Step 2: Write failing feedback-repair test**
+- [x] **Step 2: Write failing feedback-repair test**
 
 ```python
 @pytest.mark.asyncio
@@ -1044,17 +1044,17 @@ async def test_failed_validation_changes_next_action_and_finishes(loop_factory, 
     assert any(item.category.value == "TEST_FAILURE" for item in snapshot.feedback_history)
 ```
 
-- [ ] **Step 3: Run RED integration tests**
+- [x] **Step 3: Run RED integration tests**
 
 Run: `python -m pytest tests/unit/test_context.py tests/integration/test_agent_loop.py -v`
 
 Expected: FAIL because `ContextBuilder` and `AgentLoop` do not exist.
 
-- [ ] **Step 4: Implement bounded context construction**
+- [x] **Step 4: Implement bounded context construction**
 
 Build a provider-neutral system message describing only the action JSON schema and current deterministic limits, then add task, relevant memory, latest tool result, feedback and remaining budget. Enforce character budgets per section and never include Key or raw audit payloads.
 
-- [ ] **Step 5: Implement the explicit loop**
+- [x] **Step 5: Implement the explicit loop**
 
 The loop performs exactly: load snapshot → check cancellation/budget → build context → one LLM call → `ActionParser.parse` → audit action → policy decision → audit decision → deny feedback, approval pause, or tool dispatch → validators after mutation → feedback/progress → persist snapshot → stop or repeat. No component recursively invokes the loop.
 
@@ -1069,7 +1069,7 @@ while snapshot.status is RunStatus.RUNNING:
 return snapshot
 ```
 
-- [ ] **Step 6: Add failure and stop tests**
+- [x] **Step 6: Add failure and stop tests**
 
 Test invalid model JSON feedback, parse retry exhaustion, policy deny, audit unavailable fail-closed, approval rejection, approval resume, repeated action, two no-progress rounds, time/step/repair budgets, cancellation and final validation failure.
 
@@ -1077,7 +1077,7 @@ Run: `python -m pytest tests/unit/test_context.py tests/integration/test_agent_l
 
 Expected: PASS without network or real credentials.
 
-- [ ] **Step 7: Review and commit**
+- [x] **Step 7: Review and commit**
 
 Commit: `feat(agent): 实现 SafeFix 智能体主循环`
 
@@ -1099,7 +1099,7 @@ Record the T12 hash and required evidence after both reviews.
 - Consumes: LLM protocol, configured endpoint/model, injected Keyring backend or secret-file path.
 - Produces: `CredentialService.set/status/clear/get_for_request`; `OpenAICompatibleClient.complete` performing one HTTP request only.
 
-- [ ] **Step 1: Write failing no-plaintext-status test**
+- [x] **Step 1: Write failing no-plaintext-status test**
 
 ```python
 from safefix.credentials import CredentialService
@@ -1113,13 +1113,13 @@ def test_status_never_returns_plaintext_key(fake_keyring) -> None:
     assert "sk-SECRET" not in repr(status)
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python -m pytest tests/unit/test_credentials.py tests/unit/test_openai_compatible.py -v`
 
 Expected: FAIL because the credential service and real provider do not exist.
 
-- [ ] **Step 3: Implement credential sources**
+- [x] **Step 3: Implement credential sources**
 
 The native backend delegates set/get/delete to `keyring`. Secret-file mode requires an explicitly configured readable regular file and strips one trailing newline. `.env` fallback is opt-in, loaded from a named file rather than shell history, and reports a warning status. Interactive prompting belongs in CLI and uses `getpass.getpass`.
 
@@ -1130,7 +1130,7 @@ def set(self, provider: str, value: str) -> None:
     self._backend.set_password(self._service_name, provider, value)
 ```
 
-- [ ] **Step 4: Implement one-call HTTP client with mocked transport tests**
+- [x] **Step 4: Implement one-call HTTP client with mocked transport tests**
 
 Use injected `httpx.AsyncClient`. Build a provider request from `ModelMessage`, pass the Key only in the Authorization header, parse the first assistant content and usage, and convert timeout, 401, 429 and malformed responses into typed provider errors. Tests use `httpx.MockTransport` and assert captured logs/exceptions do not contain the Key.
 
@@ -1146,7 +1146,7 @@ Run: `python -m pytest tests/unit/test_credentials.py tests/unit/test_openai_com
 
 Expected: PASS with no network.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(credentials): 安全管理凭据与模型调用`
 
@@ -1171,7 +1171,7 @@ Record the T13 hash and required evidence after both reviews.
 - Consumes: AgentLoop factory, run/approval/memory/credential stores and settings.
 - Produces: `TaskService.create/get/list_events/approve/reject/cancel`; `create_app(dependencies) -> FastAPI`; CLI commands `run`, `serve`, `config`, `credentials`, `demo`.
 
-- [ ] **Step 1: Write failing public-mode input-boundary API test**
+- [x] **Step 1: Write failing public-mode input-boundary API test**
 
 ```python
 def test_public_mode_rejects_project_path_and_real_provider(public_client) -> None:
@@ -1181,7 +1181,7 @@ def test_public_mode_rejects_project_path_and_real_provider(public_client) -> No
     assert "provider" in response.text
 ```
 
-- [ ] **Step 2: Write failing approval API test**
+- [x] **Step 2: Write failing approval API test**
 
 ```python
 def test_approval_response_never_returns_token_or_frozen_secret(local_client, pending_run) -> None:
@@ -1195,13 +1195,13 @@ def test_approval_response_never_returns_token_or_frozen_secret(local_client, pe
     assert "SameSite=Strict" in cookie
 ```
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run RED tests**
 
 Run: `python -m pytest tests/web/test_api.py tests/unit/test_cli.py -v`
 
 Expected: FAIL because API and CLI modules do not exist.
 
-- [ ] **Step 4: Implement service and typed endpoints**
+- [x] **Step 4: Implement service and typed endpoints**
 
 Expose create run, get run, list redacted events, get pending approval, approve, reject, cancel, memory list/delete and credential status endpoints. Local startup binds `127.0.0.1` by default. Public dependencies force the embedded project and mock provider regardless of request body. Map domain errors to stable JSON codes. On approval creation, send the one-time capability only as an `HttpOnly; SameSite=Strict` cookie scoped to the approval endpoint; never include it in JSON or HTML. Approval POSTs require both that cookie and a same-origin CSRF token.
 
@@ -1211,11 +1211,11 @@ async def create_run(request: CreateRunRequest, service: TaskService = Depends(g
     return RunView.from_snapshot(await service.create(request))
 ```
 
-- [ ] **Step 5: Implement CLI without secret arguments**
+- [x] **Step 5: Implement CLI without secret arguments**
 
 Use `argparse`. `credentials set` accepts no Key option and calls `getpass`; `status` prints only configured/source; `clear` asks confirmation unless `--yes`. `run` accepts project and task, prints state transitions and handles approval interactively. Add entry point `safefix = safefix.cli:main`.
 
-- [ ] **Step 6: Add API/CLI error tests**
+- [x] **Step 6: Add API/CLI error tests**
 
 Test missing run, invalid transition, approval rejection, cancellation, local credential missing, public rate/active-run limit, local bind default, hidden input and no plaintext in captured stdout/stderr.
 
@@ -1223,7 +1223,7 @@ Run: `python -m pytest tests/web/test_api.py tests/unit/test_cli.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 7: Review and commit**
+- [x] **Step 7: Review and commit**
 
 Commit: `feat(interface): 添加 API 与命令行入口`
 
@@ -1250,7 +1250,7 @@ Record the T14 hash and required evidence after both reviews.
 - Consumes: T14 HTML/API routes and redacted view models.
 - Produces: accessible task form, run timeline, feedback/diff presentation, approval panel, settings/memory pages and public-demo scenario selector.
 
-- [ ] **Step 1: Write failing rendered-page tests**
+- [x] **Step 1: Write failing rendered-page tests**
 
 ```python
 def test_pending_run_page_explains_risk_and_offers_decision(client, pending_run) -> None:
@@ -1268,17 +1268,17 @@ def test_public_home_has_no_path_or_key_controls(public_client) -> None:
     assert "Dangerous action demo" in response.text
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/web/test_pages.py -v`
 
 Expected: FAIL because templates do not exist.
 
-- [ ] **Step 3: Implement the interface shell and task pages**
+- [x] **Step 3: Implement the interface shell and task pages**
 
 Use semantic HTML, visible focus, keyboard-operable controls, status text in addition to color, and responsive server-rendered layouts. Use a restrained developer-console visual system rather than a generic chat UI. Render model request, policy reason, tool result and feedback as distinct timeline event types.
 
-- [ ] **Step 4: Implement approval and polling behavior**
+- [x] **Step 4: Implement approval and polling behavior**
 
 JavaScript polls only the current run, stops at terminal states, submits server-issued CSRF tokens for approve/reject/cancel, disables controls after submission and shows server errors. The browser sends the HttpOnly approval capability automatically; JavaScript cannot read it. Never render HTML received from model/tool output; insert it as text.
 
@@ -1288,7 +1288,7 @@ line.textContent = event.redacted_payload;
 timeline.appendChild(line);
 ```
 
-- [ ] **Step 5: Add accessibility and redaction tests**
+- [x] **Step 5: Add accessibility and redaction tests**
 
 Assert form labels, heading order, live status region, keyboard buttons, escaped model output, no hidden token, no Key values, and local/public field differences. Run a manual keyboard pass and save screenshots for README only if they improve installation or usage explanation.
 
@@ -1296,7 +1296,7 @@ Run: `python -m pytest tests/web/test_pages.py tests/web/test_api.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 6: Review and commit**
+- [x] **Step 6: Review and commit**
 
 Commit: `feat(web): 添加透明可审计的 Web 界面`
 
@@ -1514,14 +1514,14 @@ Update this table only with actual commits; do not prefill hashes.
 | T05 | Completed | `44c625e`, `1a0d503`, `2204d34`, `3a640c8`, `224d696`, `0da385a`, `6a6ff31`; plan `7b12b89`, `63ac64a`; merge `ff7c17f` | [!5](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/5) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 0 Minor); authorization identity, nested shell/interpreter, normalized system paths, Git side effects, sensitive file transfer and disclosure findings fixed; merged and reverified on `main` |
 | T06 | Completed | `65f54d0`, `c1e04c4`, `9067a95`, `12ce19b`; plan `1d0a0c3`, `0ddcc8f`; merge `8699d37` | [!6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 2 Minor); metadata/payload disclosure, forged-chain reads, dynamic SQLite types, concurrent/reentrant writes, post-insert trigger tampering and interrupted savepoint cleanup findings fixed; merged and reverified on `main`; read-only reentry scope and long-chain O(N²) Minors deferred |
 | T07 | Completed | `a953456`, `06995fd`, `4be5161`, `bb86c20`, `da73da4`, `503abb2`, `f5e45d8`, `95173fc`, `a92e61b`; plan `bbe6298`, `948c02e`; process `dc30b16`, `ae96a21`; merge `d19aa5a` | [!7](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/7) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 1 Minor); persistent frozen-action approval, single-use token digest, expiry/cancel/reject terminal states, transactional audit coupling, concurrency and traceback-local non-disclosure verified; merged and reverified on `main`; different-stripe SQLite contention coverage Minor deferred |
-| T08 | Completed (awaiting MR) | `789cf99`–`3003aa2`; design `d2e8f3c`; plan `e3f9892`; format `d3a5365` | — | Four task reviews and final whole-branch review APPROVED; final review 0 Critical / 0 Important / 2 Minor; 748 passed, 2 platform skips; Ruff check/format, mypy, pip check and diff check passed |
-| T09 | Pending | — | — | — |
-| T10 | Pending | — | — | — |
-| T11 | Pending | — | — | — |
-| T12 | Pending | — | — | — |
-| T13 | Pending | — | — | — |
-| T14 | Pending | — | — | — |
-| T15 | Pending | — | — | — |
+| T08 | Completed | `789cf99`–`3003aa2`; merge `a1a5923` | [!8](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/8) | Independent task and whole-branch reviews approved; 748 passed, 2 platform skips before merge |
+| T09 | Completed | `5991852`; merge `0ed3b1e` | [!9](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/9) | Quick-delivery mode, no independent review; fresh branch regression 755 passed, 2 skipped |
+| T10 | Completed | `4dfd319`; merge `95d6efd` | [!10](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/10) | Quick-delivery mode, no independent review; fresh branch regression 769 passed, 2 skipped |
+| T11 | Completed | `4b691f2`; merge `5cceb3c` | [!11](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/11) | Quick-delivery mode, no independent review; fresh branch regression 778 passed, 2 skipped |
+| T12 | Completed | `d8a2f9a`; merge `4867bc3` | [!12](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/12) | Quick-delivery mode, no independent review; fresh branch regression 784 passed, 2 skipped |
+| T13 | Completed | `7f19825`; merge `c0e84c7` | [!13](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/13) | Quick-delivery mode, no independent review; 792 passed, 2 skipped; Ruff passed |
+| T14 | Completed | `35daee5`; merge `a72afc9` | [!14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14) | Quick-delivery mode, no independent review; 800 passed, 2 skipped; Ruff passed |
+| T15 | Completed (awaiting merge) | `a6b9384` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
 | T16 | Pending | — | — | — |
 | T17 | Pending | — | — | — |
 | Gate 2 | Pending | — | — | Final submission |
