@@ -55,6 +55,11 @@ class AgentLoop:
         self.settings = settings
         self._approval_ttl_seconds = approval_ttl_seconds
         self._pending: dict[str, tuple[str, Action]] = {}
+        self._approval_capabilities: dict[str, str] = {}
+
+    def take_approval_capability(self, approval_id: str) -> str | None:
+        """Return a pending approval capability once, for a trusted UI boundary."""
+        return self._approval_capabilities.pop(approval_id, None)
 
     async def start(
         self,
@@ -165,6 +170,7 @@ class AgentLoop:
         if snapshot.pending_approval_id is not None:
             self.approvals.cancel(snapshot.pending_approval_id)
             self._pending.pop(snapshot.pending_approval_id, None)
+            self._approval_capabilities.pop(snapshot.pending_approval_id, None)
         return self._save(
             snapshot.model_copy(
                 update={
@@ -242,6 +248,7 @@ class AgentLoop:
                         ),
                     )
                 self._pending[challenge.id] = (snapshot.run_id, action)
+                self._approval_capabilities[challenge.id] = challenge.token
                 return self._save(
                     snapshot.model_copy(
                         update={

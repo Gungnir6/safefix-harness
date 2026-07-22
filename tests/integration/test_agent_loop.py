@@ -173,6 +173,11 @@ async def test_loop_pauses_before_dangerous_tool_execution() -> None:
     assert snapshot.status is RunStatus.AWAITING_APPROVAL
     assert fixture.registry.calls == []
     assert snapshot.pending_approval_id == "approval-1"
+    assert (
+        fixture.loop.take_approval_capability("approval-1")
+        == fixture.approvals.token
+    )
+    assert fixture.loop.take_approval_capability("approval-1") is None
 
 
 @pytest.mark.asyncio
