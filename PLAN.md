@@ -1318,7 +1318,7 @@ Record the T15 hash and required evidence after both reviews.
 - Consumes: TaskService, ScriptedMockLLM, temporary-workspace factory.
 - Produces: `python -m safefix.demo guardrail|feedback|approval|all`; public-demo scenarios with deterministic event sequences.
 
-- [ ] **Step 1: Write failing demo contract tests**
+- [x] **Step 1: Write failing demo contract tests**
 
 ```python
 import subprocess
@@ -1333,17 +1333,17 @@ def test_all_demo_prints_three_passed_scenarios() -> None:
     assert "approval: PASS" in result.stdout
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/integration/test_demo.py -v`
 
 Expected: FAIL because demo module and fixture do not exist.
 
-- [ ] **Step 3: Implement isolated fixture creation**
+- [x] **Step 3: Implement isolated fixture creation**
 
 Copy the embedded example into a new temporary directory per scenario. Never mutate files under `examples/python_bug`. Use a known failing implementation and test with deterministic output.
 
-- [ ] **Step 4: Implement exact scripted scenarios**
+- [x] **Step 4: Implement exact scripted scenarios**
 
 Guardrail: request a permanently denied privilege/destructive process and assert the process spy has zero calls. Feedback: apply a wrong exact replacement, run failing pytest, apply a different correct replacement, then pass final validation. Approval: request Git write, persist/reopen stores, approve frozen action against a spy, then assert changed action and token replay both fail.
 
@@ -1355,7 +1355,7 @@ SCENARIOS = {
 }
 ```
 
-- [ ] **Step 5: Run demos repeatedly**
+- [x] **Step 5: Run demos repeatedly**
 
 Run: `python -m safefix.demo all` three times.
 
@@ -1365,7 +1365,7 @@ Run: `python -m pytest tests/integration/test_demo.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 6: Review and commit**
+- [x] **Step 6: Review and commit**
 
 Commit: `feat(demo): 添加确定性 Harness 机制演示`
 
@@ -1521,7 +1521,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T12 | Completed | `d8a2f9a`; merge `4867bc3` | [!12](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/12) | Quick-delivery mode, no independent review; fresh branch regression 784 passed, 2 skipped |
 | T13 | Completed | `7f19825`; merge `c0e84c7` | [!13](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/13) | Quick-delivery mode, no independent review; 792 passed, 2 skipped; Ruff passed |
 | T14 | Completed | `35daee5`; merge `a72afc9` | [!14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14) | Quick-delivery mode, no independent review; 800 passed, 2 skipped; Ruff passed |
-| T15 | Completed (awaiting merge) | `a6b9384` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
-| T16 | Pending | — | — | — |
+| T15 | Completed | `a6b9384`; merge `583c15b` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
+| T16 | Completed (awaiting merge) | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
 | T17 | Pending | — | — | — |
 | Gate 2 | Pending | — | — | Final submission |
