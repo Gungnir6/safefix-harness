@@ -6,14 +6,17 @@ from safefix.tools.filesystem import (
     ReadFileTool,
     SearchTextTool,
 )
+from safefix.tools.process import ProcessTool, ValidatorRunner
 from safefix.tools.registry import ToolRegistry
 
 __all__ = [
     "ApplyPatchTool",
     "FilesystemLimits",
     "ListFilesTool",
+    "ProcessTool",
     "ReadFileTool",
     "SearchTextTool",
     "Tool",
     "ToolRegistry",
+    "ValidatorRunner",
 ]
