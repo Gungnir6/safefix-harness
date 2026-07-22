@@ -5,6 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "safefix-harness"
 version = "0.1.0"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1", "httpx>=0.28,<1", "jinja2>=3.1,<4",
@@ -14,6 +15,8 @@ dependencies = [
 
 [project.scripts]
 safefix = "safefix.cli:main"
+safefix-demo = "safefix.demo:main"
+safefix-public-demo = "safefix.cli:public_demo_main"
 
 [project.optional-dependencies]
 dev = ["hypothesis>=6.120,<7", "mypy>=1.14,<2", "pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.9,<1"]
@@ -24,3 +27,6 @@ asyncio_mode = "auto"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/safefix"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"examples/python_bug" = "safefix/_fixtures/python_bug"

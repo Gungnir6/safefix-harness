@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import unicodedata
+import builtins
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Iterable
@@ -79,8 +80,11 @@ class MemoryStore:
                     created_at.isoformat(),
                 ),
             )
+        row_id = cursor.lastrowid
+        if row_id is None:
+            raise RuntimeError("memory insert did not return an id")
         return MemoryRecord(
-            id=int(cursor.lastrowid),
+            id=row_id,
             project_id=project_id,
             type=record_type,
             content=content,
@@ -88,7 +92,7 @@ class MemoryStore:
             created_at=created_at,
         )
 
-    def list(self, project_id: str) -> list[MemoryRecord]:
+    def list(self, project_id: str) -> builtins.list[MemoryRecord]:
         rows = self._connection.execute(
             """
             SELECT id, project_id, record_type, content, keywords, created_at
@@ -112,7 +116,7 @@ class MemoryStore:
         *,
         limit: int,
         char_budget: int,
-    ) -> list[MemoryRecord]:
+    ) -> builtins.list[MemoryRecord]:
         if limit < 1 or char_budget < 1:
             return []
         query_tokens = _tokens(query)
@@ -129,7 +133,7 @@ class MemoryStore:
             scored.append((overlap * weight + recency, record))
         scored.sort(key=lambda item: (-item[0], item[1].id))
 
-        results: list[MemoryRecord] = []
+        results: builtins.list[MemoryRecord] = []
         remaining = char_budget
         for _, record in scored:
             if len(results) >= limit:
@@ -143,7 +147,7 @@ class MemoryStore:
     @staticmethod
     def _record(row: tuple[object, ...]) -> MemoryRecord:
         return MemoryRecord(
-            id=int(row[0]),
+            id=int(str(row[0])),
             project_id=str(row[1]),
             type=str(row[2]),
             content=str(row[3]),

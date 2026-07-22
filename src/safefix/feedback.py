@@ -101,7 +101,10 @@ class FeedbackEngine:
         collected = tuple(results)
         failed = tuple(result for result in collected if not result.success)
         if failed:
-            category = max((_category(result) for result in failed), key=_SEVERITY.get)
+            category = max(
+                (_category(result) for result in failed),
+                key=lambda item: _SEVERITY[item],
+            )
             summary = _failure_summary(failed)
             failure_count = _failure_count(failed)
         elif collected:
