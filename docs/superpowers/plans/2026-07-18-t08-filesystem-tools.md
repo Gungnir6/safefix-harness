@@ -14,7 +14,7 @@
 - 所有生产行为必须严格 RED→GREEN；没有先看到预期失败，不得写对应生产代码。
 - 所有公开文件操作必须先调用 `WorkspaceBoundary.resolve()`；枚举根目录允许不代表后代自动允许。
 - `.git` 在任意层级永久忽略；其他忽略目录来自构造器，不读取 `.gitignore`，不修改 `SafeFixSettings`。
-- 默认 `max_read_bytes=65_536`、`max_search_files=1_000`、`max_search_output_bytes=65_536`，所有限制必须大于零。
+- 默认 `max_read_bytes=65_536`、`max_search_files=1_000`、`max_search_output_bytes=65_536`；`max_read_bytes` 和 `max_search_files` 必须大于零，`max_search_output_bytes` 必须至少为固定 `[truncated]` 标记的 11 个 UTF-8 字节。这一必要下界用于同时保证固定标记和搜索输出硬预算。
 - `read_file`、`search_text`、`apply_patch` 只接受严格 UTF-8；搜索文本按字面匹配，文件模式使用 GitWildMatch。
 - 普通工具错误返回 `ToolResult`；公开错误消息、cause/context 和 T08 traceback locals 不得包含路径、模式、搜索文本、补丁文本、文件内容、绝对路径、敏感规则或底层异常。
 - `KeyboardInterrupt`、`SystemExit` 原样传播，但必须先释放锁、关闭文件、删除临时文件并清理 T08 自身 frame 的敏感 locals。
@@ -330,6 +330,17 @@ def boundary(workspace: Path) -> WorkspaceBoundary:
 def test_filesystem_limits_are_positive() -> None:
     with pytest.raises(ValueError, match="^filesystem limits must be positive$"):
         FilesystemLimits(max_read_bytes=0)
+
+
+@pytest.mark.parametrize("output_limit", range(1, 11))
+def test_filesystem_limits_require_space_for_search_truncation_marker(
+    output_limit: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="^search output limit must fit the truncation marker$",
+    ):
+        FilesystemLimits(max_search_output_bytes=output_limit)
 
 
 def test_default_filesystem_limits_are_locked() -> None:
@@ -729,6 +740,8 @@ class FilesystemLimits:
             self.max_search_output_bytes,
         ) <= 0:
             raise ValueError("filesystem limits must be positive")
+        if self.max_search_output_bytes < 11:
+            raise ValueError("search output limit must fit the truncation marker")
 ```
 
 实现 `_normalize_ignored_directories()`，永久加入 `.git`，拒绝空值、绝对路径、反斜杠、`.`/`..` 分量；错误固定为 `ignored directories must be safe relative POSIX paths`。实现共享 `_relative_posix()`、GitWildMatch 编译、固定错误映射、单调计时和工具自身 frame 清理。不得用 `str(exc)`、`repr(action)` 或候选路径生成公开结果。

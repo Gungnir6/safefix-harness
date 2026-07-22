@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import stat
 import tempfile
 import threading
@@ -459,6 +460,172 @@ async def test_list_files_does_not_follow_directory_symlink(
 
     assert result.success is True
     assert "escaped.txt" not in result.stdout_summary
+
+
+@pytest.mark.asyncio
+async def test_list_files_skips_file_symlinks(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real.txt"
+    target.write_text("visible", encoding="utf-8")
+    link = workspace / "alias.txt"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(id="list-file-link", reason="inspect", limit=100)
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "real.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_files_skips_fifo(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFOs are unavailable")
+    fifo = workspace / "pipe"
+    try:
+        os.mkfifo(fifo)
+    except OSError:
+        pytest.skip("FIFOs are unavailable")
+    (workspace / "regular.txt").write_text("visible", encoding="utf-8")
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(id="list-fifo", reason="inspect", limit=100)
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "regular.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_files_skips_unix_socket(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("Unix sockets are unavailable")
+    socket_path = workspace / "service.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(socket_path))
+    except OSError:
+        listener.close()
+        pytest.skip("Unix filesystem sockets are unavailable")
+    try:
+        (workspace / "regular.txt").write_text("visible", encoding="utf-8")
+
+        result = await ListFilesTool(boundary).execute(
+            ListFilesAction(id="list-socket", reason="inspect", limit=100)
+        )
+    finally:
+        listener.close()
+
+    assert result.success is True
+    assert result.stdout_summary == "regular.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_files_rechecks_lexical_file_type_after_resolution(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replacement = workspace / "replacement.txt"
+    replacement.write_text("replacement", encoding="utf-8")
+    victim = workspace / "victim.txt"
+    victim.write_text("original", encoding="utf-8")
+    real_stat = Path.stat
+    no_follow_checks = 0
+
+    def swapping_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        nonlocal no_follow_checks
+        result = real_stat(path, follow_symlinks=follow_symlinks)
+        if path == victim and not follow_symlinks:
+            no_follow_checks += 1
+            if no_follow_checks == 1:
+                victim.unlink()
+                victim.symlink_to(replacement)
+        return result
+
+    monkeypatch.setattr(Path, "stat", swapping_stat)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(id="list-file-type-race", reason="inspect", limit=100)
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "replacement.txt"
+    assert no_follow_checks == 2
+
+
+@pytest.mark.asyncio
+async def test_list_files_silently_skips_no_follow_stat_oserror(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hidden = workspace / "hidden.txt"
+    hidden.write_text("hidden", encoding="utf-8")
+    (workspace / "visible.txt").write_text("visible", encoding="utf-8")
+    real_stat = Path.stat
+
+    def faulting_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == hidden and not follow_symlinks:
+            raise OSError("PRIVATE-LSTAT-ERROR")
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", faulting_stat)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(id="list-lstat-oserror", reason="inspect", limit=100)
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "visible.txt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interrupt",
+    [KeyboardInterrupt("EXPECTED-INTERRUPT"), SystemExit("EXPECTED-INTERRUPT")],
+)
+async def test_list_files_no_follow_stat_process_control_is_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: BaseException,
+) -> None:
+    workspace = tmp_path / "PRIVATE-LSTAT-ROOT-SENTINEL"
+    workspace.mkdir()
+    target = workspace / "PRIVATE-LSTAT-FILE-SENTINEL.txt"
+    target.write_text("private", encoding="utf-8")
+    tool = ListFilesTool(WorkspaceBoundary(workspace, ()))
+    real_stat = Path.stat
+
+    def interrupting_stat(
+        path: Path, *, follow_symlinks: bool = True
+    ) -> os.stat_result:
+        if path == target and not follow_symlinks:
+            raise interrupt
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", interrupting_stat)
+    with pytest.raises(type(interrupt)) as error_info:
+        await tool.execute(
+            ListFilesAction(id="PRIVATE-LSTAT-ID-SENTINEL", reason="inspect", limit=100)
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-LSTAT-ROOT-SENTINEL",
+            "PRIVATE-LSTAT-FILE-SENTINEL",
+            "PRIVATE-LSTAT-ID-SENTINEL",
+        ),
+    )
 
 
 @pytest.mark.asyncio

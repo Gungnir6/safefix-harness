@@ -36,7 +36,7 @@ T08 实现四个异步文件工具和一个按领域 Action 类型分发的工�
 - `max_search_files=1_000`
 - `max_search_output_bytes=65_536`
 
-所有值必须大于零。调用方可在构造工具时注入更小的测试值或后续配置值；本任务不扩大 `SafeFixSettings` schema。
+`max_read_bytes` 和 `max_search_files` 必须大于零；`max_search_output_bytes` 必须至少为 11 字节。11 字节是固定 `[truncated]` 标记的 UTF-8 长度，因此是同时保证固定截断标记和搜索输出硬预算所需的必要下界。调用方可在满足这些下界时注入更小的测试值或后续配置值；本任务不扩大 `SafeFixSettings` schema。
 
 每个文件工具构造器还接收 `ignored_directories: tuple[str, ...] = (".git",)`。`.git` 无论调用方是否传入都永久忽略；其他条目是工作区相对 POSIX 目录路径，匹配该目录及其后代。条目必须是非空、非绝对、无 `..` 的规范相对路径。忽略目录只控制递归枚举，不替代敏感路径规则。
 

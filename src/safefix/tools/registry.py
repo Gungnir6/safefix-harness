@@ -54,19 +54,66 @@ def _raise_invalid_dispatch() -> NoReturn:
     raise TypeError("dispatch requires a structured Action")
 
 
+def _capture_registration(
+    tools: dict[type[object], Tool], tool: Tool
+) -> Literal["registered", "duplicate", "invalid"]:
+    action_type: type[object] | None = None
+    known_type: type[object] | None = None
+    property_failed = False
+    valid_type = False
+    try:
+        try:
+            action_type = tool.action_type
+        except Exception:
+            property_failed = True
+        if property_failed:
+            return "invalid"
+        for known_type in _ACTION_TYPES:
+            if action_type is known_type:
+                valid_type = True
+                break
+        if not valid_type:
+            return "invalid"
+        assert action_type is not None
+        if action_type in tools:
+            return "duplicate"
+        tools[action_type] = tool
+        return "registered"
+    finally:
+        del tools, tool, action_type, known_type, property_failed, valid_type
+
+
+def _raise_invalid_registration() -> NoReturn:
+    raise TypeError("tool action_type must be a structured Action class")
+
+
+def _raise_duplicate_registration() -> NoReturn:
+    raise ValueError("tool is already registered for action type")
+
+
 class ToolRegistry:
     def __init__(self, tools: Iterable[Tool] = ()) -> None:
-        self._tools: dict[type[object], Tool] = {}
-        for tool in tools:
-            self.register(tool)
+        tool: Tool | None = None
+        try:
+            self._tools: dict[type[object], Tool] = {}
+            for tool in tools:
+                self.register(tool)
+        finally:
+            del self, tools, tool
 
     def register(self, tool: Tool) -> None:
-        action_type = tool.action_type
-        if action_type not in _ACTION_TYPES:
-            raise TypeError("tool action_type must be a structured Action class")
-        if action_type in self._tools:
-            raise ValueError("tool is already registered for action type")
-        self._tools[action_type] = tool
+        outcome = ""
+        try:
+            outcome = _capture_registration(self._tools, tool)
+        finally:
+            del self, tool
+        if outcome == "invalid":
+            del outcome
+            _raise_invalid_registration()
+        if outcome == "duplicate":
+            del outcome
+            _raise_duplicate_registration()
+        del outcome
 
     async def dispatch(self, action: object) -> ToolResult:
         outcome = _capture_dispatch(self._tools, action)

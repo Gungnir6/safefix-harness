@@ -255,6 +255,19 @@ def _is_directory_link(path: Path) -> bool:
         del path, junction_check
 
 
+def _is_regular_file_no_follow(path: Path) -> bool:
+    mode = 0
+    stat_failed = False
+    try:
+        try:
+            mode = path.stat(follow_symlinks=False).st_mode
+        except OSError:
+            stat_failed = True
+        return not stat_failed and stat.S_ISREG(mode)
+    finally:
+        del path, mode, stat_failed
+
+
 def _contains_directory_link(
     configured_workspace: Path,
     workspace: Path,
@@ -421,10 +434,14 @@ class ListFilesTool:
 
                     for filename in sorted(filenames):
                         candidate = current_path / filename
+                        if not _is_regular_file_no_follow(candidate):
+                            continue
                         relative = _relative_posix(self._workspace, candidate)
                         try:
                             self._boundary.resolve(str(candidate), AccessKind.LIST)
                         except _PATH_ERRORS:
+                            continue
+                        if not _is_regular_file_no_follow(candidate):
                             continue
                         if matcher.match_file(relative):
                             matches.append(relative)
