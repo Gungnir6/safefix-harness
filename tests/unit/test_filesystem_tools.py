@@ -694,6 +694,124 @@ async def test_list_files_rejects_alias_descendant_link_after_missing_dotdot(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path_template",
+    ("../{workspace_name}/linked", "missing/../../{workspace_name}/linked"),
+)
+async def test_list_files_rejects_parent_references_that_reenter_workspace(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    path_template: str,
+) -> None:
+    target = workspace / "real"
+    target.mkdir()
+    (target / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    requested_path = path_template.format(workspace_name=workspace.name)
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-parent-reentry",
+            reason="inspect",
+            path=requested_path,
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-parent-reentry", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_parent_reentry_to_simulated_junction(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    (junction / "secret.txt").write_text("secret", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-parent-junction",
+            reason="inspect",
+            path=f"../{workspace.name}/junction",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-parent-junction", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_parent_reference_under_configured_alias(
+    workspace: Path,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    target = real_workspace / "target"
+    target.mkdir(parents=True)
+    (target / "secret.txt").write_text("secret", encoding="utf-8")
+    alias = workspace / "workspace-alias"
+    linked = real_workspace / "linked"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    alias_boundary = WorkspaceBoundary(alias, ())
+
+    result = await ListFilesTool(alias_boundary).execute(
+        ListFilesAction(
+            id="list-alias-parent",
+            reason="inspect",
+            path=str(alias / ".." / alias.name / "linked"),
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-alias-parent", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_ordinary_parent_reference(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "b"
+    target.mkdir()
+    (target / "ok.txt").write_text("ok", encoding="utf-8")
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-ordinary-parent",
+            reason="inspect",
+            path="a/../b",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-ordinary-parent", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
 async def test_list_files_supports_configured_workspace_alias_absolute_path(
     workspace: Path,
 ) -> None:
@@ -1522,6 +1640,131 @@ async def test_read_file_rechecks_directory_links_before_open(
         "read-directory-race", "PATH_DENIED", "path access is denied"
     )
     assert resolve_calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path_template",
+    (
+        "../{workspace_name}/linked/secret.txt",
+        "missing/../../{workspace_name}/linked/secret.txt",
+    ),
+)
+async def test_read_file_rejects_parent_references_that_reenter_workspace(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    path_template: str,
+) -> None:
+    target = workspace / "real"
+    target.mkdir()
+    (target / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    requested_path = path_template.format(workspace_name=workspace.name)
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-parent-reentry",
+            reason="inspect",
+            path=requested_path,
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-parent-reentry", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_parent_reentry_to_simulated_junction(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    (junction / "secret.txt").write_text("secret", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-parent-junction",
+            reason="inspect",
+            path=f"../{workspace.name}/junction/secret.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-parent-junction", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_parent_reference_under_configured_alias(
+    workspace: Path,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    target = real_workspace / "target"
+    target.mkdir(parents=True)
+    (target / "secret.txt").write_text("secret", encoding="utf-8")
+    alias = workspace / "workspace-alias"
+    linked = real_workspace / "linked"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    tool = ReadFileTool(WorkspaceBoundary(alias, ()))
+
+    result = await tool.execute(
+        ReadFileAction(
+            id="read-alias-parent",
+            reason="inspect",
+            path=str(alias / ".." / alias.name / "linked" / "secret.txt"),
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-alias-parent", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_ordinary_parent_reference(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "b"
+    target.mkdir()
+    (target / "ok.txt").write_text("ok", encoding="utf-8")
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-ordinary-parent",
+            reason="inspect",
+            path="a/../b/ok.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-ordinary-parent", "PATH_DENIED", "path access is denied"
+    )
 
 
 @pytest.mark.asyncio

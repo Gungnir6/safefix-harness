@@ -100,6 +100,21 @@ def _lexical_path(workspace: Path, requested_path: str) -> Path:
         del workspace, requested_path, candidate
 
 
+def _contains_parent_reference(requested_path: str) -> bool:
+    normalized = ""
+    components: list[str] = []
+    component = ""
+    try:
+        normalized = requested_path.replace("\\", "/")
+        components = normalized.split("/")
+        for component in components:
+            if component == "..":
+                return True
+        return False
+    finally:
+        del requested_path, normalized, components, component
+
+
 def _compile_gitwildmatch(pattern: str) -> pathspec.PathSpec | None:
     try:
         try:
@@ -195,7 +210,6 @@ def _contains_directory_link(
     current: Path | None = None
     components: tuple[str, ...] = ()
     component = ""
-    lexical_stack: list[str] = []
     try:
         if target.is_relative_to(configured_workspace):
             base = configured_workspace
@@ -205,15 +219,7 @@ def _contains_directory_link(
         current = base
         components = relative.parts
         for component in components:
-            if component == "..":
-                if lexical_stack:
-                    lexical_stack.pop()
-                current = base.joinpath(*lexical_stack)
-                continue
-            if component == ".":
-                continue
-            lexical_stack.append(component)
-            current = base.joinpath(*lexical_stack)
+            current /= component
             if _is_directory_link(current):
                 return True
         return False
@@ -227,7 +233,6 @@ def _contains_directory_link(
             current,
             components,
             component,
-            lexical_stack,
         )
 
 
@@ -299,6 +304,8 @@ class ListFilesTool:
             limit = action.limit
             started_ns = time.monotonic_ns()
 
+            if _contains_parent_reference(requested_path):
+                return _path_denied(action_id)
             matcher = _compile_gitwildmatch(pattern)
             if matcher is None:
                 return ToolResult.failure(
@@ -477,6 +484,8 @@ class ReadFileTool:
                 end_line = action.end_line
                 started_ns = time.monotonic_ns()
 
+                if _contains_parent_reference(requested_path):
+                    return _path_denied(action_id)
                 target = self._boundary.resolve(
                     requested_path, AccessKind.READ
                 )
