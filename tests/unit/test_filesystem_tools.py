@@ -8,9 +8,19 @@ from typing import Any, SupportsIndex
 import pytest
 
 import safefix.tools.filesystem as filesystem_module
-from safefix.domain import ListFilesAction, ReadFileAction, ToolResult
+from safefix.domain import (
+    ListFilesAction,
+    ReadFileAction,
+    SearchTextAction,
+    ToolResult,
+)
 from safefix.governance.paths import WorkspaceBoundary
-from safefix.tools.filesystem import FilesystemLimits, ListFilesTool, ReadFileTool
+from safefix.tools.filesystem import (
+    FilesystemLimits,
+    ListFilesTool,
+    ReadFileTool,
+    SearchTextTool,
+)
 
 
 @pytest.fixture
@@ -99,9 +109,7 @@ def test_read_tool_constructor_clears_original_limits_traceback(
     )
 
 
-@pytest.mark.parametrize(
-    "ignored", [("",), ("../cache",), ("C:/cache",), (r"a\b",)]
-)
+@pytest.mark.parametrize("ignored", [("",), ("../cache",), ("C:/cache",), (r"a\b",)])
 def test_ignored_directories_require_safe_relative_posix_paths(
     boundary: WorkspaceBoundary, ignored: tuple[str, ...]
 ) -> None:
@@ -126,9 +134,7 @@ def test_list_tool_constructor_clears_original_ignored_traceback(
     with pytest.raises(KeyboardInterrupt) as error_info:
         ListFilesTool(
             boundary,
-            ignored_directories=(
-                InterruptingDirectory("PRIVATE-IGNORED-SENTINEL"),
-            ),
+            ignored_directories=(InterruptingDirectory("PRIVATE-IGNORED-SENTINEL"),),
         )
 
     _assert_filesystem_frames_are_clean(
@@ -210,9 +216,7 @@ async def test_list_files_is_sorted_bounded_and_marks_truncation(
     (workspace / "a.py").write_text("a", encoding="utf-8")
     (workspace / "m.txt").write_text("m", encoding="utf-8")
     tool = ListFilesTool(boundary)
-    action = ListFilesAction(
-        id="list-1", reason="inspect", pattern="**/*.py", limit=1
-    )
+    action = ListFilesAction(id="list-1", reason="inspect", pattern="**/*.py", limit=1)
 
     result = await tool.execute(action)
 
@@ -254,9 +258,7 @@ async def test_list_files_rejects_direct_ignored_roots(
     root.mkdir()
     (root / "secret.txt").write_text("secret", encoding="utf-8")
 
-    result = await ListFilesTool(
-        boundary, ignored_directories=ignored
-    ).execute(
+    result = await ListFilesTool(boundary, ignored_directories=ignored).execute(
         ListFilesAction(
             id="list-ignored-root",
             reason="inspect",
@@ -288,9 +290,7 @@ async def test_list_files_rejects_case_variant_ignored_roots(
     root.mkdir()
     (root / "secret.txt").write_text("secret", encoding="utf-8")
 
-    result = await ListFilesTool(
-        boundary, ignored_directories=ignored
-    ).execute(
+    result = await ListFilesTool(boundary, ignored_directories=ignored).execute(
         ListFilesAction(
             id="list-ignored-case",
             reason="inspect",
@@ -328,14 +328,10 @@ async def test_list_files_reports_missing_and_non_directory_roots(
     tool = ListFilesTool(boundary)
 
     missing = await tool.execute(
-        ListFilesAction(
-            id="list-missing", reason="inspect", path="missing", limit=100
-        )
+        ListFilesAction(id="list-missing", reason="inspect", path="missing", limit=100)
     )
     non_directory = await tool.execute(
-        ListFilesAction(
-            id="list-file", reason="inspect", path="plain.txt", limit=100
-        )
+        ListFilesAction(id="list-file", reason="inspect", path="plain.txt", limit=100)
     )
 
     assert missing == ToolResult.failure(
@@ -365,9 +361,7 @@ async def test_list_files_handles_unicode_and_nested_git(
     (workspace / "子目录").mkdir()
     (workspace / "子目录" / "文件.py").write_text("x", encoding="utf-8")
     (workspace / "子目录" / ".git").mkdir()
-    (workspace / "子目录" / ".git" / "secret.py").write_text(
-        "hidden", encoding="utf-8"
-    )
+    (workspace / "子目录" / ".git" / "secret.py").write_text("hidden", encoding="utf-8")
 
     result = await ListFilesTool(boundary).execute(
         ListFilesAction(
@@ -855,9 +849,7 @@ def test_list_files_canonical_branch_does_not_chain_sensitive_context(
     real_relative_to = Path.relative_to
     interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
 
-    def interrupting_relative_to(
-        path: Path, *other: Any, **kwargs: Any
-    ) -> Path:
+    def interrupting_relative_to(path: Path, *other: Any, **kwargs: Any) -> Path:
         if path == target and other == (real_workspace,):
             raise interrupt
         return real_relative_to(path, *other, **kwargs)
@@ -953,9 +945,7 @@ async def test_list_files_rechecks_root_after_directory_validation(
     monkeypatch.setattr(boundary, "resolve", recording_resolve)
     monkeypatch.setattr(Path, "is_dir", swapping_is_dir)
     result = await ListFilesTool(boundary).execute(
-        ListFilesAction(
-            id="list-race", reason="inspect", path="victim", limit=100
-        )
+        ListFilesAction(id="list-race", reason="inspect", path="victim", limit=100)
     )
 
     assert result == ToolResult.failure(
@@ -1011,9 +1001,7 @@ async def test_list_public_execute_cleans_wrong_action_error_branch(
 
     class InterruptingToolResult:
         @classmethod
-        def failure(
-            cls, action_id: str, error_type: str, message: str
-        ) -> Any:
+        def failure(cls, action_id: str, error_type: str, message: str) -> Any:
             raise interrupt
 
     monkeypatch.setattr(filesystem_module, "ToolResult", InterruptingToolResult)
@@ -1095,9 +1083,7 @@ def test_list_files_clears_relative_path_helper_traceback(
     tool = ListFilesTool(boundary)
     real_relative_to = Path.relative_to
 
-    def interrupting_relative_to(
-        path: Path, *other: Any, **kwargs: Any
-    ) -> Path:
+    def interrupting_relative_to(path: Path, *other: Any, **kwargs: Any) -> Path:
         if path == target:
             raise SystemExit("PRIVATE-INTERRUPT")
         return real_relative_to(path, *other, **kwargs)
@@ -1220,9 +1206,7 @@ def test_list_files_clears_ignored_path_helper_traceback(
     def interrupting_posix_path(candidate: str) -> Any:
         raise SystemExit("PRIVATE-INTERRUPT")
 
-    monkeypatch.setattr(
-        filesystem_module, "PurePosixPath", interrupting_posix_path
-    )
+    monkeypatch.setattr(filesystem_module, "PurePosixPath", interrupting_posix_path)
     with pytest.raises(SystemExit) as error_info:
         tool._execute_sync(
             ListFilesAction(id="list-ignored-interrupt", reason="inspect", limit=100)
@@ -1856,9 +1840,7 @@ async def test_read_public_execute_cleans_wrong_action_error_branch(
 
     class InterruptingToolResult:
         @classmethod
-        def failure(
-            cls, action_id: str, error_type: str, message: str
-        ) -> Any:
+        def failure(cls, action_id: str, error_type: str, message: str) -> Any:
             raise interrupt
 
     monkeypatch.setattr(filesystem_module, "ToolResult", InterruptingToolResult)
@@ -1977,9 +1959,7 @@ def test_read_file_io_mapping_does_not_chain_sensitive_context(
         raise interrupt
 
     monkeypatch.setattr(Path, "open", failing_open)
-    monkeypatch.setattr(
-        filesystem_module, "_io_failure", interrupting_io_failure
-    )
+    monkeypatch.setattr(filesystem_module, "_io_failure", interrupting_io_failure)
     with pytest.raises(SystemExit) as error_info:
         ReadFileTool(boundary)._execute_sync(
             ReadFileAction(
@@ -2014,14 +1994,10 @@ def test_read_file_decode_mapping_does_not_chain_content_context(
 
     class InterruptingToolResult:
         @classmethod
-        def failure(
-            cls, action_id: str, error_type: str, message: str
-        ) -> Any:
+        def failure(cls, action_id: str, error_type: str, message: str) -> Any:
             raise interrupt
 
-    monkeypatch.setattr(
-        filesystem_module, "ToolResult", InterruptingToolResult
-    )
+    monkeypatch.setattr(filesystem_module, "ToolResult", InterruptingToolResult)
     with pytest.raises(KeyboardInterrupt) as error_info:
         ReadFileTool(boundary)._execute_sync(
             ReadFileAction(
@@ -2079,3 +2055,218 @@ async def test_read_file_maps_oserror_without_disclosing_details(
     assert "private-name" not in rendered
     assert "PRIVATE-FILE-CONTENT" not in rendered
     assert "PRIVATE-LOW-LEVEL-ERROR" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_search_text_uses_literal_pattern_and_stable_format(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "b.py").write_text("x = 'a.b'\n", encoding="utf-8")
+    (workspace / "a.py").write_text("a.b\naxb\n", encoding="utf-8")
+    action = SearchTextAction(
+        id="search-1",
+        reason="find literal",
+        pattern="a.b",
+        file_glob="**/*.py",
+        max_results=10,
+    )
+
+    result = await SearchTextTool(boundary).execute(action)
+
+    assert result.success is True
+    assert result.stdout_summary == "a.py:1:a.b\nb.py:1:x = 'a.b'"
+
+
+@pytest.mark.asyncio
+async def test_search_text_marks_result_limit_truncation(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "a.txt").write_text("hit\nhit\n", encoding="utf-8")
+    action = SearchTextAction(
+        id="search-2", reason="find", pattern="hit", max_results=1
+    )
+
+    result = await SearchTextTool(boundary).execute(action)
+
+    assert result.success is True
+    assert result.stdout_summary == "a.txt:1:hit\n[truncated]"
+
+
+@pytest.mark.asyncio
+async def test_search_text_output_limit_never_splits_unicode(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "u.txt").write_text("命中内容\n", encoding="utf-8")
+    limits = FilesystemLimits(max_search_output_bytes=12)
+    action = SearchTextAction(
+        id="search-3", reason="find", pattern="命", max_results=10
+    )
+
+    result = await SearchTextTool(boundary, limits=limits).execute(action)
+
+    assert result.success is True
+    assert result.stdout_summary == "[truncated]"
+    result.stdout_summary.encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_search_text_enforces_file_scan_limit(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "a.txt").write_text("hit\n", encoding="utf-8")
+    (workspace / "b.txt").write_text("hit\n", encoding="utf-8")
+    limits = FilesystemLimits(max_search_files=1)
+
+    result = await SearchTextTool(boundary, limits=limits).execute(
+        SearchTextAction(
+            id="search-files", reason="find", pattern="hit", max_results=50
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "a.txt:1:hit\n[truncated]"
+
+
+@pytest.mark.asyncio
+async def test_search_text_filters_glob_and_rejects_invalid_glob(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "a.py").write_text("hit\n", encoding="utf-8")
+    (workspace / "a.txt").write_text("hit\n", encoding="utf-8")
+    tool = SearchTextTool(boundary)
+
+    filtered = await tool.execute(
+        SearchTextAction(
+            id="search-glob",
+            reason="find",
+            pattern="hit",
+            file_glob="**/*.py",
+            max_results=50,
+        )
+    )
+    invalid = await tool.execute(
+        SearchTextAction(
+            id="search-invalid",
+            reason="find",
+            pattern="hit",
+            file_glob="!",
+            max_results=50,
+        )
+    )
+
+    assert filtered.stdout_summary == "a.py:1:hit"
+    assert invalid == ToolResult.failure(
+        "search-invalid", "INVALID_GLOB", "file pattern is invalid"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_skips_ignored_sensitive_and_binary_descendants(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "build").mkdir()
+    (workspace / "build" / "ignored.txt").write_text("hit", encoding="utf-8")
+    (workspace / ".env").write_text("hit-secret", encoding="utf-8")
+    (workspace / "binary.bin").write_bytes(b"hit\xff")
+    (workspace / "ok.txt").write_text("hit\n", encoding="utf-8")
+
+    result = await SearchTextTool(boundary, ignored_directories=("build",)).execute(
+        SearchTextAction(id="search-skip", reason="find", pattern="hit", max_results=50)
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "ok.txt:1:hit"
+
+
+@pytest.mark.asyncio
+async def test_search_text_direct_binary_and_sensitive_paths_fail(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "binary.bin").write_bytes(b"hit\xff")
+    (workspace / ".env").write_text("hit", encoding="utf-8")
+    tool = SearchTextTool(boundary)
+
+    binary = await tool.execute(
+        SearchTextAction(
+            id="search-binary",
+            reason="find",
+            path="binary.bin",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+    sensitive = await tool.execute(
+        SearchTextAction(
+            id="search-secret",
+            reason="find",
+            path=".env",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert binary.error_type == "BINARY_FILE"
+    assert sensitive.error_type == "PATH_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_search_text_unicode_empty_and_directory_symlink(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "中文.txt").write_text("没有匹配\n", encoding="utf-8")
+    outside = workspace.parent / f"{workspace.name}-search-outside"
+    outside.mkdir()
+    (outside / "escaped.txt").write_text("needle", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-empty", reason="find", pattern="needle", max_results=50
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == ""
+
+
+@pytest.mark.asyncio
+async def test_search_text_maps_oserror_without_disclosing_details(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "private-search.txt"
+    target.write_text("PRIVATE-SEARCH-CONTENT", encoding="utf-8")
+    real_open = Path.open
+
+    def failing_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path == target:
+            raise OSError("PRIVATE-SEARCH-ERROR")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-io",
+            reason="find",
+            path="private-search.txt",
+            pattern="PRIVATE-SEARCH-PATTERN",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-io", "IO_ERROR", "filesystem operation failed"
+    )
+    rendered = repr(result)
+    for sentinel in (
+        "private-search",
+        "PRIVATE-SEARCH-CONTENT",
+        "PRIVATE-SEARCH-ERROR",
+        "PRIVATE-SEARCH-PATTERN",
+    ):
+        assert sentinel not in rendered
