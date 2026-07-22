@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.run_id }}{% endblock %}
+{% block content %}
+<section class="run-header" data-run-id="{{ run.run_id }}" data-terminal="{{ 'true' if terminal else 'false' }}">
+  <div>
+    <p class="eyebrow">RUN / {{ run.run_id }}</p>
+    <h1>{{ run.description }}</h1>
+    <p class="run-path">{{ run.workspace_root }}</p>
+  </div>
+  <div class="status-block">
+    <span>Current state</span>
+    <strong id="run-status" aria-live="polite" data-status="{{ run.status.value }}">{{ run.status.value }}</strong>
+  </div>
+</section>
+
+<div id="action-error" class="notice notice-error" role="alert" hidden></div>
+
+{% if approval %}
+<section class="approval-panel" aria-labelledby="approval-title" data-csrf="{{ approval.csrf_token }}">
+  <div class="approval-stripe" aria-hidden="true"></div>
+  <div>
+    <p class="eyebrow">HUMAN CHECKPOINT</p>
+    <h2 id="approval-title">This action crosses a write boundary.</h2>
+    <p>The policy rule <strong>CMD_GIT_WRITE</strong> requires a one-time decision. Approval applies only to the frozen action shown in this run.</p>
+  </div>
+  <div class="approval-actions">
+    <button type="button" class="button button-primary" data-decision="approve">Approve once</button>
+    <button type="button" class="button button-danger" data-decision="reject">Reject</button>
+  </div>
+</section>
+{% endif %}
+
+<section class="timeline-section" aria-labelledby="timeline-title">
+  <div class="section-heading">
+    <div><p class="eyebrow">AUDIT STREAM</p><h2 id="timeline-title">Decision timeline</h2></div>
+    {% if not terminal %}<button type="button" class="button button-quiet" id="cancel-run">Cancel run</button>{% endif %}
+  </div>
+  <ol id="timeline" class="timeline">
+    {% for event in events %}
+    <li class="event event-{{ event.event_type | lower }}" data-event-type="{{ event.event_type }}">
+      <div class="event-index">{{ "%02d" | format(event.sequence) }}</div>
+      <div class="event-body">
+        <div class="event-meta"><strong>{{ event.event_type | replace("_", " ") }}</strong><time>{{ event.created_at }}</time></div>
+        <pre>{{ event.redacted_payload }}</pre>
+      </div>
+    </li>
+    {% else %}
+    <li class="empty-state">No audit events have been recorded yet.</li>
+    {% endfor %}
+  </ol>
+</section>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <p class="eyebrow">SYSTEM / SETTINGS</p>
+  <h1>Local boundaries</h1>
+  <p>Inspect configuration state without exposing secret values.</p>
+</section>
+
+<div class="settings-grid">
+  <section class="panel" aria-labelledby="credential-title">
+    <div class="panel-heading"><h2 id="credential-title">Model credential</h2><span class="mode-chip">LOCAL ONLY</span></div>
+    {% if credential %}
+    <dl class="definition-list">
+      <div><dt>Status</dt><dd>{{ "Configured" if credential.configured else "Not configured" }}</dd></div>
+      <div><dt>Source</dt><dd>{{ credential.source or "none" }}</dd></div>
+      <div><dt>Provider</dt><dd>{{ credential.provider }}</dd></div>
+    </dl>
+    {% else %}<p>Credential status is unavailable.</p>{% endif %}
+    <p class="field-note">Secret values are managed through the local CLI and never rendered here.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="memory-title">
+    <div class="panel-heading"><h2 id="memory-title">Project memory</h2><span class="count-chip">{{ memory | length }}</span></div>
+    <p class="project-label">Project: {{ project_id }}</p>
+    <ul class="memory-list">
+      {% for item in memory %}<li><strong>{{ item.type }}</strong><span>{{ item.content }}</span></li>
+      {% else %}<li class="empty-state">No retained project memory.</li>{% endfor %}
+    </ul>
+    <button type="button" class="button button-danger" id="clear-memory" data-project="{{ project_id }}">Clear project memory</button>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}New repair{% endblock %}
+{% block content %}
+<section class="hero" aria-labelledby="page-title">
+  <div>
+    <p class="eyebrow">CONTROL SURFACE / 01</p>
+    <h1 id="page-title">Repair code.<br><em>Keep authority.</em></h1>
+  </div>
+  <p class="lede">Every model action is parsed, checked against policy, audited, and validated before it can affect your workspace.</p>
+</section>
+
+<section class="panel launch-panel" aria-labelledby="launch-title">
+  <div class="panel-heading">
+    <div>
+      <p class="eyebrow">TASK INPUT</p>
+      <h2 id="launch-title">Start a governed run</h2>
+    </div>
+    <span class="mode-chip">{{ "PUBLIC MOCK" if public_demo else "LOCAL" }}</span>
+  </div>
+  <form id="run-form" class="task-form" data-public="{{ 'true' if public_demo else 'false' }}">
+    {% if public_demo %}
+    <div class="field full-width">
+      <label for="scenario">Scenario</label>
+      <select id="scenario" name="scenario">
+        <option value="guardrail">Path guardrail demo</option>
+        <option value="feedback">Validation feedback demo</option>
+        <option value="approval">Dangerous action demo</option>
+      </select>
+      <p class="field-note">Runs against an isolated built-in fixture with a deterministic mock model.</p>
+    </div>
+    {% else %}
+    <div class="field">
+      <label for="project-path">Project path</label>
+      <input id="project-path" name="project_path" autocomplete="off" required placeholder="C:\work\project">
+    </div>
+    <div class="field">
+      <label for="provider">Model provider</label>
+      <select id="provider" name="provider">
+        <option value="openai-compatible">OpenAI-compatible</option>
+        <option value="mock">Offline mock</option>
+      </select>
+    </div>
+    {% endif %}
+    <div class="field full-width">
+      <label for="task">Repair objective</label>
+      <textarea id="task" name="task" rows="5" required placeholder="Describe the defect and the outcome you can verify."></textarea>
+    </div>
+    <div class="form-actions full-width">
+      <p id="form-status" class="form-status" aria-live="polite">Ready for a new task.</p>
+      <button class="button button-primary" type="submit">Start governed run <span aria-hidden="true">→</span></button>
+    </div>
+  </form>
+</section>
+
+<section class="trust-grid" aria-label="Safety stages">
+  <article><span>01</span><h2>Parse</h2><p>Structured actions only. Free-form output never executes.</p></article>
+  <article><span>02</span><h2>Govern</h2><p>Paths, processes, and writes meet deterministic policy.</p></article>
+  <article><span>03</span><h2>Verify</h2><p>Tests and validators provide objective feedback.</p></article>
+</section>
+{% endblock %}
