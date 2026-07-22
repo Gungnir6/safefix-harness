@@ -117,7 +117,7 @@
 ## T08 — Bounded Filesystem Tools and Registry
 
 - 时间：2026-07-18–2026-07-22 +08:00
-- 分支 / MR：`t08-filesystem-tools` / 待创建。
+- 分支 / MR：`t08-filesystem-tools` / [GitLab !8](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/8)；合并提交 `a1a5923`。
 - Superpowers：`using-superpowers`、`using-git-worktrees`、`brainstorming`、`writing-plans`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`receiving-code-review`、`requesting-code-review`、`verification-before-completion`。
 - 关键 prompt/context：四个实现代理分别只获得对应 task brief、隔离 worktree、允许文件、冻结依赖接口、严格 RED→GREEN、中文 Conventional Commits 与报告路径；任务评审和最终整分支评审均只读明确的 `BASE..HEAD` 冻结差异包。全局约束包括 T04 路径边界、固定错误、cause/context/traceback-locals 非披露、过程控制异常原样传播、Windows symlink/junction 语义及禁止引入策略、审批、审计、LLM 或进程行为。
 - 设计与计划：`d2e8f3c docs(design): 明确 T08 文件工具设计`、`e3f9892 docs(plan): 细化 T08 文件工具实施`。设计冻结 Tool/Registry、List/Read/Search/Patch、`FilesystemLimits`、GitWildMatch、严格 UTF-8、三重搜索限制、进程内规范路径锁及同目录原子替换；最终澄清固定 `[truncated]` 要求 `max_search_output_bytes >= 11`。
@@ -130,3 +130,59 @@
 - 过程与人工裁决：`d3a5365 style(tests): 统一工具注册表格式` 单独修复全树 Ruff 基线门禁。人工裁决采用保守的任意 `..` 拒绝；固定 marker 的 11 字节下界进入设计；直接内部普通文件 symlink 在 resolve 后允许，目录祖先链接始终拒绝；未把未批准的 POSIX `openat`/Windows `CreateFile` 句柄架构加入 T08。未进行学生手工代码修改。
 - 延期项：文件工具仍读取 `WorkspaceBoundary._configured_root` 私有字段，待 governance 任务提供只读 accessor；handle-relative I/O 与 eager-read/候选集合内存优化属于未来设计级硬化，不是当前 T08 合并门槛。
 - 经验：文件工具的“有界”必须同时明确结果、扫描和固定标记的契约；路径安全不能只检查最终 canonical 路径，还要区分目录祖先链接与允许的直接文件链接。原子补丁的可信度来自可强制交错的并发测试和全过程故障矩阵，而不是一次顺序运行恰好得到预期结果。
+
+## T09 — Structured Process and Validator Runner
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t09-process-runner` / [GitLab !9](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/9)。
+- 实现与合并：`5991852 feat(tools): 添加结构化验证进程执行`；合并提交 `0ed3b1e`。实现无 shell 的结构化进程调用、超时与输出限制、validator 查找及稳定错误映射。
+- 验证：恢复审计时在原分支新鲜复跑为 755 passed、2 skipped。按学生要求采用快速交付模式，未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用工作树、TDD、验证与分支收尾流程。结构化 argv 和显式 validator 配置是避免 shell 注入及命令漂移的关键边界。
+
+## T10 — Deterministic Feedback and Progress Sensor
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t10-feedback-engine` / [GitLab !10](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/10)。
+- 实现与合并：`4dfd319 feat(feedback): 添加验证反馈与停机判断`；合并提交 `95d6efd`。实现验证结果分类、失败指纹、进展判定和确定性停止条件。
+- 验证：恢复审计时在原分支新鲜复跑为 769 passed、2 skipped。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用工作树、TDD、验证与分支收尾流程。停机依据必须来自预算和客观反馈，而不是模型自我判断。
+
+## T11 — Project Memory and Run Persistence
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t11-persistence` / [GitLab !11](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/11)。
+- 实现与合并：`4b691f2 feat(storage): 持久化项目记忆与运行状态`；合并提交 `5cceb3c`。实现有界项目记忆、确定性检索、运行快照、版本冲突和状态转换持久化。
+- 验证：恢复审计时在原分支新鲜复跑为 778 passed、2 skipped。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用工作树、TDD、验证与分支收尾流程。记忆只保存受控摘要，运行存储通过乐观版本锁避免静默覆盖。
+
+## T12 — Context Builder and Custom AgentLoop
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t12-agent-loop` / [GitLab !12](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/12)。
+- 实现与合并：`d8a2f9a feat(agent): 实现 SafeFix 智能体主循环`；合并提交 `4867bc3`。实现有界上下文、显式动作循环、策略/审批暂停恢复、工具派发、反馈修复和预算停机。
+- 验证：恢复审计时在原分支新鲜复跑为 784 passed、2 skipped。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用工作树、TDD、验证与分支收尾流程。循环必须在每个动作前治理、每个工具结果后记录客观反馈，并让审批成为真实暂停状态。
+
+## T13 — Credential Lifecycle and OpenAI-Compatible Call
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t13-credentials-provider` / [GitLab !13](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/13)。
+- 实现与合并：`7f19825 feat(credentials): 安全管理凭据与模型调用`；合并提交 `c0e84c7`。实现 Keyring、显式 secret 文件、风险提示 `.env` 来源及单次 OpenAI-compatible HTTP 调用。
+- 验证：8 个聚焦测试通过；合并请求前全量 792 passed、2 skipped，Ruff 通过。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用工作树、TDD、验证与分支收尾流程。凭据只在请求边界取出，状态、异常、日志和响应均不得包含明文。
+
+## T14 — Task Service, FastAPI Endpoints and CLI
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t14-api-cli` / [GitLab !14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14)。
+- 实现与合并：`35daee5 feat(interface): 添加 API 与命令行入口`；合并提交 `a72afc9`。实现共享 TaskService、公开模式输入边界、稳定 API 错误、HttpOnly 审批能力与 CSRF、记忆/凭据端点和五组 CLI 命令。
+- 验证：12 个聚焦测试通过；合并请求前全量 800 passed、2 skipped，Ruff 通过。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用工作树、TDD、验证与分支收尾流程。HTTP 与 CLI 都应只做输入/输出适配，业务状态统一通过 TaskService。
+
+## T15 — Local and Public WebUI
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t15-web-ui` / [GitLab !15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15)，待合并。
+- 实现：`a6b9384 feat(web): 添加透明可审计的 Web 界面`。采用工业化开发者控制台视觉方向，实现本地/公开任务页、类型化审计时间线、审批/取消控制、设置与记忆页，以及响应式与键盘可访问样式。
+- 验证：9 个页面/API 聚焦测试通过；全量 805 passed、2 skipped，Ruff、DOM 注入扫描和静态资源 200 探针通过。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用 `frontend-design`、工作树、TDD、验证与分支收尾流程。服务端模板依赖自动转义，动态模型/工具文本只通过 `textContent` 插入。
+
+## T08–T15 Documentation Recovery
+
+- 时间：2026-07-22 +08:00。
+- 触发：学生指出多次任务完成后没有同步过程文档。
+- 根因：快速交付流程把完成条件错误地收窄为实现、测试、提交、推送和 MR，没有把 `PLAN.md` 勾选/状态账本及 `AGENT_LOG.md` 证据作为提交前门禁；因此同一遗漏从 T09 连续重复到 T15，T08 的 MR/合并状态也未回填。
+- 修复：依据 Git 历史、MR 编号和新鲜分支测试补齐 T08–T15；未发生的独立评审明确记录为 quick-delivery caveat，不伪造证据。自 T16 起，提交前固定检查任务步骤、状态账本、实现哈希、MR/合并状态和 Agent Log。
