@@ -490,19 +490,26 @@ class ReadFileTool:
                 lexical_target = _lexical_path(
                     self._configured_workspace, requested_path
                 )
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_target,
+                    include_target=False,
+                ):
+                    return _path_denied(action_id)
                 if not target.exists():
                     return ToolResult.failure(
                         action_id, "NOT_FOUND", "requested path does not exist"
                     )
                 target_is_file = target.is_file()
-                if _contains_directory_link(
-                    self._configured_workspace,
-                    self._workspace,
-                    lexical_target,
-                    include_target=not target_is_file,
-                ):
-                    return _path_denied(action_id)
                 if not target_is_file:
+                    if target.is_dir() and _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=True,
+                    ):
+                        return _path_denied(action_id)
                     return ToolResult.failure(
                         action_id, "NOT_FILE", "requested path is not a file"
                     )
@@ -672,6 +679,13 @@ class SearchTextTool:
 
                 root = self._boundary.resolve(requested_path, AccessKind.SEARCH)
                 lexical_root = _lexical_path(self._configured_workspace, requested_path)
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_root,
+                    include_target=False,
+                ):
+                    return _path_denied(action_id)
                 if not root.exists():
                     return ToolResult.failure(
                         action_id, "NOT_FOUND", "requested path does not exist"
@@ -683,11 +697,11 @@ class SearchTextTool:
                         "NOT_FILE",
                         "requested path is not a file or directory",
                     )
-                if _contains_directory_link(
+                if not root_is_file and _contains_directory_link(
                     self._configured_workspace,
                     self._workspace,
                     lexical_root,
-                    include_target=not root_is_file,
+                    include_target=True,
                 ):
                     return _path_denied(action_id)
                 verified_root = self._boundary.resolve(

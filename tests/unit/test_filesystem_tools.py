@@ -2974,3 +2974,119 @@ async def test_search_text_directory_enumeration_skips_file_symlinks(
 
     assert result.success is True
     assert result.stdout_summary == "real.txt:1:hit"
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_symlink_ancestor_before_missing_check(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real"
+    target.mkdir()
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-link-missing",
+            reason="inspect",
+            path="linked/missing.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-link-missing", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_junction_ancestor_before_missing_check(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-junction-missing",
+            reason="inspect",
+            path="junction/missing.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-junction-missing", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_rejects_symlink_ancestor_before_missing_check(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real"
+    target.mkdir()
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-link-missing",
+            reason="find",
+            path="linked/missing.txt",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-link-missing", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_rejects_junction_ancestor_before_missing_check(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-junction-missing",
+            reason="find",
+            path="junction/missing.txt",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "search-junction-missing", "PATH_DENIED", "path access is denied"
+    )
