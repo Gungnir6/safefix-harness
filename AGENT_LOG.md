@@ -113,3 +113,20 @@
 - 延期 Minor：当前 CPython 环境中，两份文件连接的并发测试会映射到同一 striped lock，已验证生产 Python 锁序列化和最多一次成功，但没有直接覆盖不同 stripe 下的 SQLite 文件锁竞争。避免为测试引入白盒锁控制、多进程不稳定性或平台相关假设，留待并发基建统一时补充。
 - 人工裁决：严格保留调用方共享连接和事务所有权，内部使用 SAVEPOINT；只持久化 token 的 SHA-256 digest；拒绝不保存自由文本，用户可见反馈由 T12 生成；cancel 是可信控制面操作；审批公开 API 的普通异常、构造异常和 `capture_locals` 均不得披露 token、action、configured secrets 或数据库内部细节。
 - 经验：审批安全不是一次 `UPDATE`；必须同时冻结授权对象、保证 token 单次消费、把审计成功纳入提交条件，并在 INSERT/UPDATE trigger、共享连接、跨 store 重入、进程控制异常和异常帧 locals 下证明“失败即无状态变化”。构造器也属于公开安全边界，不能只审计业务方法。
+
+## T08 — Bounded Filesystem Tools and Registry
+
+- 时间：2026-07-18–2026-07-22 +08:00
+- 分支 / MR：`t08-filesystem-tools` / 待创建。
+- Superpowers：`using-superpowers`、`using-git-worktrees`、`brainstorming`、`writing-plans`、`subagent-driven-development`、`test-driven-development`、`systematic-debugging`、`receiving-code-review`、`requesting-code-review`、`verification-before-completion`。
+- 关键 prompt/context：四个实现代理分别只获得对应 task brief、隔离 worktree、允许文件、冻结依赖接口、严格 RED→GREEN、中文 Conventional Commits 与报告路径；任务评审和最终整分支评审均只读明确的 `BASE..HEAD` 冻结差异包。全局约束包括 T04 路径边界、固定错误、cause/context/traceback-locals 非披露、过程控制异常原样传播、Windows symlink/junction 语义及禁止引入策略、审批、审计、LLM 或进程行为。
+- 设计与计划：`d2e8f3c docs(design): 明确 T08 文件工具设计`、`e3f9892 docs(plan): 细化 T08 文件工具实施`。设计冻结 Tool/Registry、List/Read/Search/Patch、`FilesystemLimits`、GitWildMatch、严格 UTF-8、三重搜索限制、进程内规范路径锁及同目录原子替换；最终澄清固定 `[truncated]` 要求 `max_search_output_bytes >= 11`。
+- Task 1：`789cf99 feat(tools): 添加类型化工具注册表`。生产代码前精确 RED 为缺少 `safefix.tools.registry`；实现精确运行时类型注册与 dispatch、缺失工具固定失败及 raw 输入非披露。最终整分支修复 `3003aa2` 又覆盖 constructor/register 重复、非法 `action_type`、property 故障与 KBI/SystemExit 的完整异常链和 frame-locals 清理。
+- Task 2：`be27bfa` 起实现受限 List/Read，后续 `a334030`、`1fa87d8`、`193d31d`、`2649f5e`、`b10688c`、`8f3518c` 依次关闭 resolve 竞态、原始 CRLF/字节预算、ignored 根与 Windows 大小写、目录 symlink/junction 祖先、configured/canonical alias、异常 helper/constructor/async frame 泄露和复杂 `..` 绕过。最终统一拒绝任意独立 `..` 分量，并保留设计允许的安全直接文件 symlink。
+- Task 3：`41ec080 feat(tools): 添加有界字面文本搜索`；`9094a6f`、`198d549`、`1451043` 修正实际扫描文件计数、固定 marker 预算、搜索专属路径/异常测试、安全直接文件链接与链接祖先判断顺序。字面匹配、确定输出、READ 后代检查、敏感/二进制跳过及文件数/结果数/输出字节三重限制通过任务审查。
+- Task 4：`5fe9ed3 feat(tools): 添加安全原子补丁工具`；`3aaa67e` 补全 raw 临时文件名清理、确定性 canonical/alias 并发证明、过程控制后锁复用和 14 阶段 × OSError/KBI/SystemExit 的 42 项故障矩阵。实现共享 64 分片规范路径锁、两次 WRITE resolve/摘要复核、严格 UTF-8、精确替换次数、权限复制、flush/fsync、预构造成功结果及 `os.replace` 提交点。
+- 最终整分支审查：首轮提出搜索预算文档冲突、List 特殊文件枚举和 Registry 注册非披露；句柄级 TOCTOU 与 eager-read 内存问题经绑定设计复核降为未来硬化建议。`3003aa2 fix(tools): 完成 T08 最终安全审查` 以真实 file symlink、换型 race、FIFO/socket 平台测试和 Registry 全链测试关闭全部 Important；第二轮整分支审查结论 Ready to merge，Critical 0、Important 0、Minor 2。
+- 根代理新鲜验证：最终 HEAD `3003aa2`；T08 聚焦 215 passed、2 skipped；完整测试 748 passed、2 skipped；Ruff check/format、mypy（18 source files）、pip check、`git diff --check` 全部 exit 0。两个 skip 是当前 Windows 不支持创建 FIFO/socket，支持平台会实际执行对应测试。
+- 过程与人工裁决：`d3a5365 style(tests): 统一工具注册表格式` 单独修复全树 Ruff 基线门禁。人工裁决采用保守的任意 `..` 拒绝；固定 marker 的 11 字节下界进入设计；直接内部普通文件 symlink 在 resolve 后允许，目录祖先链接始终拒绝；未把未批准的 POSIX `openat`/Windows `CreateFile` 句柄架构加入 T08。未进行学生手工代码修改。
+- 延期项：文件工具仍读取 `WorkspaceBoundary._configured_root` 私有字段，待 governance 任务提供只读 accessor；handle-relative I/O 与 eager-read/候选集合内存优化属于未来设计级硬化，不是当前 T08 合并门槛。
+- 经验：文件工具的“有界”必须同时明确结果、扫描和固定标记的契约；路径安全不能只检查最终 canonical 路径，还要区分目录祖先链接与允许的直接文件链接。原子补丁的可信度来自可强制交错的并发测试和全过程故障矩阵，而不是一次顺序运行恰好得到预期结果。
