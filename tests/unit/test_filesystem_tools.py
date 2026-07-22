@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import stat
+from hashlib import sha256
 from pathlib import Path
 import traceback as traceback_module
 from typing import Any, SupportsIndex
@@ -10,6 +13,7 @@ from pydantic import ValidationError
 
 import safefix.tools.filesystem as filesystem_module
 from safefix.domain import (
+    ApplyPatchAction,
     ListFilesAction,
     ReadFileAction,
     SearchTextAction,
@@ -17,11 +21,59 @@ from safefix.domain import (
 )
 from safefix.governance.paths import WorkspaceBoundary
 from safefix.tools.filesystem import (
+    ApplyPatchTool,
     FilesystemLimits,
     ListFilesTool,
     ReadFileTool,
     SearchTextTool,
 )
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_stale_expected_hash(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    action = ApplyPatchAction(
+        id="patch-1",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(b"different").hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    result = await ApplyPatchTool(boundary).execute(action)
+
+    assert result == ToolResult.failure(
+        "patch-1", "STALE_FILE", "file changed since it was read"
+    )
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_replacement_count_mismatch(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\nvalue = 1\n"
+    target.write_bytes(original)
+    action = ApplyPatchAction(
+        id="patch-2",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    result = await ApplyPatchTool(boundary).execute(action)
+
+    assert result.error_type == "PATCH_MISMATCH"
+    assert target.read_bytes() == original
 
 
 @pytest.fixture
@@ -3090,3 +3142,512 @@ async def test_search_text_rejects_junction_ancestor_before_missing_check(
     assert result == ToolResult.failure(
         "search-junction-missing", "PATH_DENIED", "path access is denied"
     )
+
+
+@pytest.mark.asyncio
+async def test_patch_atomically_replaces_text_and_reports_relative_file(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "src" / "app.py"
+    target.parent.mkdir()
+    original = b"value = 1\n"
+    target.write_bytes(original)
+    original_mode = stat.S_IMODE(target.stat().st_mode)
+    action = ApplyPatchAction(
+        id="patch-3",
+        reason="fix",
+        path="src/app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    result = await ApplyPatchTool(boundary).execute(action)
+
+    assert result.success is True
+    assert result.changed_files == ("src/app.py",)
+    assert result.stdout_summary == ""
+    assert target.read_bytes() == b"value = 2\n"
+    if os.name != "nt":
+        assert stat.S_IMODE(target.stat().st_mode) == original_mode
+
+
+@pytest.mark.asyncio
+async def test_patch_replace_failure_keeps_original_and_removes_temp_files(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+
+    def fail_replace(source: object, destination: object) -> None:
+        raise OSError("PRIVATE-LOW-LEVEL-ERROR")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    action = ApplyPatchAction(
+        id="patch-4",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    result = await ApplyPatchTool(boundary).execute(action)
+
+    assert result == ToolResult.failure(
+        "patch-4", "IO_ERROR", "filesystem operation failed"
+    )
+    assert target.read_bytes() == original
+    assert [path for path in workspace.iterdir() if path.name != "app.py"] == []
+    assert "PRIVATE-LOW-LEVEL-ERROR" not in result.stderr_summary
+
+
+@pytest.mark.asyncio
+async def test_patch_close_error_does_not_override_process_control(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+    interrupt = KeyboardInterrupt()
+    real_fdopen = os.fdopen
+
+    class InterruptingStream:
+        def __init__(self, descriptor: int) -> None:
+            self._stream = real_fdopen(descriptor, "wb")
+
+        def __enter__(self) -> InterruptingStream:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.close()
+
+        def close(self) -> None:
+            self._stream.close()
+            raise OSError("PRIVATE-CLOSE-ERROR")
+
+        def write(self, data: bytes) -> int:
+            raise interrupt
+
+        def flush(self) -> None:
+            self._stream.flush()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+    def interrupting_fdopen(descriptor: int, mode: str) -> InterruptingStream:
+        assert mode == "wb"
+        return InterruptingStream(descriptor)
+
+    monkeypatch.setattr(os, "fdopen", interrupting_fdopen)
+    action = ApplyPatchAction(
+        id="patch-close-interrupt",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        await ApplyPatchTool(boundary).execute(action)
+
+    assert captured.value is interrupt
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert target.read_bytes() == original
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_patch_prepares_result_before_replace_commit(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+
+    def fail_relative(root: Path, canonical_target: Path) -> str:
+        raise OSError("PRIVATE-RELATIVE-ERROR")
+
+    monkeypatch.setattr(filesystem_module, "_relative_posix", fail_relative)
+    action = ApplyPatchAction(
+        id="patch-precommit",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    result = await ApplyPatchTool(boundary).execute(action)
+
+    assert result == ToolResult.failure(
+        "patch-precommit", "IO_ERROR", "filesystem operation failed"
+    )
+    assert target.read_bytes() == original
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_two_tool_instances_patch_same_file_at_most_once(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+
+    def action(action_id: str, new_text: str) -> ApplyPatchAction:
+        return ApplyPatchAction(
+            id=action_id,
+            reason="fix",
+            path="app.py",
+            expected_sha256=sha256(original).hexdigest(),
+            old_text="value = 1",
+            new_text=new_text,
+            expected_replacements=1,
+        )
+
+    first, second = await asyncio.gather(
+        ApplyPatchTool(boundary).execute(action("patch-a", "value = 2")),
+        ApplyPatchTool(boundary).execute(action("patch-b", "value = 3")),
+    )
+
+    assert sorted(result.error_type or "SUCCESS" for result in (first, second)) == [
+        "STALE_FILE",
+        "SUCCESS",
+    ]
+    assert target.read_bytes() in {b"value = 2\n", b"value = 3\n"}
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_patch_rechecks_digest_before_replace(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    external = b"external edit\n"
+    target.write_bytes(original)
+    real_read_bytes = Path.read_bytes
+    reads = 0
+
+    def racing_read_bytes(path: Path) -> bytes:
+        nonlocal reads
+        if path == target:
+            reads += 1
+            if reads == 2:
+                target.write_bytes(external)
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    action = ApplyPatchAction(
+        id="patch-race",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    result = await ApplyPatchTool(boundary).execute(action)
+
+    assert result.error_type == "STALE_FILE"
+    assert target.read_bytes() == external
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt(), SystemExit()])
+async def test_patch_propagates_process_control_and_cleans_temp(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: BaseException,
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+
+    def interrupted_replace(source: object, destination: object) -> None:
+        raise interrupt
+
+    monkeypatch.setattr(os, "replace", interrupted_replace)
+    action = ApplyPatchAction(
+        id="patch-interrupt",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    with pytest.raises(type(interrupt)) as captured:
+        await ApplyPatchTool(boundary).execute(action)
+
+    assert captured.value is interrupt
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert target.read_bytes() == original
+    assert not list(workspace.glob(".safefix-*.tmp"))
+    rendered = "".join(traceback_module.format_exception(captured.value))
+    for sentinel in ("value = 1", "value = 2", repr(original)):
+        assert sentinel not in rendered
+    tb = captured.value.__traceback__
+    component_locals: list[str] = []
+    sensitive_names = {
+        "action",
+        "lock_target",
+        "requested_path",
+        "old_text",
+        "new_text",
+        "lexical_target",
+        "target",
+        "verified_target",
+        "current_bytes",
+        "replacement",
+        "temporary_name",
+        "temporary",
+        "latest_target",
+        "latest_bytes",
+    }
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename.replace("\\", "/").endswith(
+            "safefix/tools/filesystem.py"
+        ):
+            assert sensitive_names.isdisjoint(tb.tb_frame.f_locals)
+            component_locals.extend(
+                repr(value) for value in tb.tb_frame.f_locals.values()
+            )
+        tb = tb.tb_next
+    assert component_locals
+    for sentinel in ("value = 1", "value = 2", repr(original)):
+        assert all(sentinel not in value for value in component_locals)
+
+
+@pytest.mark.asyncio
+async def test_patch_reports_missing_directory_sensitive_and_binary_targets(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    (workspace / "directory").mkdir()
+    (workspace / ".env").write_text("secret", encoding="utf-8")
+    binary = workspace / "binary.bin"
+    binary_bytes = b"text\xff"
+    binary.write_bytes(binary_bytes)
+    tool = ApplyPatchTool(boundary)
+
+    missing = await tool.execute(
+        ApplyPatchAction(
+            id="patch-missing",
+            reason="fix",
+            path="missing",
+            expected_sha256=sha256(b"").hexdigest(),
+            old_text="x",
+            new_text="y",
+            expected_replacements=1,
+        )
+    )
+    directory = await tool.execute(
+        ApplyPatchAction(
+            id="patch-dir",
+            reason="fix",
+            path="directory",
+            expected_sha256=sha256(b"").hexdigest(),
+            old_text="x",
+            new_text="y",
+            expected_replacements=1,
+        )
+    )
+    sensitive = await tool.execute(
+        ApplyPatchAction(
+            id="patch-secret",
+            reason="fix",
+            path=".env",
+            expected_sha256=sha256(b"secret").hexdigest(),
+            old_text="secret",
+            new_text="public",
+            expected_replacements=1,
+        )
+    )
+    binary_result = await tool.execute(
+        ApplyPatchAction(
+            id="patch-binary",
+            reason="fix",
+            path="binary.bin",
+            expected_sha256=sha256(binary_bytes).hexdigest(),
+            old_text="text",
+            new_text="other",
+            expected_replacements=1,
+        )
+    )
+
+    assert missing.error_type == "NOT_FOUND"
+    assert directory.error_type == "NOT_FILE"
+    assert sensitive.error_type == "PATH_DENIED"
+    assert binary_result.error_type == "BINARY_FILE"
+    assert (workspace / ".env").read_text(encoding="utf-8") == "secret"
+    assert binary.read_bytes() == binary_bytes
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_wrong_structured_action(
+    boundary: WorkspaceBoundary,
+) -> None:
+    wrong = ReadFileAction(
+        id="wrong", reason="inspect", path="app.py", start_line=1, end_line=200
+    )
+    result = await ApplyPatchTool(boundary).execute(wrong)
+    assert result == ToolResult.failure(
+        "wrong", "UNSUPPORTED_ACTION", "tool does not support this action"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_path", ("../app.py", "folder/../app.py"))
+async def test_patch_rejects_every_parent_reference(
+    workspace: Path, boundary: WorkspaceBoundary, requested_path: str
+) -> None:
+    original = b"value = 1\n"
+    (workspace / "app.py").write_bytes(original)
+
+    result = await ApplyPatchTool(boundary).execute(
+        ApplyPatchAction(
+            id="patch-parent",
+            reason="fix",
+            path=requested_path,
+            expected_sha256=sha256(original).hexdigest(),
+            old_text="value = 1",
+            new_text="value = 2",
+            expected_replacements=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "patch-parent", "PATH_DENIED", "path access is denied"
+    )
+    assert (workspace / "app.py").read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_directory_symlink_ancestor(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real" / "app.py"
+    target.parent.mkdir()
+    original = b"value = 1\n"
+    target.write_bytes(original)
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ApplyPatchTool(boundary).execute(
+        ApplyPatchAction(
+            id="patch-link-ancestor",
+            reason="fix",
+            path="linked/app.py",
+            expected_sha256=sha256(original).hexdigest(),
+            old_text="value = 1",
+            new_text="value = 2",
+            expected_replacements=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "patch-link-ancestor", "PATH_DENIED", "path access is denied"
+    )
+    assert target.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_patch_allows_safe_file_symlink_and_reports_canonical_path(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+    link = workspace / "alias.py"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    result = await ApplyPatchTool(boundary).execute(
+        ApplyPatchAction(
+            id="patch-safe-file-link",
+            reason="fix",
+            path="alias.py",
+            expected_sha256=sha256(original).hexdigest(),
+            old_text="value = 1",
+            new_text="value = 2",
+            expected_replacements=1,
+        )
+    )
+
+    assert result.success is True
+    assert result.changed_files == ("real.py",)
+    assert link.is_symlink()
+    assert target.read_bytes() == b"value = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_sensitive_and_escaping_file_symlinks(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    sensitive = workspace / ".env"
+    sensitive.write_bytes(b"secret")
+    outside = workspace.parent / f"{workspace.name}-outside-patch-link.txt"
+    outside.write_bytes(b"outside")
+    sensitive_link = workspace / "sensitive.txt"
+    escaping_link = workspace / "escaping.txt"
+    try:
+        sensitive_link.symlink_to(sensitive)
+        escaping_link.symlink_to(outside)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+    tool = ApplyPatchTool(boundary)
+
+    sensitive_result = await tool.execute(
+        ApplyPatchAction(
+            id="patch-sensitive-link",
+            reason="fix",
+            path="sensitive.txt",
+            expected_sha256=sha256(b"secret").hexdigest(),
+            old_text="secret",
+            new_text="public",
+            expected_replacements=1,
+        )
+    )
+    escaping_result = await tool.execute(
+        ApplyPatchAction(
+            id="patch-escaping-link",
+            reason="fix",
+            path="escaping.txt",
+            expected_sha256=sha256(b"outside").hexdigest(),
+            old_text="outside",
+            new_text="inside",
+            expected_replacements=1,
+        )
+    )
+
+    assert sensitive_result.error_type == "PATH_DENIED"
+    assert escaping_result.error_type == "PATH_DENIED"
+    assert sensitive.read_bytes() == b"secret"
+    assert outside.read_bytes() == b"outside"

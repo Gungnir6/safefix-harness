@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
+import stat
+import tempfile
+import threading
 import time
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 import pathspec
 
 from safefix.domain import (
     AccessKind,
     Action,
+    ApplyPatchAction,
     ListFilesAction,
     ReadFileAction,
     SearchTextAction,
@@ -26,6 +33,7 @@ from safefix.governance.paths import (
 
 _PATH_ERRORS = (PathOutsideWorkspace, SensitivePathDenied, SymlinkEscapeDenied)
 _CASE_INSENSITIVE_PATHS = os.path.normcase("A") == os.path.normcase("a")
+_PATCH_LOCKS = tuple(threading.Lock() for _ in range(64))
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,11 +140,44 @@ def _compile_gitwildmatch(pattern: str) -> pathspec.PathSpec | None:
 
 
 def _path_denied(action_id: str) -> ToolResult:
-    return ToolResult.failure(action_id, "PATH_DENIED", "path access is denied")
+    try:
+        return ToolResult.failure(action_id, "PATH_DENIED", "path access is denied")
+    finally:
+        del action_id
 
 
 def _io_failure(action_id: str) -> ToolResult:
-    return ToolResult.failure(action_id, "IO_ERROR", "filesystem operation failed")
+    try:
+        return ToolResult.failure(action_id, "IO_ERROR", "filesystem operation failed")
+    finally:
+        del action_id
+
+
+def _patch_lock(target: Path) -> threading.Lock:
+    normalized = ""
+    digest = b""
+    index = 0
+    try:
+        normalized = os.path.normcase(os.path.abspath(target))
+        digest = sha256(os.fsencode(normalized)).digest()
+        index = int.from_bytes(digest[:8], "big") % len(_PATCH_LOCKS)
+        return _PATCH_LOCKS[index]
+    finally:
+        del target, normalized, digest, index
+
+
+def _patch_success(action_id: str, relative_path: str, started_ns: int) -> ToolResult:
+    duration_ms = 0
+    try:
+        duration_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        return ToolResult(
+            action_id=action_id,
+            success=True,
+            changed_files=(relative_path,),
+            duration_ms=duration_ms,
+        )
+    finally:
+        del action_id, relative_path, started_ns, duration_ms
 
 
 def _success(action_id: str, output: str, started_ns: int) -> ToolResult:
@@ -576,6 +617,310 @@ class ReadFileTool:
                 output,
                 decode_failed,
                 failure_type,
+            )
+
+
+class ApplyPatchTool:
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        try:
+            self._boundary = boundary
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.WRITE)
+        finally:
+            del self, boundary
+
+    @property
+    def action_type(self) -> type[object]:
+        return ApplyPatchAction
+
+    async def execute(self, action: Action) -> ToolResult:
+        action_id = ""
+        typed_action: ApplyPatchAction | None = None
+        try:
+            if not isinstance(action, ApplyPatchAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
+            return await asyncio.to_thread(self._execute_sync, typed_action)
+        finally:
+            del self, action, action_id, typed_action
+
+    def _execute_sync(self, action: ApplyPatchAction) -> ToolResult:
+        action_id = ""
+        requested_path = ""
+        target: Path | None = None
+        lock: threading.Lock | None = None
+        result: ToolResult | None = None
+        failure_type = ""
+        try:
+            action_id = action.id
+            requested_path = action.path
+            if _contains_parent_reference(requested_path):
+                return _path_denied(action_id)
+
+            try:
+                target = self._boundary.resolve(requested_path, AccessKind.WRITE)
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            if failure_type == "io" or target is None:
+                return _io_failure(action_id)
+
+            lock = _patch_lock(target)
+            with lock:
+                result = self._execute_locked(action, target)
+            return result
+        finally:
+            del (
+                self,
+                action,
+                action_id,
+                requested_path,
+                target,
+                lock,
+                result,
+                failure_type,
+            )
+
+    def _execute_locked(
+        self, action: ApplyPatchAction, lock_target: Path
+    ) -> ToolResult:
+        traceback_marker = "patch-operation"
+        action_id = ""
+        requested_path = ""
+        expected_hash = ""
+        old_text = ""
+        new_text = ""
+        expected_replacements = 0
+        started_ns = 0
+        lexical_target: Path | None = None
+        target: Path | None = None
+        verified_target: Path | None = None
+        current_bytes = b""
+        current_hash = ""
+        text = ""
+        replacement = b""
+        original_mode = 0
+        file_descriptor = -1
+        temporary_name = ""
+        temporary: Path | None = None
+        stream: BinaryIO | None = None
+        latest_target: Path | None = None
+        latest_bytes = b""
+        latest_hash = ""
+        relative_path = ""
+        failure_type = ""
+        cleanup_failed = False
+        result: ToolResult | None = None
+        try:
+            try:
+                action_id = action.id
+                requested_path = action.path
+                expected_hash = action.expected_sha256
+                old_text = action.old_text
+                new_text = action.new_text
+                expected_replacements = action.expected_replacements
+                started_ns = time.monotonic_ns()
+
+                target = self._boundary.resolve(requested_path, AccessKind.WRITE)
+                if target != lock_target:
+                    failure_type = "path"
+                if not failure_type:
+                    lexical_target = _lexical_path(
+                        self._configured_workspace, requested_path
+                    )
+                    if _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=False,
+                    ):
+                        failure_type = "path"
+                if not failure_type and not target.exists():
+                    failure_type = "missing"
+                if not failure_type and not target.is_file():
+                    assert lexical_target is not None
+                    if target.is_dir() and _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=True,
+                    ):
+                        failure_type = "path"
+                    else:
+                        failure_type = "not_file"
+                if not failure_type:
+                    assert lexical_target is not None
+                    verified_target = self._boundary.resolve(
+                        requested_path, AccessKind.WRITE
+                    )
+                    if verified_target != target or _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=False,
+                    ):
+                        failure_type = "path"
+                    else:
+                        target = verified_target
+
+                if not failure_type:
+                    current_bytes = target.read_bytes()
+                    current_hash = sha256(current_bytes).hexdigest()
+                    if not hmac.compare_digest(current_hash, expected_hash):
+                        failure_type = "stale"
+                if not failure_type:
+                    try:
+                        text = current_bytes.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError:
+                        failure_type = "binary"
+                if not failure_type and text.count(old_text) != expected_replacements:
+                    failure_type = "mismatch"
+                if not failure_type:
+                    replacement = text.replace(
+                        old_text, new_text, expected_replacements
+                    ).encode("utf-8")
+                    original_mode = stat.S_IMODE(target.stat().st_mode)
+                    file_descriptor, temporary_name = tempfile.mkstemp(
+                        prefix=".safefix-",
+                        suffix=".tmp",
+                        dir=target.parent,
+                    )
+                    temporary = Path(temporary_name)
+                    stream = os.fdopen(file_descriptor, "wb")
+                    file_descriptor = -1
+                    try:
+                        stream.write(replacement)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    except (KeyboardInterrupt, SystemExit):
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+                        stream = None
+                        raise
+                    except Exception:
+                        try:
+                            stream.close()
+                        finally:
+                            stream = None
+                        raise
+                    else:
+                        try:
+                            stream.close()
+                        finally:
+                            stream = None
+                    os.chmod(temporary, original_mode)
+
+                    latest_target = self._boundary.resolve(
+                        requested_path, AccessKind.WRITE
+                    )
+                    assert lexical_target is not None
+                    if latest_target != target or _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=False,
+                    ):
+                        failure_type = "path"
+                if not failure_type:
+                    latest_bytes = target.read_bytes()
+                    latest_hash = sha256(latest_bytes).hexdigest()
+                    if not hmac.compare_digest(latest_hash, current_hash):
+                        failure_type = "stale"
+                if not failure_type:
+                    assert temporary is not None
+                    relative_path = _relative_posix(self._workspace, target)
+                    result = _patch_success(action_id, relative_path, started_ns)
+                    os.replace(temporary, target)
+                    temporary = None
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            finally:
+                if file_descriptor >= 0:
+                    try:
+                        os.close(file_descriptor)
+                    except OSError:
+                        cleanup_failed = True
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        cleanup_failed = True
+
+            if cleanup_failed:
+                failure_type = "io"
+            if failure_type == "path":
+                result = _path_denied(action_id)
+            elif failure_type == "missing":
+                result = ToolResult.failure(
+                    action_id, "NOT_FOUND", "requested path does not exist"
+                )
+            elif failure_type == "not_file":
+                result = ToolResult.failure(
+                    action_id, "NOT_FILE", "requested path is not a file"
+                )
+            elif failure_type == "binary":
+                result = ToolResult.failure(
+                    action_id, "BINARY_FILE", "file is not valid UTF-8 text"
+                )
+            elif failure_type == "stale":
+                result = ToolResult.failure(
+                    action_id, "STALE_FILE", "file changed since it was read"
+                )
+            elif failure_type == "mismatch":
+                result = ToolResult.failure(
+                    action_id, "PATCH_MISMATCH", "replacement count differs"
+                )
+            elif failure_type == "io":
+                result = _io_failure(action_id)
+            else:
+                assert result is not None
+            return result
+        finally:
+            assert traceback_marker == "patch-operation"
+            del (
+                self,
+                action,
+                lock_target,
+                action_id,
+                requested_path,
+                expected_hash,
+                old_text,
+                new_text,
+                expected_replacements,
+                started_ns,
+                lexical_target,
+                target,
+                verified_target,
+                current_bytes,
+                current_hash,
+                text,
+                replacement,
+                original_mode,
+                file_descriptor,
+                temporary_name,
+                temporary,
+                stream,
+                latest_target,
+                latest_bytes,
+                latest_hash,
+                relative_path,
+                failure_type,
+                cleanup_failed,
+                result,
             )
 
 
