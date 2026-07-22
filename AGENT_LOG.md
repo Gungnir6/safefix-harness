@@ -189,9 +189,18 @@
 
 ## T16 — Embedded Fixture and Deterministic Mechanism Demos
 
-- 时间：2026-07-22 +08:00；分支 / MR：`t16-mechanism-demos` / [GitLab !17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17)，待合并。
+- 时间：2026-07-22 +08:00；分支 / MR：`t16-mechanism-demos` / [GitLab !17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17)，已合并。
 - 实现：`0e5afc5 feat(demo): 添加确定性 Harness 机制演示`。新增内置错误 Python fixture，并提供 `python -m safefix.demo guardrail|feedback|approval|all`。
 - 机制证据：guardrail 通过真实 `PolicyEngine` 永久拒绝提权破坏动作且工具调用为零；feedback 通过 `ScriptedMockLLM`、`ApplyPatchTool`、`ProcessTool`、`ValidatorRunner` 和 `FeedbackEngine` 产生失败→错误补丁→失败→正确补丁→通过；approval 通过 SQLite 持久化重开 `ApprovalStateMachine`，证明变更动作和 token replay 均被拒，仅冻结动作执行一次。
 - 隔离：每个场景复制 `examples/python_bug` 到独立临时目录，结束后删除；嵌入 fixture 字节保持不变；无网络和真实凭据。
 - 验证：6 个 T16 聚焦测试通过；`all` 连续三次均精确输出三个 PASS；全量 811 passed、2 skipped；Ruff 和 `git diff --check` 通过。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
 - 技能 / 经验：使用 `using-superpowers`、`brainstorming`、`using-git-worktrees`、`test-driven-development`、`verification-before-completion` 和 `finishing-a-development-branch`。文档更新已作为本任务固定收尾门禁执行。
+
+## T17 — Distribution, CI, README and Public-Demo Release
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t17-distribution-ci-docs` / [GitLab !18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18)，待合并。
+- 实现：`3c405c9 build(distribution): 添加可复现分发与持续集成`。新增可复现 wheel/sdist、非 root Python 3.12 Docker 镜像、GitLab/GitHub CI、Render Blueprint、完整 README、`/health`、默认公开 mock Web 服务及打包后的演示 fixture。
+- 回归修复：发现 T16 同一秒内连续写入等长源码可能命中旧 `.pyc`；将中间错误补丁改为不同长度，三个场景连续三轮均 PASS。
+- 验证：T17 RED 为 6 failed，GREEN 为 6 passed；全量 817 passed、2 skipped；Ruff、mypy、`git diff --check` 通过；wheel 与 sdist 构建成功并核验模板、静态资源和 fixture 均在 wheel 内。
+- 外部状态：本机 Docker Desktop 守护进程未启动，因此本地镜像构建未执行完成；本机没有 Gitleaks 与 Render 凭据，镜像构建/历史 secret scan 交给 MR CI，Render 实际部署等待仓库所有者授权。没有伪造在线 URL。
+- 模式：按学生要求采用快速交付，不执行独立子代理评审；文档已在提交与推送阶段同步更新。
