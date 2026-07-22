@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}SafeFix{% endblock %} · governed repair console</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="SafeFix home">
+      <span class="brand-mark" aria-hidden="true">SF/</span>
+      <span>SafeFix</span>
+    </a>
+    <p class="system-label">GOVERNED REPAIR HARNESS</p>
+    <nav aria-label="Primary navigation">
+      <a href="/">New run</a>
+      <a href="/settings">Settings</a>
+    </nav>
+  </header>
+  <main id="main" class="shell">
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <span>LOCAL-FIRST</span>
+    <span>POLICY-GATED</span>
+    <span>NO TELEMETRY</span>
+  </footer>
+</body>
+</html>

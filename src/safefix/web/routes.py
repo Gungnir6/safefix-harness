@@ -4,9 +4,12 @@ import hmac
 import time
 from collections import deque
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 
 from safefix.domain import RunStatus, TaskMode
@@ -53,8 +56,66 @@ def _error(exc: Exception) -> HTTPException:
 def create_router(dependencies: Any) -> APIRouter:
     router = APIRouter()
     service = dependencies.service
+    templates = Jinja2Templates(directory=Path(__file__).with_name("templates"))
     requests: deque[float] = deque()
     active_runs: set[str] = set()
+
+    @router.get("/", response_class=HTMLResponse)
+    def home(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={"public_demo": dependencies.public_demo},
+        )
+
+    @router.get("/runs/{run_id}", response_class=HTMLResponse)
+    def run_page(request: Request, run_id: str) -> Response:
+        try:
+            snapshot = service.get(run_id)
+            events = service.list_events(run_id)
+        except Exception as exc:
+            raise _error(exc) from None
+        access = None
+        if snapshot.status is RunStatus.AWAITING_APPROVAL:
+            try:
+                access = service.get_approval(run_id)
+            except Exception:
+                access = None
+        response = templates.TemplateResponse(
+            request=request,
+            name="run.html",
+            context={
+                "run": snapshot,
+                "events": events,
+                "approval": access,
+                "terminal": snapshot.status in _TERMINAL,
+            },
+        )
+        if access is not None:
+            response.headers.append(
+                "set-cookie",
+                "safefix_approval="
+                f"{access.capability}; HttpOnly; "
+                f"Path=/api/runs/{run_id}/approval; SameSite=Strict",
+            )
+        return response
+
+    @router.get("/settings", response_class=HTMLResponse)
+    def settings(request: Request, project_id: str = "default") -> Response:
+        try:
+            credential = service.credential_status("openai-compatible")
+        except Exception:
+            credential = None
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context={
+                "project_id": project_id,
+                "credential": credential,
+                "memory": service.list_memory(project_id),
+                "public_demo": dependencies.public_demo,
+            },
+        )
 
     @router.post("/api/runs", status_code=202)
     async def create_run(request: CreateRunRequest) -> Any:

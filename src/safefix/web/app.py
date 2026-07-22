@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from safefix.web.routes import create_router
 
@@ -20,6 +22,8 @@ class AppDependencies:
 
 def create_app(dependencies: AppDependencies) -> FastAPI:
     app = FastAPI(title="SafeFix", version="0.1.0")
+    static_dir = Path(__file__).with_name("static")
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
