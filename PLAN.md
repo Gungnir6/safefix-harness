@@ -746,7 +746,7 @@ Record the T07 hash and required evidence after both reviews.
 - Consumes: file action models, `WorkspaceBoundary`, `ToolResult`.
 - Produces: async `Tool.execute(action) -> ToolResult`; `ToolRegistry.dispatch(action) -> ToolResult`; exact list/read/search/patch tools.
 
-- [ ] **Step 1: Write failing stale-patch test**
+- [x] **Step 1: Write failing stale-patch test**
 
 ```python
 from hashlib import sha256
@@ -768,13 +768,13 @@ async def test_patch_rejects_stale_expected_hash(file_tools, workspace) -> None:
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python -m pytest tests/unit/test_filesystem_tools.py tests/unit/test_tool_registry.py -v`
 
 Expected: FAIL because filesystem tools do not exist.
 
-- [ ] **Step 3: Implement bounded file operations**
+- [x] **Step 3: Implement bounded file operations**
 
 Every operation resolves through `WorkspaceBoundary`. List skips `.git` and configured ignored directories, read uses line/byte caps, search limits files/matches/output, and patch requires exact current SHA-256 and exact replacement count. Write through a same-directory temporary file followed by atomic replace.
 
@@ -785,7 +785,7 @@ if text.count(action.old_text) != action.expected_replacements:
     return ToolResult.failure(action.id, "PATCH_MISMATCH", "replacement count differs")
 ```
 
-- [ ] **Step 4: Implement registry and edge tests**
+- [x] **Step 4: Implement registry and edge tests**
 
 Dispatch by action class, reject missing tools, and never accept raw strings. Test binary files, oversized reads, Unicode, ignored `.git`, sensitive paths, output truncation, patch mismatch and atomic-write failure.
 
@@ -793,11 +793,13 @@ Run: `python -m pytest tests/unit/test_filesystem_tools.py tests/unit/test_tool_
 
 Expected: PASS.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Commit: `feat(tools): 添加受限工作区文件工具`
 
 Record the T08 hash and required evidence after both reviews.
+
+Implementation range: `789cf99..3003aa2`; design `d2e8f3c`; detailed plan `e3f9892`; formatting gate `d3a5365`. Final task and whole-branch reviews approved with 0 Critical / 0 Important; process evidence is recorded separately in `AGENT_LOG.md`.
 
 ---
 
@@ -1512,7 +1514,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T05 | Completed | `44c625e`, `1a0d503`, `2204d34`, `3a640c8`, `224d696`, `0da385a`, `6a6ff31`; plan `7b12b89`, `63ac64a`; merge `ff7c17f` | [!5](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/5) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 0 Minor); authorization identity, nested shell/interpreter, normalized system paths, Git side effects, sensitive file transfer and disclosure findings fixed; merged and reverified on `main` |
 | T06 | Completed | `65f54d0`, `c1e04c4`, `9067a95`, `12ce19b`; plan `1d0a0c3`, `0ddcc8f`; merge `8699d37` | [!6](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/6) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 2 Minor); metadata/payload disclosure, forged-chain reads, dynamic SQLite types, concurrent/reentrant writes, post-insert trigger tampering and interrupted savepoint cleanup findings fixed; merged and reverified on `main`; read-only reentry scope and long-chain O(N²) Minors deferred |
 | T07 | Completed | `a953456`, `06995fd`, `4be5161`, `bb86c20`, `da73da4`, `503abb2`, `f5e45d8`, `95173fc`, `a92e61b`; plan `bbe6298`, `948c02e`; process `dc30b16`, `ae96a21`; merge `d19aa5a` | [!7](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/7) | Final spec, security and whole-branch reviews APPROVED (0 Critical / 0 Important / 1 Minor); persistent frozen-action approval, single-use token digest, expiry/cancel/reject terminal states, transactional audit coupling, concurrency and traceback-local non-disclosure verified; merged and reverified on `main`; different-stripe SQLite contention coverage Minor deferred |
-| T08 | Pending | — | — | — |
+| T08 | Completed (awaiting MR) | `789cf99`–`3003aa2`; design `d2e8f3c`; plan `e3f9892`; format `d3a5365` | — | Four task reviews and final whole-branch review APPROVED; final review 0 Critical / 0 Important / 2 Minor; 748 passed, 2 platform skips; Ruff check/format, mypy, pip check and diff check passed |
 | T09 | Pending | — | — | — |
 | T10 | Pending | — | — | — |
 | T11 | Pending | — | — | — |
