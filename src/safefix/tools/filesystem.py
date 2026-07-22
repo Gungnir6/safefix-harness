@@ -1,0 +1,1312 @@
+from __future__ import annotations
+
+import asyncio
+import hmac
+import os
+import stat
+import tempfile
+import threading
+import time
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO
+
+import pathspec
+
+from safefix.domain import (
+    AccessKind,
+    Action,
+    ApplyPatchAction,
+    ListFilesAction,
+    ReadFileAction,
+    SearchTextAction,
+    ToolResult,
+)
+from safefix.governance.paths import (
+    PathOutsideWorkspace,
+    SensitivePathDenied,
+    SymlinkEscapeDenied,
+    WorkspaceBoundary,
+)
+
+
+_PATH_ERRORS = (PathOutsideWorkspace, SensitivePathDenied, SymlinkEscapeDenied)
+_CASE_INSENSITIVE_PATHS = os.path.normcase("A") == os.path.normcase("a")
+_PATCH_LOCKS = tuple(threading.Lock() for _ in range(64))
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemLimits:
+    max_read_bytes: int = 65_536
+    max_search_files: int = 1_000
+    max_search_output_bytes: int = 65_536
+
+    def __post_init__(self) -> None:
+        if (
+            min(
+                self.max_read_bytes,
+                self.max_search_files,
+                self.max_search_output_bytes,
+            )
+            <= 0
+        ):
+            raise ValueError("filesystem limits must be positive")
+        if self.max_search_output_bytes < 11:
+            raise ValueError("search output limit must fit the truncation marker")
+
+
+def _normalize_ignored_directories(directories: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = {".git"}
+    directory = ""
+    components: list[str] = []
+    component = ""
+    unsafe_component = False
+    path: PurePosixPath | None = None
+    try:
+        for directory in directories:
+            components = directory.split("/")
+            path = PurePosixPath(directory)
+            unsafe_component = False
+            for component in components:
+                if component in {"", ".", ".."}:
+                    unsafe_component = True
+                    break
+            if (
+                not directory
+                or "\\" in directory
+                or path.is_absolute()
+                or unsafe_component
+                or ":" in components[0]
+            ):
+                raise ValueError(
+                    "ignored directories must be safe relative POSIX paths"
+                )
+            normalized.add(path.as_posix())
+        return tuple(sorted(normalized))
+    finally:
+        del (
+            directories,
+            normalized,
+            directory,
+            components,
+            component,
+            unsafe_component,
+            path,
+        )
+
+
+def _relative_posix(root: Path, target: Path) -> str:
+    try:
+        return target.relative_to(root).as_posix()
+    finally:
+        del root, target
+
+
+def _lexical_path(workspace: Path, requested_path: str) -> Path:
+    candidate: Path | None = None
+    try:
+        candidate = Path(requested_path)
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        return candidate
+    finally:
+        del workspace, requested_path, candidate
+
+
+def _contains_parent_reference(requested_path: str) -> bool:
+    normalized = ""
+    components: list[str] = []
+    component = ""
+    try:
+        normalized = requested_path.replace("\\", "/")
+        components = normalized.split("/")
+        for component in components:
+            if component == "..":
+                return True
+        return False
+    finally:
+        del requested_path, normalized, components, component
+
+
+def _compile_gitwildmatch(pattern: str) -> pathspec.PathSpec | None:
+    try:
+        try:
+            return pathspec.PathSpec.from_lines("gitwildmatch", (pattern,))
+        except Exception:
+            return None
+    finally:
+        del pattern
+
+
+def _path_denied(action_id: str) -> ToolResult:
+    try:
+        return ToolResult.failure(action_id, "PATH_DENIED", "path access is denied")
+    finally:
+        del action_id
+
+
+def _io_failure(action_id: str) -> ToolResult:
+    try:
+        return ToolResult.failure(action_id, "IO_ERROR", "filesystem operation failed")
+    finally:
+        del action_id
+
+
+def _patch_lock(target: Path) -> threading.Lock:
+    normalized = ""
+    digest = b""
+    index = 0
+    try:
+        normalized = os.path.normcase(os.path.abspath(target))
+        digest = sha256(os.fsencode(normalized)).digest()
+        index = int.from_bytes(digest[:8], "big") % len(_PATCH_LOCKS)
+        return _PATCH_LOCKS[index]
+    finally:
+        del target, normalized, digest, index
+
+
+def _require_temporary_name(temporary_name: str) -> None:
+    try:
+        if not temporary_name or not os.path.isabs(temporary_name):
+            raise OSError("temporary file name is invalid")
+    finally:
+        del temporary_name
+
+
+def _patch_success(action_id: str, relative_path: str, started_ns: int) -> ToolResult:
+    duration_ms = 0
+    try:
+        duration_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        return ToolResult(
+            action_id=action_id,
+            success=True,
+            changed_files=(relative_path,),
+            duration_ms=duration_ms,
+        )
+    finally:
+        del action_id, relative_path, started_ns, duration_ms
+
+
+def _success(action_id: str, output: str, started_ns: int) -> ToolResult:
+    duration_ms = 0
+    try:
+        duration_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        return ToolResult(
+            action_id=action_id,
+            success=True,
+            stdout_summary=output,
+            duration_ms=duration_ms,
+        )
+    finally:
+        del action_id, output, started_ns, duration_ms
+
+
+def _is_ignored_directory(relative: str, ignored: tuple[str, ...]) -> bool:
+    match_relative = ""
+    match_ignored: tuple[str, ...] = ()
+    casefolded_ignored: list[str] = []
+    entry = ""
+    parts: tuple[str, ...] = ()
+    item = ""
+    try:
+        match_relative = relative.casefold() if _CASE_INSENSITIVE_PATHS else relative
+        if _CASE_INSENSITIVE_PATHS:
+            for entry in ignored:
+                casefolded_ignored.append(entry.casefold())
+            match_ignored = tuple(casefolded_ignored)
+        else:
+            match_ignored = ignored
+        parts = PurePosixPath(match_relative).parts
+        if ".git" in parts:
+            return True
+        for item in match_ignored:
+            if match_relative == item or match_relative.startswith(f"{item}/"):
+                return True
+        return False
+    finally:
+        del (
+            relative,
+            ignored,
+            match_relative,
+            match_ignored,
+            casefolded_ignored,
+            entry,
+            parts,
+            item,
+        )
+
+
+def _raise_walk_error(error: OSError) -> None:
+    try:
+        raise error
+    finally:
+        del error
+
+
+def _is_directory_link(path: Path) -> bool:
+    junction_check = None
+    try:
+        junction_check = getattr(path, "is_junction", None)
+        return path.is_symlink() or (
+            junction_check is not None and bool(junction_check())
+        )
+    finally:
+        del path, junction_check
+
+
+def _is_regular_file_no_follow(path: Path) -> bool:
+    mode = 0
+    stat_failed = False
+    try:
+        try:
+            mode = path.stat(follow_symlinks=False).st_mode
+        except OSError:
+            stat_failed = True
+        return not stat_failed and stat.S_ISREG(mode)
+    finally:
+        del path, mode, stat_failed
+
+
+def _contains_directory_link(
+    configured_workspace: Path,
+    workspace: Path,
+    target: Path,
+    *,
+    include_target: bool = True,
+) -> bool:
+    base: Path | None = None
+    relative: Path | None = None
+    current: Path | None = None
+    components: tuple[str, ...] = ()
+    component = ""
+    try:
+        if target.is_relative_to(configured_workspace):
+            base = configured_workspace
+        else:
+            base = workspace
+        relative = target.relative_to(base)
+        current = base
+        components = relative.parts
+        if not include_target:
+            components = components[:-1]
+        for component in components:
+            current /= component
+            if _is_directory_link(current):
+                return True
+        return False
+    finally:
+        del (
+            configured_workspace,
+            workspace,
+            target,
+            include_target,
+            base,
+            relative,
+            current,
+            components,
+            component,
+        )
+
+
+class ListFilesTool:
+    def __init__(
+        self,
+        boundary: WorkspaceBoundary,
+        *,
+        ignored_directories: tuple[str, ...] = (),
+    ) -> None:
+        try:
+            self._boundary = boundary
+            self._ignored_directories = _normalize_ignored_directories(
+                ignored_directories
+            )
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.LIST)
+        finally:
+            del self, boundary, ignored_directories
+
+    @property
+    def action_type(self) -> type[object]:
+        return ListFilesAction
+
+    async def execute(self, action: Action) -> ToolResult:
+        action_id = ""
+        typed_action: ListFilesAction | None = None
+        try:
+            if not isinstance(action, ListFilesAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
+            return await asyncio.to_thread(self._execute_sync, typed_action)
+        finally:
+            del self, action, action_id, typed_action
+
+    def _execute_sync(self, action: ListFilesAction) -> ToolResult:
+        action_id = ""
+        limit = 0
+        started_ns = 0
+        requested_path = ""
+        pattern = ""
+        matcher: pathspec.PathSpec | None = None
+        lexical_root: Path | None = None
+        root: Path | None = None
+        verified_root: Path | None = None
+        current = ""
+        directories: list[str] = []
+        filenames: list[str] = []
+        current_path: Path | None = None
+        retained_directories: list[str] = []
+        directory = ""
+        filename = ""
+        candidate: Path | None = None
+        relative = ""
+        matches: list[str] = []
+        selected: list[str] = []
+        output = ""
+        truncated = False
+        failure_type = ""
+        try:
+            action_id = action.id
+            requested_path = action.path
+            pattern = action.pattern
+            limit = action.limit
+            started_ns = time.monotonic_ns()
+
+            if _contains_parent_reference(requested_path):
+                return _path_denied(action_id)
+            matcher = _compile_gitwildmatch(pattern)
+            if matcher is None:
+                return ToolResult.failure(
+                    action_id, "INVALID_GLOB", "file pattern is invalid"
+                )
+
+            try:
+                root = self._boundary.resolve(requested_path, AccessKind.LIST)
+                lexical_root = _lexical_path(self._configured_workspace, requested_path)
+                if _contains_directory_link(
+                    self._configured_workspace, self._workspace, lexical_root
+                ):
+                    return _path_denied(action_id)
+                if not root.exists():
+                    return ToolResult.failure(
+                        action_id, "NOT_FOUND", "requested path does not exist"
+                    )
+                if not root.is_dir():
+                    return ToolResult.failure(
+                        action_id,
+                        "NOT_DIRECTORY",
+                        "requested path is not a directory",
+                    )
+                verified_root = self._boundary.resolve(requested_path, AccessKind.LIST)
+                if verified_root != root:
+                    return _path_denied(action_id)
+                root = verified_root
+                relative = _relative_posix(self._workspace, root)
+                if _is_ignored_directory(relative, self._ignored_directories):
+                    return _path_denied(action_id)
+
+                for current, directories, filenames in os.walk(
+                    root,
+                    topdown=True,
+                    onerror=_raise_walk_error,
+                    followlinks=False,
+                ):
+                    current_path = Path(current)
+                    retained_directories = []
+                    for directory in sorted(directories):
+                        candidate = current_path / directory
+                        relative = _relative_posix(self._workspace, candidate)
+                        if _is_directory_link(candidate) or _is_ignored_directory(
+                            relative, self._ignored_directories
+                        ):
+                            continue
+                        try:
+                            self._boundary.resolve(str(candidate), AccessKind.LIST)
+                        except _PATH_ERRORS:
+                            continue
+                        retained_directories.append(directory)
+                    directories[:] = retained_directories
+
+                    for filename in sorted(filenames):
+                        candidate = current_path / filename
+                        if not _is_regular_file_no_follow(candidate):
+                            continue
+                        relative = _relative_posix(self._workspace, candidate)
+                        try:
+                            self._boundary.resolve(str(candidate), AccessKind.LIST)
+                        except _PATH_ERRORS:
+                            continue
+                        if not _is_regular_file_no_follow(candidate):
+                            continue
+                        if matcher.match_file(relative):
+                            matches.append(relative)
+
+                matches.sort()
+                truncated = len(matches) > limit
+                selected = matches[:limit]
+                output = "\n".join(selected)
+                if truncated:
+                    output = f"{output}\n[truncated]" if output else "[truncated]"
+                return _success(action_id, output, started_ns)
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            return _io_failure(action_id)
+        finally:
+            del (
+                self,
+                action,
+                action_id,
+                limit,
+                started_ns,
+                requested_path,
+                pattern,
+                matcher,
+                lexical_root,
+                root,
+                verified_root,
+                current,
+                directories,
+                filenames,
+                current_path,
+                retained_directories,
+                directory,
+                filename,
+                candidate,
+                relative,
+                matches,
+                selected,
+                output,
+                truncated,
+                failure_type,
+            )
+
+
+class ReadFileTool:
+    def __init__(
+        self,
+        boundary: WorkspaceBoundary,
+        *,
+        limits: FilesystemLimits | None = None,
+    ) -> None:
+        try:
+            self._boundary = boundary
+            self._limits = limits or FilesystemLimits()
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.READ)
+        finally:
+            del self, boundary, limits
+
+    @property
+    def action_type(self) -> type[object]:
+        return ReadFileAction
+
+    async def execute(self, action: Action) -> ToolResult:
+        action_id = ""
+        typed_action: ReadFileAction | None = None
+        try:
+            if not isinstance(action, ReadFileAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
+            return await asyncio.to_thread(self._execute_sync, typed_action)
+        finally:
+            del self, action, action_id, typed_action
+
+    def _execute_sync(self, action: ReadFileAction) -> ToolResult:
+        action_id = ""
+        start_line = 0
+        end_line = 0
+        started_ns = 0
+        requested_path = ""
+        lexical_target: Path | None = None
+        target: Path | None = None
+        target_is_file = False
+        verified_target: Path | None = None
+        stream: object | None = None
+        raw = b""
+        text = ""
+        lines: list[str] = []
+        output = ""
+        decode_failed = False
+        failure_type = ""
+        try:
+            try:
+                action_id = action.id
+                requested_path = action.path
+                start_line = action.start_line
+                end_line = action.end_line
+                started_ns = time.monotonic_ns()
+
+                if _contains_parent_reference(requested_path):
+                    return _path_denied(action_id)
+                target = self._boundary.resolve(requested_path, AccessKind.READ)
+                lexical_target = _lexical_path(
+                    self._configured_workspace, requested_path
+                )
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_target,
+                    include_target=False,
+                ):
+                    return _path_denied(action_id)
+                if not target.exists():
+                    return ToolResult.failure(
+                        action_id, "NOT_FOUND", "requested path does not exist"
+                    )
+                target_is_file = target.is_file()
+                if not target_is_file:
+                    if target.is_dir() and _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=True,
+                    ):
+                        return _path_denied(action_id)
+                    return ToolResult.failure(
+                        action_id, "NOT_FILE", "requested path is not a file"
+                    )
+                verified_target = self._boundary.resolve(
+                    requested_path, AccessKind.READ
+                )
+                if verified_target != target:
+                    return _path_denied(action_id)
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_target,
+                    include_target=False,
+                ):
+                    return _path_denied(action_id)
+                target = verified_target
+
+                try:
+                    with target.open("rb") as stream:
+                        raw = stream.read()
+                    text = raw.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    decode_failed = True
+                if decode_failed:
+                    return ToolResult.failure(
+                        action_id,
+                        "BINARY_FILE",
+                        "file is not valid UTF-8 text",
+                    )
+
+                lines = text.splitlines(keepends=True)
+                output = "".join(lines[start_line - 1 : end_line])
+                if len(output.encode("utf-8")) > self._limits.max_read_bytes:
+                    return ToolResult.failure(
+                        action_id,
+                        "FILE_TOO_LARGE",
+                        "selected file content exceeds the read limit",
+                    )
+                return _success(action_id, output, started_ns)
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            return _io_failure(action_id)
+        finally:
+            del (
+                self,
+                action,
+                action_id,
+                start_line,
+                end_line,
+                started_ns,
+                requested_path,
+                lexical_target,
+                target,
+                target_is_file,
+                verified_target,
+                stream,
+                raw,
+                text,
+                lines,
+                output,
+                decode_failed,
+                failure_type,
+            )
+
+
+class ApplyPatchTool:
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        try:
+            self._boundary = boundary
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.WRITE)
+        finally:
+            del self, boundary
+
+    @property
+    def action_type(self) -> type[object]:
+        return ApplyPatchAction
+
+    async def execute(self, action: Action) -> ToolResult:
+        action_id = ""
+        typed_action: ApplyPatchAction | None = None
+        try:
+            if not isinstance(action, ApplyPatchAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
+            return await asyncio.to_thread(self._execute_sync, typed_action)
+        finally:
+            del self, action, action_id, typed_action
+
+    def _execute_sync(self, action: ApplyPatchAction) -> ToolResult:
+        action_id = ""
+        requested_path = ""
+        target: Path | None = None
+        lock: threading.Lock | None = None
+        result: ToolResult | None = None
+        failure_type = ""
+        try:
+            action_id = action.id
+            requested_path = action.path
+            if _contains_parent_reference(requested_path):
+                return _path_denied(action_id)
+
+            try:
+                target = self._boundary.resolve(requested_path, AccessKind.WRITE)
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            if failure_type == "io" or target is None:
+                return _io_failure(action_id)
+
+            lock = _patch_lock(target)
+            with lock:
+                result = self._execute_locked(action, target)
+            return result
+        finally:
+            del (
+                self,
+                action,
+                action_id,
+                requested_path,
+                target,
+                lock,
+                result,
+                failure_type,
+            )
+
+    def _execute_locked(
+        self, action: ApplyPatchAction, lock_target: Path
+    ) -> ToolResult:
+        traceback_marker = "patch-operation"
+        action_id = ""
+        requested_path = ""
+        expected_hash = ""
+        old_text = ""
+        new_text = ""
+        expected_replacements = 0
+        started_ns = 0
+        lexical_target: Path | None = None
+        target: Path | None = None
+        verified_target: Path | None = None
+        current_bytes = b""
+        current_hash = ""
+        text = ""
+        replacement = b""
+        original_mode = 0
+        file_descriptor = -1
+        temporary_name = ""
+        stream: BinaryIO | None = None
+        latest_target: Path | None = None
+        latest_bytes = b""
+        latest_hash = ""
+        relative_path = ""
+        failure_type = ""
+        cleanup_failed = False
+        result: ToolResult | None = None
+        try:
+            try:
+                action_id = action.id
+                requested_path = action.path
+                expected_hash = action.expected_sha256
+                old_text = action.old_text
+                new_text = action.new_text
+                expected_replacements = action.expected_replacements
+                started_ns = time.monotonic_ns()
+
+                target = self._boundary.resolve(requested_path, AccessKind.WRITE)
+                if target != lock_target:
+                    failure_type = "path"
+                if not failure_type:
+                    lexical_target = _lexical_path(
+                        self._configured_workspace, requested_path
+                    )
+                    if _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=False,
+                    ):
+                        failure_type = "path"
+                if not failure_type and not target.exists():
+                    failure_type = "missing"
+                if not failure_type and not target.is_file():
+                    assert lexical_target is not None
+                    if target.is_dir() and _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=True,
+                    ):
+                        failure_type = "path"
+                    else:
+                        failure_type = "not_file"
+                if not failure_type:
+                    assert lexical_target is not None
+                    verified_target = self._boundary.resolve(
+                        requested_path, AccessKind.WRITE
+                    )
+                    if verified_target != target or _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=False,
+                    ):
+                        failure_type = "path"
+                    else:
+                        target = verified_target
+
+                if not failure_type:
+                    current_bytes = target.read_bytes()
+                    current_hash = sha256(current_bytes).hexdigest()
+                    if not hmac.compare_digest(current_hash, expected_hash):
+                        failure_type = "stale"
+                if not failure_type:
+                    try:
+                        text = current_bytes.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError:
+                        failure_type = "binary"
+                if not failure_type and text.count(old_text) != expected_replacements:
+                    failure_type = "mismatch"
+                if not failure_type:
+                    replacement = text.replace(
+                        old_text, new_text, expected_replacements
+                    ).encode("utf-8")
+                    original_mode = stat.S_IMODE(target.stat().st_mode)
+                    file_descriptor, temporary_name = tempfile.mkstemp(
+                        prefix=".safefix-",
+                        suffix=".tmp",
+                        dir=target.parent,
+                    )
+                    _require_temporary_name(temporary_name)
+                    stream = os.fdopen(file_descriptor, "wb")
+                    file_descriptor = -1
+                    try:
+                        stream.write(replacement)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    except (KeyboardInterrupt, SystemExit):
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+                        stream = None
+                        raise
+                    except Exception:
+                        try:
+                            stream.close()
+                        finally:
+                            stream = None
+                        raise
+                    else:
+                        try:
+                            stream.close()
+                        finally:
+                            stream = None
+                    os.chmod(temporary_name, original_mode)
+
+                    latest_target = self._boundary.resolve(
+                        requested_path, AccessKind.WRITE
+                    )
+                    assert lexical_target is not None
+                    if latest_target != target or _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=False,
+                    ):
+                        failure_type = "path"
+                if not failure_type:
+                    latest_bytes = target.read_bytes()
+                    latest_hash = sha256(latest_bytes).hexdigest()
+                    if not hmac.compare_digest(latest_hash, current_hash):
+                        failure_type = "stale"
+                if not failure_type:
+                    assert temporary_name
+                    relative_path = _relative_posix(self._workspace, target)
+                    result = _patch_success(action_id, relative_path, started_ns)
+                    os.replace(temporary_name, target)
+                    temporary_name = ""
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            finally:
+                if file_descriptor >= 0:
+                    try:
+                        os.close(file_descriptor)
+                    except OSError:
+                        cleanup_failed = True
+                if temporary_name:
+                    try:
+                        os.unlink(temporary_name)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        cleanup_failed = True
+
+            if cleanup_failed:
+                failure_type = "io"
+            if failure_type == "path":
+                result = _path_denied(action_id)
+            elif failure_type == "missing":
+                result = ToolResult.failure(
+                    action_id, "NOT_FOUND", "requested path does not exist"
+                )
+            elif failure_type == "not_file":
+                result = ToolResult.failure(
+                    action_id, "NOT_FILE", "requested path is not a file"
+                )
+            elif failure_type == "binary":
+                result = ToolResult.failure(
+                    action_id, "BINARY_FILE", "file is not valid UTF-8 text"
+                )
+            elif failure_type == "stale":
+                result = ToolResult.failure(
+                    action_id, "STALE_FILE", "file changed since it was read"
+                )
+            elif failure_type == "mismatch":
+                result = ToolResult.failure(
+                    action_id, "PATCH_MISMATCH", "replacement count differs"
+                )
+            elif failure_type == "io":
+                result = _io_failure(action_id)
+            else:
+                assert result is not None
+            return result
+        finally:
+            assert traceback_marker == "patch-operation"
+            del (
+                self,
+                action,
+                lock_target,
+                action_id,
+                requested_path,
+                expected_hash,
+                old_text,
+                new_text,
+                expected_replacements,
+                started_ns,
+                lexical_target,
+                target,
+                verified_target,
+                current_bytes,
+                current_hash,
+                text,
+                replacement,
+                original_mode,
+                file_descriptor,
+                temporary_name,
+                stream,
+                latest_target,
+                latest_bytes,
+                latest_hash,
+                relative_path,
+                failure_type,
+                cleanup_failed,
+                result,
+            )
+
+
+class SearchTextTool:
+    def __init__(
+        self,
+        boundary: WorkspaceBoundary,
+        *,
+        limits: FilesystemLimits | None = None,
+        ignored_directories: tuple[str, ...] = (),
+    ) -> None:
+        try:
+            self._boundary = boundary
+            self._limits = limits or FilesystemLimits()
+            self._ignored_directories = _normalize_ignored_directories(
+                ignored_directories
+            )
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.SEARCH)
+        finally:
+            del self, boundary, limits, ignored_directories
+
+    @property
+    def action_type(self) -> type[object]:
+        return SearchTextAction
+
+    async def execute(self, action: Action) -> ToolResult:
+        action_id = ""
+        typed_action: SearchTextAction | None = None
+        try:
+            if not isinstance(action, SearchTextAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
+            return await asyncio.to_thread(self._execute_sync, typed_action)
+        finally:
+            del self, action, action_id, typed_action
+
+    def _execute_sync(self, action: SearchTextAction) -> ToolResult:
+        action_id = ""
+        started_ns = 0
+        requested_path = ""
+        pattern = ""
+        file_glob = ""
+        max_results = 0
+        matcher: pathspec.PathSpec | None = None
+        lexical_root: Path | None = None
+        root: Path | None = None
+        root_is_file = False
+        verified_root: Path | None = None
+        direct_file = False
+        root_relative = ""
+        current = ""
+        directories: list[str] = []
+        filenames: list[str] = []
+        current_path: Path | None = None
+        retained_directories: list[str] = []
+        directory = ""
+        filename = ""
+        candidate: Path | None = None
+        relative = ""
+        candidates: list[str] = []
+        scanned = 0
+        candidate_denied = False
+        lexical_target: Path | None = None
+        target: Path | None = None
+        verified_target: Path | None = None
+        stream: object | None = None
+        raw = b""
+        text = ""
+        lines: list[str] = []
+        line_number = 0
+        line = ""
+        record = ""
+        proposed = ""
+        results: list[str] = []
+        output = ""
+        decode_failed = False
+        truncated = False
+        failure_type = ""
+        try:
+            try:
+                action_id = action.id
+                started_ns = time.monotonic_ns()
+                requested_path = action.path
+                pattern = action.pattern
+                file_glob = action.file_glob
+                max_results = action.max_results
+
+                if _contains_parent_reference(requested_path):
+                    return _path_denied(action_id)
+                matcher = _compile_gitwildmatch(file_glob)
+                if matcher is None:
+                    return ToolResult.failure(
+                        action_id, "INVALID_GLOB", "file pattern is invalid"
+                    )
+
+                root = self._boundary.resolve(requested_path, AccessKind.SEARCH)
+                lexical_root = _lexical_path(self._configured_workspace, requested_path)
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_root,
+                    include_target=False,
+                ):
+                    return _path_denied(action_id)
+                if not root.exists():
+                    return ToolResult.failure(
+                        action_id, "NOT_FOUND", "requested path does not exist"
+                    )
+                root_is_file = root.is_file()
+                if not root_is_file and not root.is_dir():
+                    return ToolResult.failure(
+                        action_id,
+                        "NOT_FILE",
+                        "requested path is not a file or directory",
+                    )
+                if not root_is_file and _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_root,
+                    include_target=True,
+                ):
+                    return _path_denied(action_id)
+                verified_root = self._boundary.resolve(
+                    requested_path, AccessKind.SEARCH
+                )
+                if verified_root != root:
+                    return _path_denied(action_id)
+                direct_file = verified_root.is_file()
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_root,
+                    include_target=not direct_file,
+                ):
+                    return _path_denied(action_id)
+                root = verified_root
+                root_relative = _relative_posix(self._workspace, root)
+                if _is_ignored_directory(root_relative, self._ignored_directories):
+                    return _path_denied(action_id)
+
+                if direct_file:
+                    if matcher.match_file(root_relative):
+                        candidates.append(root_relative)
+                else:
+                    for current, directories, filenames in os.walk(
+                        root,
+                        topdown=True,
+                        onerror=_raise_walk_error,
+                        followlinks=False,
+                    ):
+                        current_path = Path(current)
+                        retained_directories = []
+                        for directory in sorted(directories):
+                            candidate = current_path / directory
+                            relative = _relative_posix(self._workspace, candidate)
+                            if _is_directory_link(candidate) or _is_ignored_directory(
+                                relative, self._ignored_directories
+                            ):
+                                continue
+                            try:
+                                self._boundary.resolve(relative, AccessKind.SEARCH)
+                            except _PATH_ERRORS:
+                                continue
+                            retained_directories.append(directory)
+                        directories[:] = retained_directories
+
+                        for filename in sorted(filenames):
+                            candidate = current_path / filename
+                            relative = _relative_posix(self._workspace, candidate)
+                            if matcher.match_file(relative):
+                                candidates.append(relative)
+
+                candidates.sort()
+                for relative in candidates:
+                    candidate_denied = False
+                    try:
+                        target = self._boundary.resolve(relative, AccessKind.READ)
+                    except _PATH_ERRORS:
+                        candidate_denied = True
+                    if candidate_denied:
+                        if direct_file:
+                            failure_type = "path"
+                            break
+                        continue
+                    assert target is not None
+
+                    lexical_target = _lexical_path(self._configured_workspace, relative)
+                    if _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=not direct_file,
+                    ):
+                        if direct_file:
+                            failure_type = "path"
+                            break
+                        continue
+                    if not target.exists():
+                        if direct_file:
+                            return ToolResult.failure(
+                                action_id,
+                                "NOT_FOUND",
+                                "requested path does not exist",
+                            )
+                        continue
+                    if not target.is_file():
+                        if direct_file:
+                            return ToolResult.failure(
+                                action_id,
+                                "NOT_FILE",
+                                "requested path is not a file",
+                            )
+                        continue
+
+                    candidate_denied = False
+                    try:
+                        verified_target = self._boundary.resolve(
+                            relative, AccessKind.READ
+                        )
+                    except _PATH_ERRORS:
+                        candidate_denied = True
+                    if candidate_denied or verified_target != target:
+                        if direct_file:
+                            failure_type = "path"
+                            break
+                        continue
+                    assert verified_target is not None
+                    if _contains_directory_link(
+                        self._configured_workspace,
+                        self._workspace,
+                        lexical_target,
+                        include_target=not direct_file,
+                    ):
+                        if direct_file:
+                            failure_type = "path"
+                            break
+                        continue
+                    target = verified_target
+
+                    if scanned >= self._limits.max_search_files:
+                        truncated = True
+                        break
+                    scanned += 1
+
+                    decode_failed = False
+                    try:
+                        with target.open("rb") as stream:
+                            raw = stream.read()
+                        text = raw.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError:
+                        decode_failed = True
+                    if decode_failed:
+                        if direct_file:
+                            return ToolResult.failure(
+                                action_id,
+                                "BINARY_FILE",
+                                "file is not valid UTF-8 text",
+                            )
+                        raw = b""
+                        text = ""
+                        continue
+
+                    lines = text.splitlines()
+                    for line_number, line in enumerate(lines, start=1):
+                        if pattern not in line:
+                            continue
+                        if len(results) >= max_results:
+                            truncated = True
+                            break
+                        record = f"{relative}:{line_number}:{line}"
+                        proposed = "\n".join((*results, record))
+                        if (
+                            len(proposed.encode("utf-8"))
+                            > self._limits.max_search_output_bytes
+                        ):
+                            truncated = True
+                            break
+                        results.append(record)
+                    raw = b""
+                    text = ""
+                    lines = []
+                    line = ""
+                    record = ""
+                    proposed = ""
+                    if truncated:
+                        break
+
+                if failure_type == "path":
+                    return _path_denied(action_id)
+
+                if truncated:
+                    while results:
+                        output = f"{'\n'.join(results)}\n[truncated]"
+                        if (
+                            len(output.encode("utf-8"))
+                            <= self._limits.max_search_output_bytes
+                        ):
+                            break
+                        results.pop()
+                    output = (
+                        f"{'\n'.join(results)}\n[truncated]"
+                        if results
+                        else "[truncated]"
+                    )
+                else:
+                    output = "\n".join(results)
+                return _success(action_id, output, started_ns)
+            except _PATH_ERRORS:
+                failure_type = "path"
+            except Exception:
+                failure_type = "io"
+            if failure_type == "path":
+                return _path_denied(action_id)
+            return _io_failure(action_id)
+        finally:
+            del (
+                self,
+                action,
+                action_id,
+                started_ns,
+                requested_path,
+                pattern,
+                file_glob,
+                max_results,
+                matcher,
+                lexical_root,
+                root,
+                root_is_file,
+                verified_root,
+                direct_file,
+                root_relative,
+                current,
+                directories,
+                filenames,
+                current_path,
+                retained_directories,
+                directory,
+                filename,
+                candidate,
+                relative,
+                candidates,
+                scanned,
+                candidate_denied,
+                lexical_target,
+                target,
+                verified_target,
+                stream,
+                raw,
+                text,
+                lines,
+                line_number,
+                line,
+                record,
+                proposed,
+                results,
+                output,
+                decode_failed,
+                truncated,
+                failure_type,
+            )
