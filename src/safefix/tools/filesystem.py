@@ -207,7 +207,11 @@ def _is_directory_link(path: Path) -> bool:
 
 
 def _contains_directory_link(
-    configured_workspace: Path, workspace: Path, target: Path
+    configured_workspace: Path,
+    workspace: Path,
+    target: Path,
+    *,
+    include_target: bool = True,
 ) -> bool:
     base: Path | None = None
     relative: Path | None = None
@@ -222,6 +226,8 @@ def _contains_directory_link(
         relative = target.relative_to(base)
         current = base
         components = relative.parts
+        if not include_target:
+            components = components[:-1]
         for component in components:
             current /= component
             if _is_directory_link(current):
@@ -232,6 +238,7 @@ def _contains_directory_link(
             configured_workspace,
             workspace,
             target,
+            include_target,
             base,
             relative,
             current,
@@ -460,6 +467,7 @@ class ReadFileTool:
         requested_path = ""
         lexical_target: Path | None = None
         target: Path | None = None
+        target_is_file = False
         verified_target: Path | None = None
         stream: object | None = None
         raw = b""
@@ -482,17 +490,19 @@ class ReadFileTool:
                 lexical_target = _lexical_path(
                     self._configured_workspace, requested_path
                 )
-                if _contains_directory_link(
-                    self._configured_workspace,
-                    self._workspace,
-                    lexical_target,
-                ):
-                    return _path_denied(action_id)
                 if not target.exists():
                     return ToolResult.failure(
                         action_id, "NOT_FOUND", "requested path does not exist"
                     )
-                if not target.is_file():
+                target_is_file = target.is_file()
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_target,
+                    include_target=not target_is_file,
+                ):
+                    return _path_denied(action_id)
+                if not target_is_file:
                     return ToolResult.failure(
                         action_id, "NOT_FILE", "requested path is not a file"
                     )
@@ -505,6 +515,7 @@ class ReadFileTool:
                     self._configured_workspace,
                     self._workspace,
                     lexical_target,
+                    include_target=False,
                 ):
                     return _path_denied(action_id)
                 target = verified_target
@@ -549,6 +560,7 @@ class ReadFileTool:
                 requested_path,
                 lexical_target,
                 target,
+                target_is_file,
                 verified_target,
                 stream,
                 raw,
@@ -609,6 +621,7 @@ class SearchTextTool:
         matcher: pathspec.PathSpec | None = None
         lexical_root: Path | None = None
         root: Path | None = None
+        root_is_file = False
         verified_root: Path | None = None
         direct_file = False
         root_relative = ""
@@ -659,31 +672,35 @@ class SearchTextTool:
 
                 root = self._boundary.resolve(requested_path, AccessKind.SEARCH)
                 lexical_root = _lexical_path(self._configured_workspace, requested_path)
-                if _contains_directory_link(
-                    self._configured_workspace,
-                    self._workspace,
-                    lexical_root,
-                ):
-                    return _path_denied(action_id)
                 if not root.exists():
                     return ToolResult.failure(
                         action_id, "NOT_FOUND", "requested path does not exist"
                     )
-                if not root.is_file() and not root.is_dir():
+                root_is_file = root.is_file()
+                if not root_is_file and not root.is_dir():
                     return ToolResult.failure(
                         action_id,
                         "NOT_FILE",
                         "requested path is not a file or directory",
                     )
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_root,
+                    include_target=not root_is_file,
+                ):
+                    return _path_denied(action_id)
                 verified_root = self._boundary.resolve(
                     requested_path, AccessKind.SEARCH
                 )
                 if verified_root != root:
                     return _path_denied(action_id)
+                direct_file = verified_root.is_file()
                 if _contains_directory_link(
                     self._configured_workspace,
                     self._workspace,
                     lexical_root,
+                    include_target=not direct_file,
                 ):
                     return _path_denied(action_id)
                 root = verified_root
@@ -691,7 +708,6 @@ class SearchTextTool:
                 if _is_ignored_directory(root_relative, self._ignored_directories):
                     return _path_denied(action_id)
 
-                direct_file = root.is_file()
                 if direct_file:
                     if matcher.match_file(root_relative):
                         candidates.append(root_relative)
@@ -743,6 +759,7 @@ class SearchTextTool:
                         self._configured_workspace,
                         self._workspace,
                         lexical_target,
+                        include_target=not direct_file,
                     ):
                         if direct_file:
                             failure_type = "path"
@@ -782,6 +799,7 @@ class SearchTextTool:
                         self._configured_workspace,
                         self._workspace,
                         lexical_target,
+                        include_target=not direct_file,
                     ):
                         if direct_file:
                             failure_type = "path"
@@ -877,6 +895,7 @@ class SearchTextTool:
                 matcher,
                 lexical_root,
                 root,
+                root_is_file,
                 verified_root,
                 direct_file,
                 root_relative,

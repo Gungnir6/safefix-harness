@@ -2826,3 +2826,151 @@ async def test_search_text_treats_embedded_newline_pattern_literally(
     assert action.pattern == "hit\nnext"
     assert result.success is True
     assert result.stdout_summary == ""
+
+
+@pytest.mark.asyncio
+async def test_read_file_allows_safe_direct_file_symlink(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real.txt"
+    target.write_bytes(b"safe content\n")
+    link = workspace / "alias.txt"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-safe-file-link",
+            reason="inspect",
+            path="alias.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "safe content\n"
+
+
+@pytest.mark.asyncio
+async def test_search_text_allows_safe_direct_file_symlink_with_canonical_path(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real.txt"
+    target.write_text("hit\n", encoding="utf-8")
+    link = workspace / "alias.txt"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-safe-file-link",
+            reason="find",
+            path="alias.txt",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "real.txt:1:hit"
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_sensitive_direct_file_symlink(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    sensitive = workspace / ".env"
+    sensitive.write_text("secret\n", encoding="utf-8")
+    link = workspace / "safe-name.txt"
+    try:
+        link.symlink_to(sensitive)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-sensitive-file-link",
+            reason="inspect",
+            path="safe-name.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-sensitive-file-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_rejects_escaping_and_sensitive_file_symlinks(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    outside = workspace.parent / f"{workspace.name}-outside-search-link.txt"
+    outside.write_text("hit outside\n", encoding="utf-8")
+    sensitive = workspace / ".env"
+    sensitive.write_text("hit secret\n", encoding="utf-8")
+    escaping_link = workspace / "escaping.txt"
+    sensitive_link = workspace / "sensitive.txt"
+    try:
+        escaping_link.symlink_to(outside)
+        sensitive_link.symlink_to(sensitive)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    tool = SearchTextTool(boundary)
+    escaping_result = await tool.execute(
+        SearchTextAction(
+            id="search-escaping-file-link",
+            reason="find",
+            path="escaping.txt",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+    sensitive_result = await tool.execute(
+        SearchTextAction(
+            id="search-sensitive-file-link",
+            reason="find",
+            path="sensitive.txt",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert escaping_result == ToolResult.failure(
+        "search-escaping-file-link", "PATH_DENIED", "path access is denied"
+    )
+    assert sensitive_result == ToolResult.failure(
+        "search-sensitive-file-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_text_directory_enumeration_skips_file_symlinks(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real.txt"
+    target.write_text("hit\n", encoding="utf-8")
+    link = workspace / "alias.txt"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    result = await SearchTextTool(boundary).execute(
+        SearchTextAction(
+            id="search-enumerated-file-link",
+            reason="find",
+            pattern="hit",
+            max_results=50,
+        )
+    )
+
+    assert result.success is True
+    assert result.stdout_summary == "real.txt:1:hit"
