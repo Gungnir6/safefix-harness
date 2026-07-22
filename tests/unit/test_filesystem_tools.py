@@ -49,6 +49,22 @@ def _assert_filesystem_frames_are_clean(
             assert fragment not in rendered
 
 
+def _assert_public_execute_interrupt_is_clean(
+    propagated: BaseException,
+    expected: BaseException,
+    sensitive_fragments: tuple[str, ...],
+) -> None:
+    assert propagated is expected
+    assert propagated.args == ("EXPECTED-INTERRUPT",)
+    assert propagated.__cause__ is None
+    assert propagated.__context__ is None
+    rendered = "".join(traceback_module.format_exception(propagated))
+    for fragment in sensitive_fragments:
+        assert fragment not in rendered
+    for frame_name, frame_locals in _filesystem_frame_locals(propagated):
+        assert frame_locals == {}, f"{frame_name} retained {frame_locals!r}"
+
+
 def test_filesystem_limits_are_positive() -> None:
     with pytest.raises(ValueError, match="^filesystem limits must be positive$"):
         FilesystemLimits(max_read_bytes=0)
@@ -588,6 +604,96 @@ async def test_list_files_rejects_simulated_junction_before_dotdot(
 
 
 @pytest.mark.asyncio
+async def test_list_files_rejects_symlink_after_missing_prefix_dotdot(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    nested = workspace / "real" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(workspace / "real", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-missing-link",
+            reason="inspect",
+            path="missing/../linked/nested",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-missing-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_junction_after_missing_prefix_dotdot(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested = workspace / "junction" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "secret.txt").write_text("secret", encoding="utf-8")
+    junction = workspace / "junction"
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ListFilesTool(boundary).execute(
+        ListFilesAction(
+            id="list-missing-junction",
+            reason="inspect",
+            path="missing/../junction/nested",
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-missing-junction", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_alias_descendant_link_after_missing_dotdot(
+    workspace: Path,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    nested = real_workspace / "target" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "secret.txt").write_text("secret", encoding="utf-8")
+    alias = workspace / "workspace-alias"
+    linked = real_workspace / "linked"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+        linked.symlink_to(real_workspace / "target", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    alias_boundary = WorkspaceBoundary(alias, ())
+
+    result = await ListFilesTool(alias_boundary).execute(
+        ListFilesAction(
+            id="list-alias-missing-link",
+            reason="inspect",
+            path=str(alias / "missing" / ".." / "linked" / "nested"),
+            limit=100,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "list-alias-missing-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
 async def test_list_files_supports_configured_workspace_alias_absolute_path(
     workspace: Path,
 ) -> None:
@@ -738,6 +844,81 @@ async def test_list_files_rechecks_root_after_directory_validation(
         "list-race", "PATH_DENIED", "path access is denied"
     )
     assert root_resolve_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_list_public_execute_clears_all_traceback_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "PRIVATE-LIST-ROOT-SENTINEL"
+    workspace.mkdir()
+    tool = ListFilesTool(WorkspaceBoundary(workspace, ()))
+    interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
+
+    async def interrupting_to_thread(function: Any, *args: Any) -> Any:
+        raise interrupt
+
+    monkeypatch.setattr(filesystem_module.asyncio, "to_thread", interrupting_to_thread)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        await tool.execute(
+            ListFilesAction(
+                id="PRIVATE-LIST-ID-SENTINEL",
+                reason="inspect",
+                path="PRIVATE-LIST-PATH-SENTINEL",
+                limit=100,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-LIST-ROOT-SENTINEL",
+            "PRIVATE-LIST-ID-SENTINEL",
+            "PRIVATE-LIST-PATH-SENTINEL",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_public_execute_cleans_wrong_action_error_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "PRIVATE-LIST-WRONG-ROOT-SENTINEL"
+    workspace.mkdir()
+    tool = ListFilesTool(WorkspaceBoundary(workspace, ()))
+    interrupt = SystemExit("EXPECTED-INTERRUPT")
+
+    class InterruptingToolResult:
+        @classmethod
+        def failure(
+            cls, action_id: str, error_type: str, message: str
+        ) -> Any:
+            raise interrupt
+
+    monkeypatch.setattr(filesystem_module, "ToolResult", InterruptingToolResult)
+    with pytest.raises(SystemExit) as error_info:
+        await tool.execute(
+            ReadFileAction(
+                id="PRIVATE-LIST-WRONG-ID-SENTINEL",
+                reason="inspect",
+                path="PRIVATE-LIST-WRONG-PATH-SENTINEL",
+                start_line=1,
+                end_line=1,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-LIST-WRONG-ROOT-SENTINEL",
+            "PRIVATE-LIST-WRONG-ID-SENTINEL",
+            "PRIVATE-LIST-WRONG-PATH-SENTINEL",
+        ),
+    )
 
 
 def test_list_files_clears_sensitive_traceback_locals(
@@ -1163,6 +1344,187 @@ async def test_read_file_rejects_escaping_file_symlink(
 
 
 @pytest.mark.asyncio
+async def test_read_file_rejects_inside_directory_symlink_ancestor(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    target = workspace / "real"
+    target.mkdir()
+    (target / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-inside-link",
+            reason="inspect",
+            path="linked/secret.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-inside-link", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_simulated_junction_ancestor(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction = workspace / "junction"
+    junction.mkdir()
+    (junction / "secret.txt").write_text("secret", encoding="utf-8")
+    real_is_junction = getattr(Path, "is_junction", None)
+
+    def simulated_is_junction(path: Path) -> bool:
+        if path == junction:
+            return True
+        return bool(real_is_junction is not None and real_is_junction(path))
+
+    monkeypatch.setattr(Path, "is_junction", simulated_is_junction, raising=False)
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-junction",
+            reason="inspect",
+            path="junction/secret.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-junction", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_directory_symlink_before_dotdot(
+    workspace: Path, boundary: WorkspaceBoundary
+) -> None:
+    nested = workspace / "real" / "nested"
+    nested.mkdir(parents=True)
+    (workspace / "real" / "secret.txt").write_text("secret", encoding="utf-8")
+    (workspace / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "linked"
+    try:
+        link.symlink_to(nested, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-link-dotdot",
+            reason="inspect",
+            path="linked/../secret.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-link-dotdot", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_trusts_alias_root_but_rejects_descendant_link(
+    workspace: Path,
+) -> None:
+    real_workspace = workspace / "real-workspace"
+    target = real_workspace / "target"
+    target.mkdir(parents=True)
+    (real_workspace / "ok.txt").write_text("ok", encoding="utf-8")
+    (target / "secret.txt").write_text("secret", encoding="utf-8")
+    alias = workspace / "workspace-alias"
+    linked = real_workspace / "linked"
+    try:
+        alias.symlink_to(real_workspace, target_is_directory=True)
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    tool = ReadFileTool(WorkspaceBoundary(alias, ()))
+
+    safe = await tool.execute(
+        ReadFileAction(
+            id="read-alias-safe",
+            reason="inspect",
+            path=str(alias / "ok.txt"),
+            start_line=1,
+            end_line=1,
+        )
+    )
+    linked_result = await tool.execute(
+        ReadFileAction(
+            id="read-alias-linked",
+            reason="inspect",
+            path=str(alias / "linked" / "secret.txt"),
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert safe.success is True and safe.stdout_summary == "ok"
+    assert linked_result == ToolResult.failure(
+        "read-alias-linked", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_file_rechecks_directory_links_before_open(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = workspace / "victim"
+    victim.mkdir()
+    (victim / "content.txt").write_text("safe", encoding="utf-8")
+    replacement = workspace / "replacement"
+    replacement.mkdir()
+    (replacement / "content.txt").write_text("secret", encoding="utf-8")
+    probe = workspace / "probe-read-directory"
+    try:
+        probe.symlink_to(replacement, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    probe.unlink()
+    real_resolve = boundary.resolve
+    resolve_calls = 0
+
+    def swapping_second_resolve(candidate: str, access: Any) -> Path:
+        nonlocal resolve_calls
+        outcome = real_resolve(candidate, access)
+        if candidate == "victim/content.txt":
+            resolve_calls += 1
+            if resolve_calls == 2:
+                (victim / "content.txt").unlink()
+                victim.rmdir()
+                victim.symlink_to(replacement, target_is_directory=True)
+        return outcome
+
+    monkeypatch.setattr(boundary, "resolve", swapping_second_resolve)
+    result = await ReadFileTool(boundary).execute(
+        ReadFileAction(
+            id="read-directory-race",
+            reason="inspect",
+            path="victim/content.txt",
+            start_line=1,
+            end_line=1,
+        )
+    )
+
+    assert result == ToolResult.failure(
+        "read-directory-race", "PATH_DENIED", "path access is denied"
+    )
+    assert resolve_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_read_file_rechecks_target_after_file_validation(
     workspace: Path,
     boundary: WorkspaceBoundary,
@@ -1200,6 +1562,81 @@ async def test_read_file_rechecks_target_after_file_validation(
 
     assert result == ToolResult.failure(
         "read-race", "PATH_DENIED", "path access is denied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_public_execute_clears_all_traceback_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "PRIVATE-READ-ROOT-SENTINEL"
+    workspace.mkdir()
+    tool = ReadFileTool(WorkspaceBoundary(workspace, ()))
+    interrupt = SystemExit("EXPECTED-INTERRUPT")
+
+    async def interrupting_to_thread(function: Any, *args: Any) -> Any:
+        raise interrupt
+
+    monkeypatch.setattr(filesystem_module.asyncio, "to_thread", interrupting_to_thread)
+    with pytest.raises(SystemExit) as error_info:
+        await tool.execute(
+            ReadFileAction(
+                id="PRIVATE-READ-ID-SENTINEL",
+                reason="inspect",
+                path="PRIVATE-READ-PATH-SENTINEL",
+                start_line=1,
+                end_line=1,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-READ-ROOT-SENTINEL",
+            "PRIVATE-READ-ID-SENTINEL",
+            "PRIVATE-READ-PATH-SENTINEL",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_public_execute_cleans_wrong_action_error_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "PRIVATE-READ-WRONG-ROOT-SENTINEL"
+    workspace.mkdir()
+    tool = ReadFileTool(WorkspaceBoundary(workspace, ()))
+    interrupt = KeyboardInterrupt("EXPECTED-INTERRUPT")
+
+    class InterruptingToolResult:
+        @classmethod
+        def failure(
+            cls, action_id: str, error_type: str, message: str
+        ) -> Any:
+            raise interrupt
+
+    monkeypatch.setattr(filesystem_module, "ToolResult", InterruptingToolResult)
+    with pytest.raises(KeyboardInterrupt) as error_info:
+        await tool.execute(
+            ListFilesAction(
+                id="PRIVATE-READ-WRONG-ID-SENTINEL",
+                reason="inspect",
+                path="PRIVATE-READ-WRONG-PATH-SENTINEL",
+                limit=100,
+            )
+        )
+
+    _assert_public_execute_interrupt_is_clean(
+        error_info.value,
+        interrupt,
+        (
+            "PRIVATE-READ-WRONG-ROOT-SENTINEL",
+            "PRIVATE-READ-WRONG-ID-SENTINEL",
+            "PRIVATE-READ-WRONG-PATH-SENTINEL",
+        ),
     )
 
 

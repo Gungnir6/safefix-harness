@@ -195,6 +195,7 @@ def _contains_directory_link(
     current: Path | None = None
     components: tuple[str, ...] = ()
     component = ""
+    lexical_stack: list[str] = []
     try:
         if target.is_relative_to(configured_workspace):
             base = configured_workspace
@@ -204,11 +205,17 @@ def _contains_directory_link(
         current = base
         components = relative.parts
         for component in components:
-            current /= component
+            if component == "..":
+                if lexical_stack:
+                    lexical_stack.pop()
+                current = base.joinpath(*lexical_stack)
+                continue
+            if component == ".":
+                continue
+            lexical_stack.append(component)
+            current = base.joinpath(*lexical_stack)
             if _is_directory_link(current):
                 return True
-            if not current.exists():
-                break
         return False
     finally:
         del (
@@ -220,6 +227,7 @@ def _contains_directory_link(
             current,
             components,
             component,
+            lexical_stack,
         )
 
 
@@ -245,20 +253,20 @@ class ListFilesTool:
         return ListFilesAction
 
     async def execute(self, action: Action) -> ToolResult:
-        if not isinstance(action, ListFilesAction):
-            action_id = action.id
-            del action
-            return ToolResult.failure(
-                action_id,
-                "UNSUPPORTED_ACTION",
-                "tool does not support this action",
-            )
-        typed_action = action
-        del action
+        action_id = ""
+        typed_action: ListFilesAction | None = None
         try:
+            if not isinstance(action, ListFilesAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
             return await asyncio.to_thread(self._execute_sync, typed_action)
         finally:
-            del typed_action
+            del self, action, action_id, typed_action
 
     def _execute_sync(self, action: ListFilesAction) -> ToolResult:
         action_id = ""
@@ -420,6 +428,8 @@ class ReadFileTool:
         try:
             self._boundary = boundary
             self._limits = limits or FilesystemLimits()
+            self._configured_workspace = boundary._configured_root
+            self._workspace = boundary.resolve(".", AccessKind.READ)
         finally:
             del self, boundary, limits
 
@@ -428,20 +438,20 @@ class ReadFileTool:
         return ReadFileAction
 
     async def execute(self, action: Action) -> ToolResult:
-        if not isinstance(action, ReadFileAction):
-            action_id = action.id
-            del action
-            return ToolResult.failure(
-                action_id,
-                "UNSUPPORTED_ACTION",
-                "tool does not support this action",
-            )
-        typed_action = action
-        del action
+        action_id = ""
+        typed_action: ReadFileAction | None = None
         try:
+            if not isinstance(action, ReadFileAction):
+                action_id = action.id
+                return ToolResult.failure(
+                    action_id,
+                    "UNSUPPORTED_ACTION",
+                    "tool does not support this action",
+                )
+            typed_action = action
             return await asyncio.to_thread(self._execute_sync, typed_action)
         finally:
-            del typed_action
+            del self, action, action_id, typed_action
 
     def _execute_sync(self, action: ReadFileAction) -> ToolResult:
         action_id = ""
@@ -449,6 +459,7 @@ class ReadFileTool:
         end_line = 0
         started_ns = 0
         requested_path = ""
+        lexical_target: Path | None = None
         target: Path | None = None
         verified_target: Path | None = None
         stream: object | None = None
@@ -469,6 +480,15 @@ class ReadFileTool:
                 target = self._boundary.resolve(
                     requested_path, AccessKind.READ
                 )
+                lexical_target = _lexical_path(
+                    self._configured_workspace, requested_path
+                )
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_target,
+                ):
+                    return _path_denied(action_id)
                 if not target.exists():
                     return ToolResult.failure(
                         action_id, "NOT_FOUND", "requested path does not exist"
@@ -481,6 +501,12 @@ class ReadFileTool:
                     requested_path, AccessKind.READ
                 )
                 if verified_target != target:
+                    return _path_denied(action_id)
+                if _contains_directory_link(
+                    self._configured_workspace,
+                    self._workspace,
+                    lexical_target,
+                ):
                     return _path_denied(action_id)
                 target = verified_target
 
@@ -522,6 +548,7 @@ class ReadFileTool:
                 end_line,
                 started_ns,
                 requested_path,
+                lexical_target,
                 target,
                 verified_target,
                 stream,
