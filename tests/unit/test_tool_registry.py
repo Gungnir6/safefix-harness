@@ -55,7 +55,9 @@ async def test_registry_returns_failure_when_tool_is_missing() -> None:
 def test_registry_rejects_duplicate_action_type() -> None:
     registry = ToolRegistry((RecordingReadTool(),))
 
-    with pytest.raises(ValueError, match="^tool is already registered for action type$"):
+    with pytest.raises(
+        ValueError, match="^tool is already registered for action type$"
+    ):
         registry.register(RecordingReadTool())
 
 
@@ -83,7 +85,9 @@ async def test_registry_traceback_locals_do_not_retain_raw_input() -> None:
             if tb.tb_frame.f_code.co_filename.replace("\\", "/").endswith(
                 "safefix/tools/registry.py"
             ):
-                local_values.extend(repr(value) for value in tb.tb_frame.f_locals.values())
+                local_values.extend(
+                    repr(value) for value in tb.tb_frame.f_locals.values()
+                )
             tb = tb.tb_next
         assert frames
         assert all(sentinel not in value for value in local_values)
