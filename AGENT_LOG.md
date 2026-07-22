@@ -175,7 +175,7 @@
 
 ## T15 — Local and Public WebUI
 
-- 时间：2026-07-22 +08:00；分支 / MR：`t15-web-ui` / [GitLab !15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15)，待合并。
+- 时间：2026-07-22 +08:00；分支 / MR：`t15-web-ui` / [GitLab !15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15)；合并提交 `583c15b`。
 - 实现：`a6b9384 feat(web): 添加透明可审计的 Web 界面`。采用工业化开发者控制台视觉方向，实现本地/公开任务页、类型化审计时间线、审批/取消控制、设置与记忆页，以及响应式与键盘可访问样式。
 - 验证：9 个页面/API 聚焦测试通过；全量 805 passed、2 skipped，Ruff、DOM 注入扫描和静态资源 200 探针通过。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
 - 技能 / 经验：使用 `frontend-design`、工作树、TDD、验证与分支收尾流程。服务端模板依赖自动转义，动态模型/工具文本只通过 `textContent` 插入。
@@ -186,3 +186,12 @@
 - 触发：学生指出多次任务完成后没有同步过程文档。
 - 根因：快速交付流程把完成条件错误地收窄为实现、测试、提交、推送和 MR，没有把 `PLAN.md` 勾选/状态账本及 `AGENT_LOG.md` 证据作为提交前门禁；因此同一遗漏从 T09 连续重复到 T15，T08 的 MR/合并状态也未回填。
 - 修复：依据 Git 历史、MR 编号和新鲜分支测试补齐 T08–T15；未发生的独立评审明确记录为 quick-delivery caveat，不伪造证据。自 T16 起，提交前固定检查任务步骤、状态账本、实现哈希、MR/合并状态和 Agent Log。
+
+## T16 — Embedded Fixture and Deterministic Mechanism Demos
+
+- 时间：2026-07-22 +08:00；分支 / MR：`t16-mechanism-demos` / [GitLab !17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17)，待合并。
+- 实现：`0e5afc5 feat(demo): 添加确定性 Harness 机制演示`。新增内置错误 Python fixture，并提供 `python -m safefix.demo guardrail|feedback|approval|all`。
+- 机制证据：guardrail 通过真实 `PolicyEngine` 永久拒绝提权破坏动作且工具调用为零；feedback 通过 `ScriptedMockLLM`、`ApplyPatchTool`、`ProcessTool`、`ValidatorRunner` 和 `FeedbackEngine` 产生失败→错误补丁→失败→正确补丁→通过；approval 通过 SQLite 持久化重开 `ApprovalStateMachine`，证明变更动作和 token replay 均被拒，仅冻结动作执行一次。
+- 隔离：每个场景复制 `examples/python_bug` 到独立临时目录，结束后删除；嵌入 fixture 字节保持不变；无网络和真实凭据。
+- 验证：6 个 T16 聚焦测试通过；`all` 连续三次均精确输出三个 PASS；全量 811 passed、2 skipped；Ruff 和 `git diff --check` 通过。快速交付模式下未执行独立子代理评审；没有学生手工代码修改。
+- 技能 / 经验：使用 `using-superpowers`、`brainstorming`、`using-git-worktrees`、`test-driven-development`、`verification-before-completion` 和 `finishing-a-development-branch`。文档更新已作为本任务固定收尾门禁执行。
