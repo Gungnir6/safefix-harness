@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+import tempfile
+import threading
 from hashlib import sha256
 from pathlib import Path
 import traceback as traceback_module
@@ -13,6 +15,7 @@ from pydantic import ValidationError
 
 import safefix.tools.filesystem as filesystem_module
 from safefix.domain import (
+    AccessKind,
     ApplyPatchAction,
     ListFilesAction,
     ReadFileAction,
@@ -3298,6 +3301,431 @@ async def test_patch_prepares_result_before_replace_commit(
     )
     assert target.read_bytes() == original
     assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception_type", (OSError, KeyboardInterrupt, SystemExit))
+async def test_patch_owns_raw_temp_name_immediately_after_mkstemp(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    target = workspace / "PRIVATE-REGISTER-PATH.py"
+    original = b"PRIVATE-REGISTER-OLD\n"
+    target.write_bytes(original)
+    injected = exception_type()
+    real_mkstemp = tempfile.mkstemp
+    descriptors: list[int] = []
+    names: list[str] = []
+
+    def tracking_mkstemp(*, prefix: str, suffix: str, dir: Path) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+        descriptors.append(descriptor)
+        names.append(name)
+        return descriptor, name
+
+    def fail_registration(name: str) -> None:
+        raise injected
+
+    monkeypatch.setattr(tempfile, "mkstemp", tracking_mkstemp)
+    monkeypatch.setattr(
+        filesystem_module,
+        "_require_temporary_name",
+        fail_registration,
+        raising=False,
+    )
+    action = ApplyPatchAction(
+        id="PRIVATE-REGISTER-ID",
+        reason="fix",
+        path="PRIVATE-REGISTER-PATH.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="PRIVATE-REGISTER-OLD",
+        new_text="PRIVATE-REGISTER-NEW",
+        expected_replacements=1,
+    )
+
+    if exception_type is OSError:
+        result = await ApplyPatchTool(boundary).execute(action)
+        assert result == ToolResult.failure(
+            "PRIVATE-REGISTER-ID", "IO_ERROR", "filesystem operation failed"
+        )
+    else:
+        with pytest.raises(exception_type) as captured:
+            await ApplyPatchTool(boundary).execute(action)
+        assert captured.value is injected
+        assert captured.value.__cause__ is None
+        assert captured.value.__context__ is None
+        rendered = "".join(traceback_module.format_exception(captured.value))
+        for sentinel in (
+            "PRIVATE-REGISTER-ID",
+            "PRIVATE-REGISTER-PATH",
+            "PRIVATE-REGISTER-OLD",
+            "PRIVATE-REGISTER-NEW",
+        ):
+            assert sentinel not in rendered
+        for _, frame_locals in _filesystem_frame_locals(captured.value):
+            local_rendering = repr(frame_locals)
+            for sentinel in (
+                "PRIVATE-REGISTER-ID",
+                "PRIVATE-REGISTER-PATH",
+                "PRIVATE-REGISTER-OLD",
+                "PRIVATE-REGISTER-NEW",
+            ):
+                assert sentinel not in local_rendering
+
+    assert len(descriptors) == 1
+    assert len(names) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert not Path(names[0]).exists()
+    assert target.read_bytes() == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_file_alias", (False, True))
+async def test_patch_canonical_lock_serializes_overlapping_workers(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+    use_file_alias: bool,
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+    second_path = "app.py"
+    if use_file_alias:
+        alias = workspace / "alias.py"
+        try:
+            alias.symlink_to(target)
+        except OSError:
+            pytest.skip("file symlinks are unavailable")
+        second_path = "alias.py"
+
+    rendezvous = threading.Barrier(2)
+    observation_guard = threading.Lock()
+    both_attempting = threading.Event()
+    release_critical = threading.Event()
+    attempts = 0
+    active = 0
+    max_active = 0
+    real_patch_lock = filesystem_module._patch_lock
+
+    class ObservedLock:
+        def __init__(self, wrapped: Any) -> None:
+            self._wrapped = wrapped
+
+        def __enter__(self) -> ObservedLock:
+            nonlocal attempts, active, max_active
+            with observation_guard:
+                attempts += 1
+                if attempts == 2:
+                    both_attempting.set()
+            self._wrapped.acquire()
+            with observation_guard:
+                active += 1
+                max_active = max(max_active, active)
+            assert release_critical.wait(2)
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            nonlocal active
+            with observation_guard:
+                active -= 1
+            self._wrapped.release()
+
+    def synchronized_patch_lock(canonical_target: Path) -> ObservedLock:
+        rendezvous.wait(timeout=2)
+        return ObservedLock(real_patch_lock(canonical_target))
+
+    monkeypatch.setattr(filesystem_module, "_patch_lock", synchronized_patch_lock)
+
+    def action(action_id: str, path: str, replacement: str) -> ApplyPatchAction:
+        return ApplyPatchAction(
+            id=action_id,
+            reason="fix",
+            path=path,
+            expected_sha256=sha256(original).hexdigest(),
+            old_text="value = 1",
+            new_text=replacement,
+            expected_replacements=1,
+        )
+
+    pending = asyncio.gather(
+        ApplyPatchTool(boundary).execute(action("patch-first", "app.py", "value = 2")),
+        ApplyPatchTool(boundary).execute(
+            action("patch-second", second_path, "value = 3")
+        ),
+    )
+    assert await asyncio.to_thread(both_attempting.wait, 2)
+    release_critical.set()
+    first, second = await asyncio.wait_for(pending, timeout=3)
+
+    assert max_active == 1
+    assert active == 0
+    assert sorted(result.error_type or "SUCCESS" for result in (first, second)) == [
+        "STALE_FILE",
+        "SUCCESS",
+    ]
+    assert target.read_bytes() in {b"value = 2\n", b"value = 3\n"}
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+async def test_patch_releases_canonical_lock_after_process_control(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    target = workspace / "app.py"
+    original = b"value = 1\n"
+    target.write_bytes(original)
+    injected = exception_type()
+    real_read_bytes = Path.read_bytes
+    should_interrupt = True
+
+    def interrupt_first_locked_read(path: Path) -> bytes:
+        nonlocal should_interrupt
+        if path == target and should_interrupt:
+            should_interrupt = False
+            raise injected
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", interrupt_first_locked_read)
+    action = ApplyPatchAction(
+        id="patch-lock-release",
+        reason="fix",
+        path="app.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+        expected_replacements=1,
+    )
+
+    with pytest.raises(exception_type) as captured:
+        await asyncio.wait_for(ApplyPatchTool(boundary).execute(action), timeout=2)
+    assert captured.value is injected
+
+    result = await asyncio.wait_for(ApplyPatchTool(boundary).execute(action), timeout=2)
+
+    assert result.success is True
+    assert target.read_bytes() == b"value = 2\n"
+    assert not list(workspace.glob(".safefix-*.tmp"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception_type", (OSError, KeyboardInterrupt, SystemExit))
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "fdopen",
+        "write",
+        "flush",
+        "fsync",
+        "close",
+        "chmod",
+        "second_resolve",
+        "ancestor_recheck",
+        "second_read",
+        "second_hash",
+        "replace",
+        "cleanup_fd_close",
+        "cleanup_stream_close",
+        "cleanup_unlink",
+    ),
+)
+async def test_patch_failure_injection_matrix_cleans_every_resource(
+    workspace: Path,
+    boundary: WorkspaceBoundary,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    exception_type: type[BaseException],
+) -> None:
+    target = workspace / "PRIVATE-MATRIX-PATH.py"
+    original = b"PRIVATE-MATRIX-OLD\n"
+    target.write_bytes(original)
+    tool = ApplyPatchTool(boundary)
+    injected = exception_type()
+    real_mkstemp = tempfile.mkstemp
+    real_fdopen = os.fdopen
+    real_close = os.close
+    real_fsync = os.fsync
+    real_chmod = os.chmod
+    real_unlink = os.unlink
+    real_read_bytes = Path.read_bytes
+    real_resolve = boundary.resolve
+    real_link_check = filesystem_module._contains_directory_link
+    real_sha256 = filesystem_module.sha256
+    descriptors: list[int] = []
+    temporary_names: list[str] = []
+    resolve_calls = 0
+    link_checks = 0
+    reads = 0
+    hashes = 0
+
+    def tracking_mkstemp(*, prefix: str, suffix: str, dir: Path) -> tuple[int, str]:
+        descriptor, name = real_mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+        descriptors.append(descriptor)
+        temporary_names.append(name)
+        return descriptor, name
+
+    class FaultingStream:
+        def __init__(self, descriptor: int) -> None:
+            self._stream = real_fdopen(descriptor, "wb")
+
+        def write(self, data: bytes) -> int:
+            if stage in {"write", "cleanup_stream_close"}:
+                raise injected
+            return self._stream.write(data)
+
+        def flush(self) -> None:
+            if stage == "flush":
+                raise injected
+            self._stream.flush()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+        def close(self) -> None:
+            self._stream.close()
+            if stage == "close":
+                raise injected
+            if stage == "cleanup_stream_close":
+                raise OSError()
+
+    def faulting_fdopen(descriptor: int, mode: str) -> FaultingStream:
+        assert mode == "wb"
+        if stage in {"fdopen", "cleanup_fd_close"}:
+            raise injected
+        return FaultingStream(descriptor)
+
+    def faulting_close(descriptor: int) -> None:
+        real_close(descriptor)
+        if stage == "cleanup_fd_close" and descriptor in descriptors:
+            raise OSError()
+
+    def faulting_fsync(descriptor: int) -> None:
+        if stage == "fsync":
+            raise injected
+        real_fsync(descriptor)
+
+    def faulting_chmod(path: str | bytes | os.PathLike[str], mode: int) -> None:
+        if stage == "chmod" and os.fspath(path) in temporary_names:
+            raise injected
+        real_chmod(path, mode)
+
+    def faulting_resolve(candidate: str, access: Any) -> Path:
+        nonlocal resolve_calls
+        if candidate == "PRIVATE-MATRIX-PATH.py":
+            resolve_calls += 1
+            if stage == "second_resolve" and resolve_calls == 4:
+                raise injected
+        return real_resolve(candidate, access)
+
+    def faulting_link_check(*args: Any, **kwargs: Any) -> bool:
+        nonlocal link_checks
+        link_checks += 1
+        if stage == "ancestor_recheck" and link_checks == 3:
+            raise injected
+        return real_link_check(*args, **kwargs)
+
+    def faulting_read_bytes(path: Path) -> bytes:
+        nonlocal reads
+        if path == target:
+            reads += 1
+            if stage == "second_read" and reads == 2:
+                raise injected
+        return real_read_bytes(path)
+
+    def faulting_sha256(data: bytes = b"") -> Any:
+        nonlocal hashes
+        if data == original:
+            hashes += 1
+            if stage == "second_hash" and hashes == 2:
+                raise injected
+        return real_sha256(data)
+
+    def faulting_replace(source: object, destination: object) -> None:
+        raise injected
+
+    def faulting_unlink(path: str | bytes | os.PathLike[str]) -> None:
+        real_unlink(path)
+        if stage == "cleanup_unlink" and os.fspath(path) in temporary_names:
+            raise OSError()
+
+    monkeypatch.setattr(tempfile, "mkstemp", tracking_mkstemp)
+    monkeypatch.setattr(os, "fdopen", faulting_fdopen)
+    monkeypatch.setattr(os, "close", faulting_close)
+    monkeypatch.setattr(os, "fsync", faulting_fsync)
+    monkeypatch.setattr(os, "chmod", faulting_chmod)
+    monkeypatch.setattr(boundary, "resolve", faulting_resolve)
+    monkeypatch.setattr(
+        filesystem_module, "_contains_directory_link", faulting_link_check
+    )
+    monkeypatch.setattr(Path, "read_bytes", faulting_read_bytes)
+    monkeypatch.setattr(filesystem_module, "sha256", faulting_sha256)
+    if stage in {"replace", "cleanup_unlink"}:
+        monkeypatch.setattr(os, "replace", faulting_replace)
+    if stage == "cleanup_unlink":
+        monkeypatch.setattr(os, "unlink", faulting_unlink)
+
+    action = ApplyPatchAction(
+        id="PRIVATE-MATRIX-ID",
+        reason="fix",
+        path="PRIVATE-MATRIX-PATH.py",
+        expected_sha256=sha256(original).hexdigest(),
+        old_text="PRIVATE-MATRIX-OLD",
+        new_text="PRIVATE-MATRIX-NEW",
+        expected_replacements=1,
+    )
+
+    if exception_type is OSError:
+        result = await tool.execute(action)
+        assert result == ToolResult.failure(
+            "PRIVATE-MATRIX-ID", "IO_ERROR", "filesystem operation failed"
+        )
+        for sentinel in (
+            "PRIVATE-MATRIX-PATH",
+            "PRIVATE-MATRIX-OLD",
+            "PRIVATE-MATRIX-NEW",
+        ):
+            assert sentinel not in result.stderr_summary
+    else:
+        with pytest.raises(exception_type) as captured:
+            await tool.execute(action)
+        assert captured.value is injected
+        assert captured.value.__cause__ is None
+        assert captured.value.__context__ is None
+        rendered = "".join(traceback_module.format_exception(captured.value))
+        for sentinel in (
+            "PRIVATE-MATRIX-ID",
+            "PRIVATE-MATRIX-PATH",
+            "PRIVATE-MATRIX-OLD",
+            "PRIVATE-MATRIX-NEW",
+        ):
+            assert sentinel not in rendered
+        for _, frame_locals in _filesystem_frame_locals(captured.value):
+            local_rendering = repr(frame_locals)
+            for sentinel in (
+                "PRIVATE-MATRIX-ID",
+                "PRIVATE-MATRIX-PATH",
+                "PRIVATE-MATRIX-OLD",
+                "PRIVATE-MATRIX-NEW",
+            ):
+                assert sentinel not in local_rendering
+
+    assert len(descriptors) == 1
+    assert len(temporary_names) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert not Path(temporary_names[0]).exists()
+    assert real_read_bytes(target) == original
+    canonical_target = real_resolve("PRIVATE-MATRIX-PATH.py", AccessKind.WRITE)
+    canonical_lock = filesystem_module._patch_lock(canonical_target)
+    assert canonical_lock.acquire(blocking=False)
+    canonical_lock.release()
 
 
 @pytest.mark.asyncio

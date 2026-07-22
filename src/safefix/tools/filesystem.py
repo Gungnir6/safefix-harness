@@ -166,6 +166,14 @@ def _patch_lock(target: Path) -> threading.Lock:
         del target, normalized, digest, index
 
 
+def _require_temporary_name(temporary_name: str) -> None:
+    try:
+        if not temporary_name or not os.path.isabs(temporary_name):
+            raise OSError("temporary file name is invalid")
+    finally:
+        del temporary_name
+
+
 def _patch_success(action_id: str, relative_path: str, started_ns: int) -> ToolResult:
     duration_ms = 0
     try:
@@ -710,7 +718,6 @@ class ApplyPatchTool:
         original_mode = 0
         file_descriptor = -1
         temporary_name = ""
-        temporary: Path | None = None
         stream: BinaryIO | None = None
         latest_target: Path | None = None
         latest_bytes = b""
@@ -793,7 +800,7 @@ class ApplyPatchTool:
                         suffix=".tmp",
                         dir=target.parent,
                     )
-                    temporary = Path(temporary_name)
+                    _require_temporary_name(temporary_name)
                     stream = os.fdopen(file_descriptor, "wb")
                     file_descriptor = -1
                     try:
@@ -818,7 +825,7 @@ class ApplyPatchTool:
                             stream.close()
                         finally:
                             stream = None
-                    os.chmod(temporary, original_mode)
+                    os.chmod(temporary_name, original_mode)
 
                     latest_target = self._boundary.resolve(
                         requested_path, AccessKind.WRITE
@@ -837,11 +844,11 @@ class ApplyPatchTool:
                     if not hmac.compare_digest(latest_hash, current_hash):
                         failure_type = "stale"
                 if not failure_type:
-                    assert temporary is not None
+                    assert temporary_name
                     relative_path = _relative_posix(self._workspace, target)
                     result = _patch_success(action_id, relative_path, started_ns)
-                    os.replace(temporary, target)
-                    temporary = None
+                    os.replace(temporary_name, target)
+                    temporary_name = ""
             except _PATH_ERRORS:
                 failure_type = "path"
             except Exception:
@@ -852,9 +859,9 @@ class ApplyPatchTool:
                         os.close(file_descriptor)
                     except OSError:
                         cleanup_failed = True
-                if temporary is not None:
+                if temporary_name:
                     try:
-                        os.unlink(temporary)
+                        os.unlink(temporary_name)
                     except FileNotFoundError:
                         pass
                     except OSError:
@@ -912,7 +919,6 @@ class ApplyPatchTool:
                 original_mode,
                 file_descriptor,
                 temporary_name,
-                temporary,
                 stream,
                 latest_target,
                 latest_bytes,
