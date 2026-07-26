@@ -157,6 +157,22 @@ def test_public_demo_runs_inside_the_api_event_loop() -> None:
     assert response.json()["status"] == "SUCCESS"
 
 
+def test_public_demo_exposes_chinese_explanations_and_machine_codes() -> None:
+    client = TestClient(
+        create_app(AppDependencies(service=PublicDemoService(), public_demo=True))
+    )
+
+    created = client.post("/api/runs", json={"task": "feedback"})
+    run_id = created.json()["run_id"]
+    events = client.get(f"/api/runs/{run_id}/events").json()
+
+    assert created.json()["description"] == "验证反馈演示"
+    assert events[0]["payload"] == {
+        "code": "VALIDATION:FAIL",
+        "summary": "初次验证失败，系统获得了客观错误反馈。",
+    }
+
+
 def test_approval_response_hides_capability_and_requires_csrf() -> None:
     service = FakeService()
     client = TestClient(create_app(AppDependencies(service=service)))

@@ -234,6 +234,28 @@ SCENARIOS: dict[str, Callable[[], DemoResult]] = {
     "approval": run_approval_demo,
 }
 
+_SCENARIO_TITLES = {
+    "guardrail": "安全边界演示",
+    "feedback": "验证反馈演示",
+    "approval": "一次性审批演示",
+}
+
+_EVENT_SUMMARIES = {
+    "POLICY:DENY": "危险命令被安全策略拒绝。",
+    "RULE:CMD_PRIVILEGE_ESCALATION": "命中了禁止提权的永久规则。",
+    "TOOL_CALLS:0": "危险动作没有进入工具执行层。",
+    "VALIDATION:FAIL": "初次验证失败，系统获得了客观错误反馈。",
+    "PATCH:WRONG": "第一次修复不正确，系统不会把修改当作成功。",
+    "PATCH:CORRECT": "系统根据验证反馈生成了正确补丁。",
+    "VALIDATION:PASS": "再次验证通过，修复完成。",
+    "APPROVAL:PENDING": "敏感写操作暂停，等待人工决定。",
+    "STORE:REOPENED": "审批状态持久化后可以安全恢复。",
+    "ACTION_MISMATCH:BLOCKED": "被篡改的动作与原批准对象不一致，已拦截。",
+    "APPROVAL:APPROVED": "冻结的原始动作获得一次性批准。",
+    "TOKEN_REPLAY:BLOCKED": "重复使用审批能力被拒绝。",
+    "TOOL_CALLS:1": "只有获得批准的原始动作执行了一次。",
+}
+
 
 class PublicDemoService:
     """Small in-memory adapter used by the packaged public demo."""
@@ -254,7 +276,7 @@ class PublicDemoService:
             task_id=run_id,
             project_id="public-demo",
             workspace_root=project_path,
-            description=f"{scenario} demo",
+            description=_SCENARIO_TITLES[scenario],
             status=RunStatus.SUCCESS if result.passed else RunStatus.FAILED,
             repair_round=0,
             step_count=len(result.events),
@@ -274,7 +296,10 @@ class PublicDemoService:
             SimpleNamespace(
                 sequence=index,
                 event_type="DEMO_EVENT",
-                redacted_payload={"message": message},
+                redacted_payload={
+                    "code": message,
+                    "summary": _EVENT_SUMMARIES.get(message, message),
+                },
                 created_at=now,
             )
             for index, message in enumerate(result.events, start=1)
