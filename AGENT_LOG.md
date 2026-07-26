@@ -226,3 +226,11 @@
 - TDD 证据：复用工作树中已存在且与最终审查 brief 一致的未提交回归测试，先在旧实现上得到 8 failed、23 passed；最小实现后聚焦测试为 31 passed。
 - 最终验证：仓库根 `.venv` 下聚焦测试 31 passed；全量 834 passed、2 skipped；Ruff 全通过；mypy 对 30 个源码文件无问题；`git diff --check` 通过。仅有既存的第三方 `StarletteDeprecationWarning`。
 - 约束：未使用系统 `python.exe`，未改变审批、策略、工具执行和审计安全语义；未合并、推送或删除工作树。
+
+## 演示结果清晰度 — Task 2
+
+- 时间：2026-07-26 +08:00；分支 / 工作树：`demo-result-clarity` / `.worktrees/demo-result-clarity`。
+- 用户反馈：“只能点按钮，看不见失败”。设计决策是在运行头部后直接放置机制结论和关键证据，并把失败、拦截、修正、等待审批、通过映射为带中文文字的审计状态；不增加交互步骤，技术 JSON 继续折叠。
+- 实现提交：`9d2390166458e7965978b0f3b7c47137684d0950`（`feat(web): 突出演示失败与机制结论`）。本地模式无静态假结论；服务端与客户端都只接受固定六态，未知状态回退“信息”；动态内容继续使用 `createElement`、`textContent` 和 `dataset`。
+- TDD / 验证：页面 RED 为 5 failed、18 passed，GREEN 为 23 passed；Web 完整回归 33 passed；Ruff 全通过；`innerHTML|insertAdjacentHTML|document.write` 扫描无匹配；`git diff --check` 无错误。仅有既有第三方 `StarletteDeprecationWarning`。
+- 技能 / 约束：使用 `test-driven-development`、`frontend-design` 与 `verification-before-completion`；始终调用仓库根 `.venv`，未使用系统 `python.exe`。浏览器桌面/窄屏视觉验收由主代理审查后完成；未合并、推送或删除工作树。
