@@ -17,13 +17,22 @@ python -m pip install -e ".[dev]"
 
 ## Usage
 
+SafeFix 同时提供 CLI 与 WebUI 两种使用方式。
+
+CLI 适合在终端中运行确定性机制演示：
+
 ```bash
 safefix demo
 safefix-demo all
-safefix serve --public-demo
 ```
 
-打开 `http://127.0.0.1:8000`。`safefix run` 面向集成方，需由调用代码注入实际任务服务。
+WebUI 适合通过浏览器查看状态、机器码、审计时间线和一次性审批流程。启动本地公开演示：
+
+```bash
+safefix serve --public-demo --host 127.0.0.1 --port 8000
+```
+
+启动后在本机访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。公开演示完全使用内置项目和确定性 mock，不需要真实模型凭据，也不访问用户项目。`safefix run` 面向集成方，需由调用代码注入实际任务服务。
 
 ## Credentials
 
@@ -39,7 +48,13 @@ safefix credentials clear --provider openai-compatible --yes
 
 ## Public Demo
 
-`safefix-public-demo` 或 `safefix serve --public-demo --host 0.0.0.0` 启动三个内置场景：危险命令拦截、验证反馈修复、一次性审批。每次运行复制隔离 fixture，不访问用户项目或真实模型。
+`safefix-public-demo` 或上述 `safefix serve --public-demo` 命令会启动三个内置场景：
+
+- **安全边界**：演示危险命令在执行前被确定性策略拦截，真实文件保持不变。
+- **验证反馈**：演示系统根据测试失败反馈调整补丁，直到验证通过。
+- **一次性审批**：演示高风险写入暂停等待人工决定，授权只绑定当前冻结动作且不能复用。
+
+每次运行都会复制隔离 fixture，不访问用户项目或真实模型。若确需让同一局域网内的其他设备访问，可显式使用 `--host 0.0.0.0`；默认的 `127.0.0.1` 仅供本机访问。本仓库不虚构或预置公网部署地址。
 
 ## Distribution
 

@@ -207,3 +207,12 @@
 - GitHub 验证：[Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) 在提交 `b259161` 上全部通过：Linux 801 passed、19 skipped；Ruff 通过；mypy 对 30 个源码文件无问题；Gitleaks 未发现秘密；非 root Docker 镜像构建成功。
 - 首次人工体验修复：从 WebUI 启动 `feedback` 场景稳定返回 409 `INVALID_STATE`。根因是异步 FastAPI 路由直接调用内部使用 `asyncio.run()` 的同步演示，形成嵌套事件循环；新增真实 `PublicDemoService` API 回归测试，并通过 `asyncio.to_thread()` 隔离同步演示。修复后真实 HTTP 请求返回 `SUCCESS`，完整测试 819 passed、2 skipped，Ruff 与 mypy 通过。
 - 模式：按学生要求采用快速交付，不执行独立子代理评审；文档已在提交与推送阶段同步更新。
+
+## WebUI 中文引导演示 — Task 3
+
+- 时间：2026-07-26 +08:00；分支：`webui-chinese-guided-demo`；隔离工作树：`.worktrees/webui-chinese-guided-demo`。
+- 实现：补充六种稳定错误码的中文解释并保留机器码；统一 JavaScript 与服务端状态/事件中文映射；轮询同步更新中文主状态、机器码和时间线；以事件序号去重，并用 `createElement`/`textContent` 构建与服务端同构的事件序号、中文标签、摘要和技术细节；补齐三种凭据来源中文名称及未知来源原值回退。
+- TDD 证据：先新增实际页面响应解析与可执行 JavaScript 映射测试。首轮页面 RED 为 4 failed、9 passed，精确暴露缺少 `data-sequence`、机器码 DOM 目标以及 `secret-file`/`env-file` 中文名称；JavaScript 映射 RED 因 `explainError` 尚不存在而失败。完成最小实现后页面回归为 14 passed。
+- 文档：README 分别说明 CLI 与 WebUI、三个公开演示场景、`127.0.0.1:8000` 本地启动访问方式，并明确未提供虚构公网地址；PLAN 同步勾选本任务交付项。
+- 验证：`python -m pytest tests/web/test_pages.py tests/web/test_api.py -q` 为 20 passed、1 条第三方 `StarletteDeprecationWarning`；`python -m ruff check src/safefix/web tests/web` 为 `All checks passed!`；`rg -n "innerHTML|insertAdjacentHTML|document\.write" src/safefix/web` 无匹配（预期退出码 1）；`git diff --check` 退出码 0。
+- 技能 / 约束：使用 `executing-plans`、`test-driven-development`、`verification-before-completion`；严格使用仓库根 `.venv`，未调用系统 `python.exe`，未合并、推送或删除工作树。

@@ -10,7 +10,7 @@
   <div class="status-block">
     <span>当前状态</span>
     <strong id="run-status" aria-live="polite" data-status="{{ run.status.value }}">{{ status_label }}</strong>
-    <small>机器码 · {{ run.status.value }}</small>
+    <small id="run-status-code">机器码 · {{ run.status.value }}</small>
   </div>
 </section>
 
@@ -38,7 +38,7 @@
   </div>
   <ol id="timeline" class="timeline">
     {% for event in events %}
-    <li class="event event-{{ event.event_type | lower }}" data-event-type="{{ event.event_type }}">
+    <li class="event event-{{ event.event_type | lower }}" data-sequence="{{ event.sequence }}" data-event-type="{{ event.event_type }}">
       <div class="event-index">{{ "%02d" | format(event.sequence) }}</div>
       <div class="event-body">
         <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type | replace("_", " ")) }}</strong><time>{{ event.created_at }}</time></div>

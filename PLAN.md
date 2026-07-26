@@ -1302,6 +1302,15 @@ Commit: `feat(web): 添加透明可审计的 Web 界面`
 
 Record the T15 hash and required evidence after both reviews.
 
+#### 2026-07-26 中文引导演示完善（Task 3）
+
+- [x] 为稳定 API 错误码补充中文解释，并在用户提示中保留机器码。
+- [x] 统一服务端与 JavaScript 状态中文映射，轮询同步更新中文主状态和机器码辅助标签。
+- [x] 为服务端事件补齐 `data-sequence`，动态时间线按序号去重并构建同构的中文事件、摘要和技术细节。
+- [x] 完整中文化 `keyring`、`secret-file`、`env-file` 凭据来源，未知来源保留原值。
+- [x] 增加真实页面响应与可执行 JavaScript 映射回归，更新 CLI/WebUI 及三个公开场景文档。
+- [x] 按 Task 3 brief 完成聚焦测试、Ruff 与 DOM 注入 API 扫描；实现提交哈希记录在对应 `task-3-report.md`。
+
 ---
 
 ### Task 16: Embedded Fixture and Three Deterministic Mechanism Demos
