@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -128,11 +129,15 @@ def test_process_risk_matrix(
 @pytest.mark.parametrize(
     ("program", "args", "expected", "rule"),
     [
-        (
+        pytest.param(
             "PyTest.EXE",
             ("-q",),
             DecisionOutcome.ALLOW,
             "CMD_CONFIGURED_VALIDATOR",
+            marks=pytest.mark.skipif(
+                os.name != "nt",
+                reason="Windows executable suffix matching is Windows-specific",
+            ),
         ),
         (
             r"C:\Windows\System32\SUDO.EXE",
@@ -175,7 +180,26 @@ def test_program_identity_is_normalized_without_substring_matching(
     assert decision.rule_ids == (rule,)
 
 
-@pytest.mark.parametrize("program", ("ruff", "RUFF.EXE", "RuFf.CmD"))
+@pytest.mark.parametrize(
+    "program",
+    (
+        "ruff",
+        pytest.param(
+            "RUFF.EXE",
+            marks=pytest.mark.skipif(
+                os.name != "nt",
+                reason="Windows executable suffix matching is Windows-specific",
+            ),
+        ),
+        pytest.param(
+            "RuFf.CmD",
+            marks=pytest.mark.skipif(
+                os.name != "nt",
+                reason="Windows executable suffix matching is Windows-specific",
+            ),
+        ),
+    ),
+)
 def test_authorization_bare_program_allows_only_bare_windows_variants(
     policy: PolicyEngine, program: str
 ) -> None:
@@ -1160,7 +1184,7 @@ def test_shell_metacharacters_do_not_hide_underlying_program_risk(
 def test_configured_non_validator_program_is_allowed(policy: PolicyEngine) -> None:
     decision = policy.decide(
         RunProcessAction(
-            id="configured", reason="test", program="RUFF.EXE", args=("check", ".")
+            id="configured", reason="test", program="ruff", args=("check", ".")
         )
     )
 
