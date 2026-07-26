@@ -275,7 +275,7 @@ _EVENT_PRESENTATION = {
     "TOOL_CALLS:1": ("passed", "执行一次"),
 }
 
-_SCENARIO_PRESENTATION = {
+_SCENARIO_PRESENTATION: dict[str, dict[str, object]] = {
     "guardrail": {
         "verdict": "机制验证通过",
         "conclusion": "危险命令在进入工具层前被确定性策略拒绝。",
