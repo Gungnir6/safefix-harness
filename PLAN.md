@@ -1375,7 +1375,7 @@ Record the T16 hash and required evidence after both reviews.
 
 ### Task 17: Distribution, CI, README and Public-Demo Release
 
-**Branch/PR:** `codex/t17-distribution-ci-docs`
+**Branch/PR:** `t17-distribution-ci-docs` / [GitLab !18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18)
 
 **Files:**
 - Modify: `.gitignore`
@@ -1391,7 +1391,7 @@ Record the T16 hash and required evidence after both reviews.
 - Consumes: complete package, CLI, WebUI and demos.
 - Produces: installable package, non-root image, required CI jobs, complete README and deployable public-demo command.
 
-- [ ] **Step 1: Write failing delivery-metadata tests**
+- [x] **Step 1: Write failing delivery-metadata tests**
 
 ```python
 from pathlib import Path
@@ -1406,17 +1406,17 @@ def test_required_delivery_files_and_ci_job_exist() -> None:
         assert f"## {heading}" in readme
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python -m pytest tests/integration/test_distribution_metadata.py -v`
 
 Expected: FAIL because delivery files do not exist.
 
-- [ ] **Step 3: Add secret-safe ignore rules and package metadata**
+- [x] **Step 3: Add secret-safe ignore rules and package metadata**
 
 Ignore `.env`, `.env.*` except example templates, private keys, SQLite runtime databases, logs, caches, coverage and build outputs. Include templates/static/example fixture as package data. Define CLI entry point and a public-demo launch command.
 
-- [ ] **Step 4: Build a non-root container**
+- [x] **Step 4: Build a non-root container**
 
 Use Python 3.12 slim, install the package from the reviewed version constraints, create an unprivileged user and writable `/data`, expose the documented port, define a health check and run `safefix serve --public-demo --host 0.0.0.0`. Do not copy `.git`, local databases or environment files.
 
@@ -1439,7 +1439,7 @@ Run: `docker run --rm safefix:test python -m safefix.demo all`
 
 Expected: three PASS scenarios.
 
-- [ ] **Step 5: Add both CI systems**
+- [x] **Step 5: Add both CI systems**
 
 `.gitlab-ci.yml` contains a top-level `unit-test` job that installs the package and runs `python -m pytest`; add lint/type/secret-scan and image-build jobs with explicit dependencies. GitHub Actions runs the same commands on push/PR and publishes a tagged image to GHCR only with protected CI credentials.
 
@@ -1451,7 +1451,7 @@ unit-test:
     - python -m pytest
 ```
 
-- [ ] **Step 6: Write the required README**
+- [x] **Step 6: Write the required README**
 
 Include project overview, installation, local Keyring setup/status/update/clear, Docker secret and `.env` risk, local WebUI/CLI commands, public demo, distribution commands, directory structure, three-level security boundary, Docker-vs-native limitations, supported platforms, tests/demos, architecture, deployment, third-party licenses and the final public URL after deployment.
 
@@ -1465,11 +1465,16 @@ Run the configured linter, type checker and secret scanner over tracked files an
 
 Expected: zero errors and zero verified secrets.
 
+本地测试、Ruff 与 mypy 已通过；本机未安装 Gitleaks，Git 历史扫描由合并请求流水线的 `secret-scan` job 完成。
+MR 首次运行暴露学校 Runner 访问 Docker Hub 的可用性问题，且管理员只允许 `always` 拉取策略；所有 job 镜像及 DinD 服务均改走 GitLab Dependency Proxy，在保持管理员策略的同时复用 GitLab 侧镜像缓存。
+
 - [ ] **Step 8: Deploy and verify public demo**
 
 Deploy the public-demo container to Render without any LLM Key, open the health endpoint and manually run all three scenarios. Record the exact URL in README and save the passing deployment/CI URLs as submission evidence.
 
-- [ ] **Step 9: Review and commit**
+阻塞：本机没有 Render CLI/API 凭据，无法代替仓库所有者创建外部服务；`render.yaml` 已按官方 Blueprint 规范准备好。
+
+- [x] **Step 9: Review and commit**
 
 Commit: `build(distribution): 添加可复现分发与持续集成`
 
@@ -1522,6 +1527,6 @@ Update this table only with actual commits; do not prefill hashes.
 | T13 | Completed | `7f19825`; merge `c0e84c7` | [!13](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/13) | Quick-delivery mode, no independent review; 792 passed, 2 skipped; Ruff passed |
 | T14 | Completed | `35daee5`; merge `a72afc9` | [!14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14) | Quick-delivery mode, no independent review; 800 passed, 2 skipped; Ruff passed |
 | T15 | Completed | `a6b9384`; merge `583c15b` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
-| T16 | Completed (awaiting merge) | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
-| T17 | Pending | — | — | — |
+| T16 | Completed / Merged | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
+| T17 | Completed (awaiting merge/deploy) | `3c405c9` | [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Quick-delivery mode, no independent review; 817 passed, 2 skipped; Ruff/mypy/build passed; Render deploy and CI secret scan pending external service |
 | Gate 2 | Pending | — | — | Final submission |

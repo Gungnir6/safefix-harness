@@ -30,7 +30,9 @@ if (runForm) {
     submit.disabled = true;
     status.textContent = "Starting governed run…";
     const data = new FormData(runForm);
-    const payload = { task: data.get("task") };
+    const payload = {
+      task: runForm.dataset.public === "true" ? data.get("scenario") : data.get("task")
+    };
     if (runForm.dataset.public !== "true") {
       payload.project_path = data.get("project_path");
       payload.provider = data.get("provider");

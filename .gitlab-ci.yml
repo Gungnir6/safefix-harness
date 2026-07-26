@@ -1,0 +1,41 @@
+stages: [test, quality, build]
+
+unit-test:
+  stage: test
+  image:
+    name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.12-slim
+  script:
+    - python -m pip install -e ".[dev]"
+    - python -m pytest -q
+
+lint-type:
+  stage: quality
+  image:
+    name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.12-slim
+  needs: [unit-test]
+  script:
+    - python -m pip install -e ".[dev]"
+    - python -m ruff check .
+    - python -m mypy src
+
+secret-scan:
+  stage: quality
+  image:
+    name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/zricethezav/gitleaks:v8.24.2
+    entrypoint: [""]
+  needs: [unit-test]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - gitleaks git . --redact --no-banner
+
+image-build:
+  stage: build
+  image:
+    name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27-cli
+  services:
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27-dind
+      alias: docker
+  needs: [unit-test, lint-type, secret-scan]
+  script:
+    - docker build --tag safefix-harness:$CI_COMMIT_SHA .

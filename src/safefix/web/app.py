@@ -30,5 +30,9 @@ def create_app(dependencies: AppDependencies) -> FastAPI:
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
         return JSONResponse(status_code=exc.status_code, content={"error": detail})
 
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
     app.include_router(create_router(dependencies))
     return app

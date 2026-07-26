@@ -82,8 +82,19 @@ def main(
 
     if args.command == "serve":
         if serve is None:
-            raise RuntimeError("server dependencies are not configured")
-        serve(args.host, args.port, args.public_demo)
+            import uvicorn
+
+            from safefix.demo import PublicDemoService
+            from safefix.web.app import AppDependencies, create_app
+
+            app = create_app(
+                AppDependencies(
+                    service=PublicDemoService(), public_demo=args.public_demo
+                )
+            )
+            uvicorn.run(app, host=args.host, port=args.port)
+        else:
+            serve(args.host, args.port, args.public_demo)
         return 0
 
     if args.command == "run":
@@ -115,6 +126,10 @@ def main(
     from safefix.demo import main as demo_main
 
     return int(demo_main([]) or 0)
+
+
+def public_demo_main() -> int:
+    return main(["serve", "--public-demo", "--host", "0.0.0.0"])
 
 
 if __name__ == "__main__":

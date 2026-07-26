@@ -8,19 +8,26 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 from safefix.action_parser import ActionParser
 from safefix.config import LLMSettings, SafeFixSettings, ValidatorSettings
 from safefix.domain import (
     Action,
     ApplyPatchAction,
+    BudgetState,
     DecisionOutcome,
     FeedbackCategory,
     RiskLevel,
+    RunSnapshot,
+    RunStatus,
     RunProcessAction,
 )
 from safefix.feedback import FeedbackEngine
@@ -41,7 +48,9 @@ class DemoResult:
     workspace_removed: bool
 
 
-_FIXTURE = Path(__file__).parents[2] / "examples" / "python_bug"
+_SOURCE_FIXTURE = Path(__file__).parents[2] / "examples" / "python_bug"
+_PACKAGED_FIXTURE = Path(__file__).with_name("_fixtures") / "python_bug"
+_FIXTURE = _SOURCE_FIXTURE if _SOURCE_FIXTURE.is_dir() else _PACKAGED_FIXTURE
 
 
 @contextmanager
@@ -60,7 +69,9 @@ async def _parse_scripted(payload: dict[str, object]) -> Action:
 
 def _settings() -> SafeFixSettings:
     return SafeFixSettings(
-        llm=LLMSettings(endpoint="https://demo.invalid/v1", model="scripted"),
+        llm=LLMSettings.model_validate(
+            {"endpoint": "https://demo.invalid/v1", "model": "scripted"}
+        ),
         validators=(
             ValidatorSettings(
                 id="pytest",
@@ -128,7 +139,7 @@ async def _feedback_events(workspace: Path) -> tuple[str, ...]:
             "path": "calculator.py",
             "expected_sha256": _digest(calculator),
             "old_text": "return left - right",
-            "new_text": "return left * right",
+            "new_text": "return left * right  # deliberately wrong",
             "expected_replacements": 1,
         }
     )
@@ -147,7 +158,7 @@ async def _feedback_events(workspace: Path) -> tuple[str, ...]:
             "reason": "repair from validator feedback",
             "path": "calculator.py",
             "expected_sha256": _digest(calculator),
-            "old_text": "return left * right",
+            "old_text": "return left * right  # deliberately wrong",
             "new_text": "return left + right",
             "expected_replacements": 1,
         }
@@ -222,6 +233,77 @@ SCENARIOS: dict[str, Callable[[], DemoResult]] = {
     "feedback": run_feedback_demo,
     "approval": run_approval_demo,
 }
+
+
+class PublicDemoService:
+    """Small in-memory adapter used by the packaged public demo."""
+
+    def __init__(self) -> None:
+        self._runs: dict[str, RunSnapshot] = {}
+        self._events: dict[str, list[Any]] = {}
+
+    async def create(self, *, task: str, project_path: str, **_: Any) -> RunSnapshot:
+        scenario = task.strip().lower()
+        if scenario not in SCENARIOS:
+            scenario = "guardrail"
+        result = run_scenario(scenario)
+        now = datetime.now(UTC)
+        run_id = f"demo-{uuid.uuid4().hex[:12]}"
+        snapshot = RunSnapshot(
+            run_id=run_id,
+            task_id=run_id,
+            project_id="public-demo",
+            workspace_root=project_path,
+            description=f"{scenario} demo",
+            status=RunStatus.SUCCESS if result.passed else RunStatus.FAILED,
+            repair_round=0,
+            step_count=len(result.events),
+            budget=BudgetState(
+                max_steps=max(1, len(result.events)),
+                remaining_steps=0,
+                max_repair_rounds=1,
+                remaining_repairs=0,
+            ),
+            version=1,
+            stop_reason="demo completed",
+            created_at=now,
+            updated_at=now,
+        )
+        self._runs[run_id] = snapshot
+        self._events[run_id] = [
+            SimpleNamespace(
+                sequence=index,
+                event_type="DEMO_EVENT",
+                redacted_payload={"message": message},
+                created_at=now,
+            )
+            for index, message in enumerate(result.events, start=1)
+        ]
+        return snapshot
+
+    def get(self, run_id: str) -> RunSnapshot:
+        try:
+            return self._runs[run_id]
+        except KeyError as exc:
+            raise LookupError(run_id) from exc
+
+    def list_events(self, run_id: str) -> list[Any]:
+        self.get(run_id)
+        return self._events[run_id]
+
+    async def cancel(self, run_id: str) -> RunSnapshot:
+        return self.get(run_id)
+
+    def list_memory(self, _project_id: str) -> list[Any]:
+        return []
+
+    def clear_memory(self, _project_id: str) -> int:
+        return 0
+
+    def credential_status(self, provider: str) -> Any:
+        return SimpleNamespace(
+            provider=provider, configured=False, source=None, warning="demo mode"
+        )
 
 
 def run_scenario(name: str) -> DemoResult:

@@ -5,7 +5,7 @@ import time
 from collections import deque
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -41,7 +41,7 @@ def _json(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     if is_dataclass(value):
-        return asdict(value)
+        return asdict(cast(Any, value))
     if hasattr(value, "__dict__"):
         return dict(value.__dict__)
     return value
