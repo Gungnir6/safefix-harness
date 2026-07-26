@@ -29,14 +29,24 @@ def test_required_delivery_files_and_ci_job_exist() -> None:
         assert job in gitlab
 
 
-def test_gitlab_ci_can_fall_back_to_cached_images() -> None:
+def test_gitlab_ci_uses_dependency_proxy_images() -> None:
     pipeline = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    for job in ("unit-test", "lint-type", "secret-scan", "image-build"):
+    expected = {
+        "unit-test": "python:3.12-slim",
+        "lint-type": "python:3.12-slim",
+        "secret-scan": "zricethezav/gitleaks:v8.24.2",
+        "image-build": "docker:27-cli",
+    }
+    prefix = "${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/"
+    for job, suffix in expected.items():
         image = pipeline[job]["image"]
-        assert image["pull_policy"] == "if-not-present"
+        assert image["name"] == prefix + suffix
+        assert "pull_policy" not in image
     service = pipeline["image-build"]["services"][0]
-    assert service["pull_policy"] == "if-not-present"
+    assert service["name"] == prefix + "docker:27-dind"
+    assert service["alias"] == "docker"
+    assert "pull_policy" not in service
 
 
 def test_readme_has_required_submission_sections() -> None:
