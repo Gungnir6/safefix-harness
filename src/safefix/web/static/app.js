@@ -65,7 +65,7 @@ function eventLabel(code) {
 
 function eventSummary(type, payload) {
   if (payload?.summary) return payload.summary;
-  return eventSummaries[type] || null;
+  return Object.hasOwn(eventSummaries, type) ? eventSummaries[type] : null;
 }
 
 async function requestJson(url, options = {}) {

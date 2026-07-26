@@ -405,7 +405,8 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
       "APPROVAL_REJECTED",
       "APPROVAL_CANCELLED",
       "DEMO_EVENT",
-      "FUTURE_EVENT"
+      "FUTURE_EVENT",
+      "constructor"
     ].map((type, index) => ({
       sequence: index + 10,
       type,
