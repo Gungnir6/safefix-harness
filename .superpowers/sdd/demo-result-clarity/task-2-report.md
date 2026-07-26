@@ -45,3 +45,28 @@
 - 分别打开三个公开场景，确认中间失败/拦截在未展开技术详情时足够醒目。
 - 检查桌面布局和 760px 以下单列布局，确认结论、证据与时间线无横向溢出。
 - 确认最终通过只作为机制结论和 `passed` 状态使用酸性绿，其他状态的文字和边框语义可区分。
+
+## 审查修复
+
+### 提交
+
+- 修复提交：`8aa74b24c6b71783f2d87c5eef5c63c5b0c72610`
+- 提交信息：`fix(web): 限定公开演示状态样式`
+
+### RED / GREEN
+
+审查指出本地运行也被无条件添加演示 `data-state` / `.event-state`，且工具结果标题的旧酸性绿色会覆盖失败和修正语义。先扩展真实本地页面断言和可执行 Node DOM 行为测试：
+
+- RED：`pytest tests/web/test_pages.py -q` 为 **2 failed、21 passed**。服务端本地页仍有 `data-state`，动态本地工具事件仍有状态属性和“验证失败”徽标。
+- GREEN：仅公开模式生成状态属性与徽标后，同一命令为 **23 passed**。
+
+CSS 同步移除工具结果标题的无条件酸性绿；公开事件标题现在跟随固定 state 着色，仅 `passed` 使用酸性绿，本地事件保持既有无状态结构和中性/原有事件类型样式。
+
+### 新鲜验证
+
+- `C:\Users\Gungnir\Desktop\safefix-harness\.venv\Scripts\python.exe -m pytest tests/web -q`：**33 passed**，另有 1 条既有第三方 `StarletteDeprecationWarning`。
+- `C:\Users\Gungnir\Desktop\safefix-harness\.venv\Scripts\python.exe -m ruff check src/safefix/web tests/web`：`All checks passed!`
+- `rg -n "innerHTML|insertAdjacentHTML|document\.write" src/safefix/web`：无匹配。
+- `git diff --check`：退出码 0。
+
+修复未修改核心 demo、策略、审批、工具或路由 API；未合并、推送或删除工作树。
