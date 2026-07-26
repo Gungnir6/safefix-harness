@@ -1,0 +1,158 @@
+import json
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+
+from safefix.execution_workspace import (
+    WorkspacePreparationError,
+    default_data_dir,
+    prepare_workspace,
+    record_run_id,
+)
+
+
+def test_isolated_workspace_is_persistent_and_excludes_sensitive_content(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (source / ".env").write_text("SECRET=do-not-copy\n", encoding="utf-8")
+    (source / ".git").mkdir()
+    (source / ".venv").mkdir()
+
+    prepared = prepare_workspace(
+        source,
+        tmp_path / "data",
+        in_place=False,
+        sensitive_patterns=(".env", ".env.*", "**/*.pem"),
+    )
+
+    assert prepared.mode == "isolated"
+    assert prepared.path != source
+    assert prepared.path == tmp_path / "data" / "runs" / prepared.execution_id / "workspace"
+    assert (prepared.path / "app.py").read_text(encoding="utf-8") == "value = 1\n"
+    assert not (prepared.path / ".env").exists()
+    assert not (prepared.path / ".git").exists()
+    assert not (prepared.path / ".venv").exists()
+    assert prepared.metadata_path == (
+        tmp_path / "data" / "runs" / prepared.execution_id / "execution.json"
+    )
+    metadata = json.loads(prepared.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["execution_id"] == prepared.execution_id
+    assert metadata["source"] == str(source.resolve())
+    assert metadata["mode"] == "isolated"
+    assert metadata["created_at"]
+    assert metadata["run_id"] is None
+
+
+def test_in_place_workspace_uses_resolved_source_without_copy(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+
+    prepared = prepare_workspace(
+        source,
+        tmp_path / "data",
+        in_place=True,
+        sensitive_patterns=(".env",),
+    )
+
+    assert prepared.mode == "in_place"
+    assert prepared.path == source.resolve()
+    assert prepared.metadata_path is None
+
+
+@pytest.mark.parametrize("project_name", ("missing", "regular-file"))
+def test_prepare_workspace_rejects_missing_or_non_directory_project(
+    tmp_path: Path, project_name: str
+) -> None:
+    project = tmp_path / project_name
+    if project_name == "regular-file":
+        project.write_text("not a project", encoding="utf-8")
+
+    with pytest.raises(WorkspacePreparationError):
+        prepare_workspace(project, tmp_path / "data", in_place=False, sensitive_patterns=())
+
+
+def test_prepare_workspace_rejects_data_directory_inside_source(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+
+    with pytest.raises(WorkspacePreparationError):
+        prepare_workspace(
+            source,
+            source / "data",
+            in_place=False,
+            sensitive_patterns=(),
+        )
+
+
+def test_prepare_workspace_refuses_existing_execution_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import safefix.execution_workspace as execution_workspace
+
+    source = tmp_path / "project"
+    source.mkdir()
+    execution_id = UUID("00000000-0000-0000-0000-000000000001")
+    (tmp_path / "data" / "runs" / str(execution_id)).mkdir(parents=True)
+    monkeypatch.setattr(execution_workspace.uuid, "uuid4", lambda: execution_id)
+
+    with pytest.raises(WorkspacePreparationError):
+        prepare_workspace(source, tmp_path / "data", in_place=False, sensitive_patterns=())
+
+
+@pytest.mark.parametrize(
+    ("environment", "platform", "home", "expected"),
+    (
+        (
+            {"SAFEFIX_DATA_DIR": "configured-data"},
+            "win32",
+            Path("C:/unused"),
+            Path("configured-data").resolve(),
+        ),
+        (
+            {"LOCALAPPDATA": "local-app-data"},
+            "win32",
+            Path("C:/unused"),
+            Path("local-app-data").resolve() / "SafeFix",
+        ),
+        (
+            {"XDG_DATA_HOME": "xdg-data"},
+            "linux",
+            Path("/unused"),
+            Path("xdg-data").resolve() / "safefix",
+        ),
+        ({}, "linux", Path("/home/test"), Path("/home/test/.local/share/safefix")),
+    ),
+    ids=("override", "windows", "xdg", "home-fallback"),
+)
+def test_default_data_dir_uses_documented_precedence(
+    environment: dict[str, str], platform: str, home: Path, expected: Path
+) -> None:
+    assert (
+        default_data_dir(environment=environment, platform=platform, home=home)
+        == expected
+    )
+
+
+def test_record_run_id_updates_isolated_metadata_and_skips_in_place(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    isolated = prepare_workspace(
+        source, tmp_path / "data", in_place=False, sensitive_patterns=()
+    )
+    in_place = prepare_workspace(
+        source, tmp_path / "data", in_place=True, sensitive_patterns=()
+    )
+
+    record_run_id(isolated, "run-123")
+    record_run_id(in_place, "ignored")
+
+    assert (
+        json.loads(isolated.metadata_path.read_text(encoding="utf-8"))["run_id"]  # type: ignore[union-attr]
+        == "run-123"
+    )
