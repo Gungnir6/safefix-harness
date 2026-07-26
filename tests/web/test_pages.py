@@ -167,38 +167,242 @@ def test_public_home_has_exactly_three_named_radio_scenarios() -> None:
     }
 
 
-def test_client_script_localizes_errors_statuses_and_event_types() -> None:
+def test_client_script_runs_dynamic_status_timeline_and_cancel_behaviors() -> None:
     node = shutil.which("node")
     if node is None:
-        pytest.skip("Node.js is required to execute the browser mapping test")
+        pytest.skip("Node.js is required to execute the browser behavior test")
     client = TestClient(create_app(AppDependencies(service=PageService())))
     script = client.get("/static/app.js").text
     harness = """
 const fs = require("node:fs");
 const vm = require("node:vm");
-const context = {
-  document: { querySelector: () => null, querySelectorAll: () => [] },
-  window: { setTimeout: () => {} },
-  fetch: async () => { throw new Error("not used"); },
-  FormData: class {}
-};
-vm.createContext(context);
-vm.runInContext(fs.readFileSync(0, "utf8"), context);
-process.stdout.write(JSON.stringify({
-  errors: [
-    "INVALID_STATE",
-    "RUN_NOT_FOUND",
-    "PUBLIC_INPUT_FORBIDDEN",
-    "RATE_LIMITED",
-    "ACTIVE_RUN_LIMIT",
-    "CSRF_INVALID",
-    "UNKNOWN"
-  ].map((code) => context.explainError(code)),
-  statuses: ["CREATED", "RUNNING", "AWAITING_APPROVAL", "SUCCESS"]
-    .map((code) => context.statusLabel(code)),
-  events: ["MODEL_REQUEST", "POLICY_DECISION", "TOOL_RESULT", "DEMO_EVENT"]
-    .map((code) => context.eventLabel(code))
-}));
+const source = fs.readFileSync(0, "utf8");
+
+class FakeElement {
+  constructor(tagName = "div") {
+    this.tagName = tagName;
+    this.dataset = {};
+    this.children = [];
+    this.parentNode = null;
+    this.className = "";
+    this.textContent = "";
+    this.disabled = false;
+    this.hidden = true;
+    this.listeners = {};
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  remove() {
+    if (!this.parentNode) return;
+    const index = this.parentNode.children.indexOf(this);
+    if (index >= 0) this.parentNode.children.splice(index, 1);
+    this.parentNode = null;
+  }
+
+  addEventListener(type, listener) {
+    this.listeners[type] = listener;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (selector === "[data-sequence]"
+            && Object.hasOwn(child.dataset, "sequence")) {
+          matches.push(child);
+        }
+        if (selector === ".empty-state"
+            && child.className.split(" ").includes("empty-state")) {
+          matches.push(child);
+        }
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
+}
+
+function makeResponse(body, ok = true) {
+  return { ok, json: async () => body };
+}
+
+function createPage({ initialSequences = [], placeholder = false, fetch }) {
+  const runHeader = new FakeElement("section");
+  runHeader.dataset.runId = "run-1";
+  runHeader.dataset.terminal = "false";
+  const status = new FakeElement("strong");
+  const statusCode = new FakeElement("small");
+  const timeline = new FakeElement("ol");
+  const actionError = new FakeElement("div");
+  const cancelButton = new FakeElement("button");
+  cancelButton.textContent = "取消运行";
+  if (placeholder) {
+    const empty = new FakeElement("li");
+    empty.className = "empty-state";
+    timeline.appendChild(empty);
+  }
+  for (const sequence of initialSequences) {
+    const event = new FakeElement("li");
+    event.className = "event";
+    event.dataset.sequence = String(sequence);
+    timeline.appendChild(event);
+  }
+  const selectors = new Map([
+    ["#run-form", null],
+    ["[data-run-id]", runHeader],
+    ["#run-status", status],
+    ["#run-status-code", statusCode],
+    ["#timeline", timeline],
+    ["#action-error", actionError],
+    ["#cancel-run", cancelButton],
+    [".approval-panel", null],
+    ["#clear-memory", null]
+  ]);
+  const scheduled = [];
+  const context = {
+    document: {
+      createElement: (tagName) => new FakeElement(tagName),
+      querySelector: (selector) => selectors.get(selector) || null,
+      querySelectorAll: () => []
+    },
+    window: {
+      location: { reload: () => {} },
+      setTimeout: (callback) => { scheduled.push(callback); }
+    },
+    fetch,
+    FormData: class {}
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  return {
+    actionError,
+    cancelButton,
+    context,
+    scheduled,
+    status,
+    statusCode,
+    timeline
+  };
+}
+
+async function runTimelineScenario(initialSequences, placeholder, events) {
+  const page = createPage({
+    initialSequences,
+    placeholder,
+    fetch: async (url) => {
+      if (url.endsWith("/events")) return makeResponse(events);
+      return makeResponse({ status: "SUCCESS" });
+    }
+  });
+  await page.scheduled[0]();
+  return page;
+}
+
+(async () => {
+  const synced = await runTimelineScenario(
+    [1],
+    false,
+    [
+      {
+        sequence: 1,
+        type: "MODEL_REQUEST",
+        payload: { summary: "已有事件" },
+        created_at: "2026-07-26T00:00:00Z"
+      },
+      {
+        sequence: 2,
+        type: "TOOL_RESULT",
+        payload: { summary: "新增事件" },
+        created_at: "2026-07-26T00:00:01Z"
+      }
+    ]
+  );
+  const populated = await runTimelineScenario(
+    [],
+    true,
+    [{
+      sequence: 3,
+      type: "DEMO_EVENT",
+      payload: { summary: "首个事件" },
+      created_at: "2026-07-26T00:00:02Z"
+    }]
+  );
+  const stillEmpty = await runTimelineScenario([], true, []);
+
+  let resolveCancel;
+  const cancelling = createPage({
+    fetch: (url) => {
+      if (!url.endsWith("/cancel")) {
+        return Promise.resolve(makeResponse({ status: "SUCCESS" }));
+      }
+      return new Promise((resolve) => { resolveCancel = resolve; });
+    }
+  });
+  const clickEvent = { currentTarget: cancelling.cancelButton };
+  const cancellation = cancelling.cancelButton.listeners.click(clickEvent);
+  clickEvent.currentTarget = null;
+  resolveCancel(makeResponse({ error: { code: "INVALID_STATE" } }, false));
+  let cancellationError = null;
+  try {
+    await cancellation;
+  } catch (error) {
+    cancellationError = error.message;
+  }
+
+  process.stdout.write(JSON.stringify({
+    errors: [
+      "INVALID_STATE",
+      "RUN_NOT_FOUND",
+      "PUBLIC_INPUT_FORBIDDEN",
+      "RATE_LIMITED",
+      "ACTIVE_RUN_LIMIT",
+      "CSRF_INVALID",
+      "UNKNOWN",
+      "constructor"
+    ].map((code) => synced.context.explainError(code)),
+    statuses: ["CREATED", "RUNNING", "AWAITING_APPROVAL", "SUCCESS"]
+      .map((code) => synced.context.statusLabel(code)),
+    events: ["MODEL_REQUEST", "POLICY_DECISION", "TOOL_RESULT", "DEMO_EVENT"]
+      .map((code) => synced.context.eventLabel(code)),
+    syncedStatus: {
+      label: synced.status.textContent,
+      machineCode: synced.statusCode.textContent,
+      dataStatus: synced.status.dataset.status
+    },
+    deduplicatedSequences: synced.timeline
+      .querySelectorAll("[data-sequence]")
+      .map((item) => item.dataset.sequence),
+    populatedTimeline: {
+      emptyCount: populated.timeline.querySelectorAll(".empty-state").length,
+      sequences: populated.timeline
+        .querySelectorAll("[data-sequence]")
+        .map((item) => item.dataset.sequence)
+    },
+    emptyTimeline: {
+      emptyCount: stillEmpty.timeline.querySelectorAll(".empty-state").length,
+      eventCount: stillEmpty.timeline.querySelectorAll("[data-sequence]").length
+    },
+    cancellation: {
+      error: cancellationError,
+      label: cancelling.cancelButton.textContent,
+      disabled: cancelling.cancelButton.disabled,
+      notice: cancelling.actionError.textContent
+    }
+  }));
+})().catch((error) => {
+  process.stderr.write(error.stack);
+  process.exitCode = 1;
+});
 """
 
     result = subprocess.run(
@@ -220,9 +424,24 @@ process.stdout.write(JSON.stringify({
             "已有演示正在运行，请稍后再试 (ACTIVE_RUN_LIMIT)",
             "安全校验失败，请刷新页面重试 (CSRF_INVALID)",
             "UNKNOWN",
+            "constructor",
         ],
         "statuses": ["已创建", "运行中", "等待人工批准", "演示成功"],
         "events": ["模型请求", "策略判断", "工具结果", "演示步骤"],
+        "syncedStatus": {
+            "label": "演示成功",
+            "machineCode": "机器码 · SUCCESS",
+            "dataStatus": "SUCCESS",
+        },
+        "deduplicatedSequences": ["1", "2"],
+        "populatedTimeline": {"emptyCount": 0, "sequences": ["3"]},
+        "emptyTimeline": {"emptyCount": 1, "eventCount": 0},
+        "cancellation": {
+            "error": None,
+            "label": "取消运行",
+            "disabled": False,
+            "notice": "取消运行失败：当前状态不能执行这个操作 (INVALID_STATE)",
+        },
     }
 
 

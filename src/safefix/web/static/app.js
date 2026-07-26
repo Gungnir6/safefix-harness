@@ -31,7 +31,7 @@ const eventLabels = Object.freeze({
 });
 
 function explainError(code) {
-  const explanation = errorMessages[code];
+  const explanation = Object.hasOwn(errorMessages, code) ? errorMessages[code] : null;
   return explanation ? `${explanation} (${code})` : code;
 }
 
@@ -123,6 +123,7 @@ if (runHeader) {
     const seen = new Set([...timeline.querySelectorAll("[data-sequence]")].map((item) => item.dataset.sequence));
     for (const event of events) {
       if (seen.has(String(event.sequence))) continue;
+      timeline.querySelector(".empty-state")?.remove();
       const item = document.createElement("li");
       item.className = "event";
       item.dataset.sequence = String(event.sequence);
@@ -201,16 +202,17 @@ if (runHeader) {
   });
 
   document.querySelector("#cancel-run")?.addEventListener("click", async (event) => {
-    const originalLabel = event.currentTarget.textContent;
-    event.currentTarget.disabled = true;
-    event.currentTarget.textContent = "正在取消…";
+    const button = event.currentTarget;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "正在取消…";
     try {
       await requestJson(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
       window.location.reload();
     } catch (error) {
       showError(`取消运行失败：${explainError(error.message)}`);
-      event.currentTarget.textContent = originalLabel;
-      event.currentTarget.disabled = false;
+      button.textContent = originalLabel;
+      button.disabled = false;
     }
   });
 }
