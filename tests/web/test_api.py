@@ -167,10 +167,19 @@ def test_public_demo_exposes_chinese_explanations_and_machine_codes() -> None:
     events = client.get(f"/api/runs/{run_id}/events").json()
 
     assert created.json()["description"] == "验证反馈演示"
-    assert events[0]["payload"] == {
-        "code": "VALIDATION:FAIL",
-        "summary": "初次验证失败，系统获得了客观错误反馈。",
-    }
+    assert [
+        (event["payload"]["code"], event["payload"]["summary"])
+        for event in events
+    ] == [
+        ("VALIDATION:FAIL", "初次验证失败，系统获得了客观错误反馈。"),
+        ("PATCH:WRONG", "第一次修复不正确，系统不会把修改当作成功。"),
+        (
+            "VALIDATION:STILL_FAIL",
+            "错误补丁仍未通过验证，系统继续依据客观反馈修复。",
+        ),
+        ("PATCH:CORRECT", "系统根据验证反馈生成了正确补丁。"),
+        ("VALIDATION:PASS", "再次验证通过，修复完成。"),
+    ]
 
 
 def test_approval_response_hides_capability_and_requires_csrf() -> None:

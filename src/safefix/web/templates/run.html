@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}运行 {{ run.run_id }}{% endblock %}
 {% block content %}
-<section class="run-header" data-run-id="{{ run.run_id }}" data-terminal="{{ 'true' if terminal else 'false' }}">
+<section class="run-header" data-run-id="{{ run.run_id }}" data-terminal="{{ 'true' if terminal else 'false' }}" data-public="{{ 'true' if public_demo else 'false' }}">
   <div>
     <p class="eyebrow">运行 / {{ run.run_id }}</p>
     <h1>{{ run.description }}</h1>
-    <p class="run-path">{{ run.workspace_root }}</p>
+    <p class="run-path">{% if public_demo %}隔离内置工作区 · 不访问真实项目{% else %}{{ run.workspace_root }}{% endif %}</p>
   </div>
   <div class="status-block">
     <span>当前状态</span>
@@ -41,11 +41,11 @@
     <li class="event event-{{ event.event_type | lower }}" data-sequence="{{ event.sequence }}" data-event-type="{{ event.event_type }}">
       <div class="event-index">{{ "%02d" | format(event.sequence) }}</div>
       <div class="event-body">
-        <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type | replace("_", " ")) }}</strong><time>{{ event.created_at }}</time></div>
+        <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type) }}</strong><time>{{ event.created_at }}</time></div>
         {% if event.redacted_payload.summary %}<p class="event-summary">{{ event.redacted_payload.summary }}</p>{% endif %}
         <details>
           <summary>查看技术细节</summary>
-          <pre>{{ event.redacted_payload }}</pre>
+          <pre>{{ event_json(event.redacted_payload) }}</pre>
         </details>
       </div>
     </li>

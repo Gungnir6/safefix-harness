@@ -15,7 +15,7 @@ const statusLabels = Object.freeze({
   CREATED: "已创建",
   RUNNING: "运行中",
   AWAITING_APPROVAL: "等待人工批准",
-  SUCCESS: "演示成功",
+  SUCCESS: "运行成功",
   BLOCKED: "已被安全策略拦截",
   NO_PROGRESS: "没有取得进展",
   BUDGET_EXCEEDED: "已达到执行预算",
@@ -25,8 +25,14 @@ const statusLabels = Object.freeze({
 
 const eventLabels = Object.freeze({
   MODEL_REQUEST: "模型请求",
+  ACTION: "模型动作",
   POLICY_DECISION: "策略判断",
   TOOL_RESULT: "工具结果",
+  APPROVAL_REQUESTED: "已请求审批",
+  APPROVAL_APPROVED: "审批已通过",
+  APPROVAL_EXPIRED: "审批已过期",
+  APPROVAL_REJECTED: "审批已拒绝",
+  APPROVAL_CANCELLED: "审批已取消",
   DEMO_EVENT: "演示步骤"
 });
 
@@ -35,7 +41,8 @@ function explainError(code) {
   return explanation ? `${explanation} (${code})` : code;
 }
 
-function statusLabel(code) {
+function statusLabel(code, publicDemo = false) {
+  if (code === "SUCCESS" && publicDemo) return "演示成功";
   return statusLabels[code] || code;
 }
 
@@ -98,7 +105,7 @@ if (runHeader) {
   const statusCode = document.querySelector("#run-status-code");
 
   function updateRunStatus(code) {
-    status.textContent = statusLabel(code);
+    status.textContent = statusLabel(code, runHeader.dataset.public === "true");
     status.dataset.status = code;
     if (statusCode) {
       statusCode.textContent = `机器码 · ${code}`;

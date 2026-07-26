@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import time
 from collections import deque
 from dataclasses import asdict, is_dataclass
@@ -28,7 +29,7 @@ _STATUS_LABELS = {
     RunStatus.CREATED: "已创建",
     RunStatus.RUNNING: "运行中",
     RunStatus.AWAITING_APPROVAL: "等待人工批准",
-    RunStatus.SUCCESS: "演示成功",
+    RunStatus.SUCCESS: "运行成功",
     RunStatus.BLOCKED: "已被安全策略拦截",
     RunStatus.NO_PROGRESS: "没有取得进展",
     RunStatus.BUDGET_EXCEEDED: "已达到执行预算",
@@ -38,8 +39,14 @@ _STATUS_LABELS = {
 
 _EVENT_LABELS = {
     "MODEL_REQUEST": "模型请求",
+    "ACTION": "模型动作",
     "POLICY_DECISION": "策略判断",
     "TOOL_RESULT": "工具结果",
+    "APPROVAL_REQUESTED": "已请求审批",
+    "APPROVAL_APPROVED": "审批已通过",
+    "APPROVAL_EXPIRED": "审批已过期",
+    "APPROVAL_REJECTED": "审批已拒绝",
+    "APPROVAL_CANCELLED": "审批已取消",
     "DEMO_EVENT": "演示步骤",
 }
 
@@ -108,10 +115,17 @@ def create_router(dependencies: Any) -> APIRouter:
                 "events": events,
                 "approval": access,
                 "terminal": snapshot.status in _TERMINAL,
-                "status_label": _STATUS_LABELS.get(
-                    snapshot.status, snapshot.status.value
+                "status_label": (
+                    "演示成功"
+                    if dependencies.public_demo
+                    and snapshot.status is RunStatus.SUCCESS
+                    else _STATUS_LABELS.get(snapshot.status, snapshot.status.value)
                 ),
                 "event_labels": _EVENT_LABELS,
+                "event_json": lambda payload: json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True
+                ),
+                "public_demo": dependencies.public_demo,
             },
         )
         if access is not None:
@@ -125,10 +139,12 @@ def create_router(dependencies: Any) -> APIRouter:
 
     @router.get("/settings", response_class=HTMLResponse)
     def settings(request: Request, project_id: str = "default") -> Response:
-        try:
-            credential = service.credential_status("openai-compatible")
-        except Exception:
-            credential = None
+        credential = None
+        if not dependencies.public_demo:
+            try:
+                credential = service.credential_status("openai-compatible")
+            except Exception:
+                credential = None
         return templates.TemplateResponse(
             request=request,
             name="settings.html",

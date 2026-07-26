@@ -49,7 +49,7 @@ def test_scenarios_expose_the_three_required_mechanisms() -> None:
     assert run_scenario("feedback").events == (
         "VALIDATION:FAIL",
         "PATCH:WRONG",
-        "VALIDATION:FAIL",
+        "VALIDATION:STILL_FAIL",
         "PATCH:CORRECT",
         "VALIDATION:PASS",
     )

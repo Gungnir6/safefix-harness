@@ -10,8 +10,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from safefix.domain import RunStatus
 from safefix.web.app import AppDependencies, create_app
-from tests.web.test_api import FakeService
+from tests.web.test_api import FakeService, _snapshot
 
 
 class _PageParser(HTMLParser):
@@ -115,6 +116,39 @@ class PageService(FakeService):
         )
 
 
+class SuccessPageService(PageService):
+    def get(self, run_id: str) -> object:
+        del run_id
+        return _snapshot(status=RunStatus.SUCCESS)
+
+
+class EventLabelPageService(PageService):
+    def list_events(self, run_id: str) -> list[object]:
+        del run_id
+        event_types = (
+            "MODEL_REQUEST",
+            "ACTION",
+            "POLICY_DECISION",
+            "TOOL_RESULT",
+            "APPROVAL_REQUESTED",
+            "APPROVAL_APPROVED",
+            "APPROVAL_EXPIRED",
+            "APPROVAL_REJECTED",
+            "APPROVAL_CANCELLED",
+            "DEMO_EVENT",
+            "FUTURE_EVENT",
+        )
+        return [
+            SimpleNamespace(
+                sequence=index,
+                event_type=event_type,
+                redacted_payload={"code": event_type},
+                created_at=datetime.now(UTC),
+            )
+            for index, event_type in enumerate(event_types, start=1)
+        ]
+
+
 def test_local_home_is_accessible_and_has_task_controls() -> None:
     client = TestClient(create_app(AppDependencies(service=PageService())))
 
@@ -143,6 +177,19 @@ def test_public_home_is_a_chinese_guided_demo_without_fake_task_input() -> None:
     assert 'name="task"' not in response.text
     assert 'name="scenario"' in response.text
     assert "不访问真实项目" in response.text
+
+
+def test_public_guardrail_card_describes_the_real_command_policy_demo() -> None:
+    client = TestClient(
+        create_app(AppDependencies(service=PageService(), public_demo=True))
+    )
+
+    response = client.get("/")
+
+    assert "提权破坏命令" in response.text
+    assert "策略拒绝" in response.text
+    assert "工具执行次数为零" in response.text
+    assert "越界路径" not in response.text
 
 
 def test_public_home_has_exactly_three_named_radio_scenarios() -> None:
@@ -236,10 +283,16 @@ function makeResponse(body, ok = true) {
   return { ok, json: async () => body };
 }
 
-function createPage({ initialSequences = [], placeholder = false, fetch }) {
+function createPage({
+  initialSequences = [],
+  placeholder = false,
+  publicDemo = false,
+  fetch
+}) {
   const runHeader = new FakeElement("section");
   runHeader.dataset.runId = "run-1";
   runHeader.dataset.terminal = "false";
+  runHeader.dataset.public = String(publicDemo);
   const status = new FakeElement("strong");
   const statusCode = new FakeElement("small");
   const timeline = new FakeElement("ol");
@@ -338,6 +391,14 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
     }]
   );
   const stillEmpty = await runTimelineScenario([], true, []);
+  const publicStatus = createPage({
+    publicDemo: true,
+    fetch: async (url) => {
+      if (url.endsWith("/events")) return makeResponse([]);
+      return makeResponse({ status: "SUCCESS" });
+    }
+  });
+  await publicStatus.scheduled[0]();
 
   let resolveCancel;
   const cancelling = createPage({
@@ -371,8 +432,21 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
       "constructor"
     ].map((code) => synced.context.explainError(code)),
     statuses: ["CREATED", "RUNNING", "AWAITING_APPROVAL", "SUCCESS"]
-      .map((code) => synced.context.statusLabel(code)),
-    events: ["MODEL_REQUEST", "POLICY_DECISION", "TOOL_RESULT", "DEMO_EVENT"]
+      .map((code) => synced.context.statusLabel(code, false)),
+    publicSuccess: publicStatus.status.textContent,
+    events: [
+      "MODEL_REQUEST",
+      "ACTION",
+      "POLICY_DECISION",
+      "TOOL_RESULT",
+      "APPROVAL_REQUESTED",
+      "APPROVAL_APPROVED",
+      "APPROVAL_EXPIRED",
+      "APPROVAL_REJECTED",
+      "APPROVAL_CANCELLED",
+      "DEMO_EVENT",
+      "FUTURE_EVENT"
+    ]
       .map((code) => synced.context.eventLabel(code)),
     syncedStatus: {
       label: synced.status.textContent,
@@ -426,10 +500,23 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
             "UNKNOWN",
             "constructor",
         ],
-        "statuses": ["已创建", "运行中", "等待人工批准", "演示成功"],
-        "events": ["模型请求", "策略判断", "工具结果", "演示步骤"],
+        "statuses": ["已创建", "运行中", "等待人工批准", "运行成功"],
+        "publicSuccess": "演示成功",
+        "events": [
+            "模型请求",
+            "模型动作",
+            "策略判断",
+            "工具结果",
+            "已请求审批",
+            "审批已通过",
+            "审批已过期",
+            "审批已拒绝",
+            "审批已取消",
+            "演示步骤",
+            "FUTURE_EVENT",
+        ],
         "syncedStatus": {
-            "label": "演示成功",
+            "label": "运行成功",
             "machineCode": "机器码 · SUCCESS",
             "dataStatus": "SUCCESS",
         },
@@ -455,6 +542,12 @@ def test_run_page_explains_status_and_keeps_escaped_technical_details() -> None:
     assert "查看技术细节" in response.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
     assert "<script>alert(1)</script>" not in response.text
+    parser = _parse_page(response.text)
+    detail_payloads = [
+        json.loads(_node_text(node))
+        for node in _find_nodes(parser.roots, "pre")
+    ]
+    assert detail_payloads[2] == {"output": "<script>alert(1)</script>"}
 
 
 def test_pending_run_explains_risk_without_exposing_capability() -> None:
@@ -532,6 +625,59 @@ def test_run_page_exposes_chinese_status_and_machine_code_targets() -> None:
     assert _node_text(machine_code) == "机器码 · AWAITING_APPROVAL"
 
 
+def test_run_page_uses_mode_specific_workspace_and_success_labels() -> None:
+    local = TestClient(
+        create_app(AppDependencies(service=SuccessPageService()))
+    ).get("/runs/run-1")
+    public = TestClient(
+        create_app(
+            AppDependencies(
+                service=SuccessPageService(),
+                public_demo=True,
+                embedded_project="C:/private-embedded-fixture",
+            )
+        )
+    ).get("/runs/run-1")
+
+    assert "C:/project" in local.text
+    assert "运行成功" in local.text
+    assert "隔离内置工作区" in public.text
+    assert "不访问真实项目" in public.text
+    assert "C:/project" not in public.text
+    assert "演示成功" in public.text
+
+
+def test_run_page_localizes_all_real_audit_events_and_preserves_unknown_code() -> None:
+    client = TestClient(
+        create_app(AppDependencies(service=EventLabelPageService()))
+    )
+
+    response = client.get("/runs/run-1")
+    event_items = [
+        node
+        for node in _find_nodes(_parse_page(response.text).roots, "li")
+        if "event" in str(node["attrs"].get("class", "")).split()  # type: ignore[union-attr]
+    ]
+    labels = [
+        _node_text(_find_nodes(item["children"], "strong")[0])  # type: ignore[arg-type]
+        for item in event_items
+    ]
+
+    assert labels == [
+        "模型请求",
+        "模型动作",
+        "策略判断",
+        "工具结果",
+        "已请求审批",
+        "审批已通过",
+        "审批已过期",
+        "审批已拒绝",
+        "审批已取消",
+        "演示步骤",
+        "FUTURE_EVENT",
+    ]
+
+
 def test_settings_page_never_renders_plaintext_credentials() -> None:
     client = TestClient(create_app(AppDependencies(service=PageService())))
 
@@ -543,6 +689,29 @@ def test_settings_page_never_renders_plaintext_credentials() -> None:
     assert "模型服务商" in response.text
     assert "keyring" in response.text
     assert "sk-" not in response.text
+
+
+def test_public_settings_explicitly_uses_deterministic_mock_without_credentials() -> None:
+    client = TestClient(
+        create_app(AppDependencies(service=PageService(), public_demo=True))
+    )
+
+    response = client.get("/settings?project_id=project")
+
+    assert "确定性 Mock（无需凭据）" in response.text
+    assert "openai-compatible" not in response.text
+    assert "系统密钥环" not in response.text
+    assert "密钥由本地命令行工具管理" not in response.text
+
+
+def test_local_settings_still_reports_real_credential_status() -> None:
+    client = TestClient(create_app(AppDependencies(service=PageService())))
+
+    response = client.get("/settings?project_id=project")
+
+    assert "已配置" in response.text
+    assert "系统密钥环（keyring）" in response.text
+    assert "openai-compatible" in response.text
 
 
 @pytest.mark.parametrize(

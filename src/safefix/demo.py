@@ -149,7 +149,7 @@ async def _feedback_events(workspace: Path) -> tuple[str, ...]:
 
     still_failing = await runner.run("pytest")
     assert not still_failing.success
-    events.append("VALIDATION:FAIL")
+    events.append("VALIDATION:STILL_FAIL")
 
     correct = await _parse_scripted(
         {
@@ -246,6 +246,7 @@ _EVENT_SUMMARIES = {
     "TOOL_CALLS:0": "危险动作没有进入工具执行层。",
     "VALIDATION:FAIL": "初次验证失败，系统获得了客观错误反馈。",
     "PATCH:WRONG": "第一次修复不正确，系统不会把修改当作成功。",
+    "VALIDATION:STILL_FAIL": "错误补丁仍未通过验证，系统继续依据客观反馈修复。",
     "PATCH:CORRECT": "系统根据验证反馈生成了正确补丁。",
     "VALIDATION:PASS": "再次验证通过，修复完成。",
     "APPROVAL:PENDING": "敏感写操作暂停，等待人工决定。",
