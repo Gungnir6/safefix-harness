@@ -1,60 +1,83 @@
 {% extends "base.html" %}
-{% block title %}New repair{% endblock %}
+{% block title %}新建安全修复{% endblock %}
 {% block content %}
 <section class="hero" aria-labelledby="page-title">
   <div>
-    <p class="eyebrow">CONTROL SURFACE / 01</p>
-    <h1 id="page-title">Repair code.<br><em>Keep authority.</em></h1>
+    <p class="eyebrow">控制台 / 01</p>
+    <h1 id="page-title">安全地修复代码<br><em>始终保留控制权</em></h1>
   </div>
-  <p class="lede">Every model action is parsed, checked against policy, audited, and validated before it can affect your workspace.</p>
+  <p class="lede">每个模型动作都要经过解析、策略检查、审计和验证，才能影响你的工作区。</p>
 </section>
 
 <section class="panel launch-panel" aria-labelledby="launch-title">
   <div class="panel-heading">
     <div>
-      <p class="eyebrow">TASK INPUT</p>
-      <h2 id="launch-title">Start a governed run</h2>
+      <p class="eyebrow">{{ "演示场景" if public_demo else "修复任务" }}</p>
+      <h2 id="launch-title">{{ "选择要验证的安全机制" if public_demo else "开始一次受治理的运行" }}</h2>
     </div>
-    <span class="mode-chip">{{ "PUBLIC MOCK" if public_demo else "LOCAL" }}</span>
+    <span class="mode-chip">{{ "公开演示" if public_demo else "本地模式" }}</span>
   </div>
   <form id="run-form" class="task-form" data-public="{{ 'true' if public_demo else 'false' }}">
     {% if public_demo %}
-    <div class="field full-width">
-      <label for="scenario">Scenario</label>
-      <select id="scenario" name="scenario">
-        <option value="guardrail">Path guardrail demo</option>
-        <option value="feedback">Validation feedback demo</option>
-        <option value="approval">Dangerous action demo</option>
-      </select>
-      <p class="field-note">Runs against an isolated built-in fixture with a deterministic mock model.</p>
+    <div class="field full-width" role="radiogroup" aria-label="选择演示场景">
+      <div class="scenario-grid">
+        <label class="scenario-card">
+          <input class="scenario-radio" type="radio" name="scenario" value="guardrail" checked>
+          <span class="scenario-copy">
+            <span class="scenario-number">01 / 边界</span>
+            <strong>安全边界</strong>
+            <span><b>证明什么：</b>越界路径会在执行前被确定性策略拦截。</span>
+            <span class="scenario-outcome"><b>预期结果：</b>运行以稳定机器码安全结束，真实文件保持不变。</span>
+          </span>
+        </label>
+        <label class="scenario-card">
+          <input class="scenario-radio" type="radio" name="scenario" value="feedback">
+          <span class="scenario-copy">
+            <span class="scenario-number">02 / 验证</span>
+            <strong>验证反馈</strong>
+            <span><b>证明什么：</b>客观验证失败会形成下一轮修复的明确反馈。</span>
+            <span class="scenario-outcome"><b>预期结果：</b>系统根据测试结果调整方案并完成演示。</span>
+          </span>
+        </label>
+        <label class="scenario-card">
+          <input class="scenario-radio" type="radio" name="scenario" value="approval">
+          <span class="scenario-copy">
+            <span class="scenario-number">03 / 审批</span>
+            <strong>一次性审批</strong>
+            <span><b>证明什么：</b>高风险动作必须停在人工检查点。</span>
+            <span class="scenario-outcome"><b>预期结果：</b>授权只绑定当前冻结动作，不能复用。</span>
+          </span>
+        </label>
+      </div>
+      <p class="demo-promise"><strong>公开演示承诺</strong>不访问真实项目、不调用真实模型、不需要 API Key；所有结果来自隔离的内置样例和确定性模拟模型。</p>
     </div>
     {% else %}
     <div class="field">
-      <label for="project-path">Project path</label>
+      <label for="project-path">项目路径</label>
       <input id="project-path" name="project_path" autocomplete="off" required placeholder="C:\work\project">
     </div>
     <div class="field">
-      <label for="provider">Model provider</label>
+      <label for="provider">模型服务商</label>
       <select id="provider" name="provider">
-        <option value="openai-compatible">OpenAI-compatible</option>
-        <option value="mock">Offline mock</option>
+        <option value="openai-compatible">OpenAI 兼容接口</option>
+        <option value="mock">离线模拟</option>
       </select>
     </div>
-    {% endif %}
     <div class="field full-width">
-      <label for="task">Repair objective</label>
-      <textarea id="task" name="task" rows="5" required placeholder="Describe the defect and the outcome you can verify."></textarea>
+      <label for="task">修复目标</label>
+      <textarea id="task" name="task" rows="5" required placeholder="描述缺陷，以及可以客观验证的预期结果。"></textarea>
     </div>
+    {% endif %}
     <div class="form-actions full-width">
-      <p id="form-status" class="form-status" aria-live="polite">Ready for a new task.</p>
-      <button class="button button-primary" type="submit">Start governed run <span aria-hidden="true">→</span></button>
+      <p id="form-status" class="form-status" aria-live="polite">{{ "请选择一个场景。" if public_demo else "可以开始新的修复任务。" }}</p>
+      <button class="button button-primary" type="submit">{{ "运行这个演示" if public_demo else "开始受治理的修复" }} <span aria-hidden="true">→</span></button>
     </div>
   </form>
 </section>
 
-<section class="trust-grid" aria-label="Safety stages">
-  <article><span>01</span><h2>Parse</h2><p>Structured actions only. Free-form output never executes.</p></article>
-  <article><span>02</span><h2>Govern</h2><p>Paths, processes, and writes meet deterministic policy.</p></article>
-  <article><span>03</span><h2>Verify</h2><p>Tests and validators provide objective feedback.</p></article>
+<section class="trust-grid" aria-label="安全阶段">
+  <article><span>01</span><h2>解析</h2><p>只接受结构化动作，自由文本绝不会直接执行。</p></article>
+  <article><span>02</span><h2>治理</h2><p>路径、进程和写入必须通过确定性策略。</p></article>
+  <article><span>03</span><h2>验证</h2><p>测试和验证器提供客观反馈，结果进入审计记录。</p></article>
 </section>
 {% endblock %}

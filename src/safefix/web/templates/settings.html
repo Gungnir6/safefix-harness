@@ -1,33 +1,33 @@
 {% extends "base.html" %}
-{% block title %}Settings{% endblock %}
+{% block title %}设置{% endblock %}
 {% block content %}
 <section class="page-heading">
-  <p class="eyebrow">SYSTEM / SETTINGS</p>
-  <h1>Local boundaries</h1>
-  <p>Inspect configuration state without exposing secret values.</p>
+  <p class="eyebrow">系统 / 设置</p>
+  <h1>本地安全边界</h1>
+  <p>检查配置状态，同时不暴露任何密钥内容。</p>
 </section>
 
 <div class="settings-grid">
   <section class="panel" aria-labelledby="credential-title">
-    <div class="panel-heading"><h2 id="credential-title">Model credential</h2><span class="mode-chip">LOCAL ONLY</span></div>
+    <div class="panel-heading"><h2 id="credential-title">模型凭据</h2><span class="mode-chip">仅限本地</span></div>
     {% if credential %}
     <dl class="definition-list">
-      <div><dt>Status</dt><dd>{{ "Configured" if credential.configured else "Not configured" }}</dd></div>
-      <div><dt>Source</dt><dd>{{ credential.source or "none" }}</dd></div>
-      <div><dt>Provider</dt><dd>{{ credential.provider }}</dd></div>
+      <div><dt>凭据状态</dt><dd>{{ "已配置" if credential.configured else "未配置" }}</dd></div>
+      <div><dt>凭据来源</dt><dd>{{ "系统密钥环（keyring）" if credential.source == "keyring" else (credential.source or "无") }}</dd></div>
+      <div><dt>模型服务商</dt><dd>{{ credential.provider }}</dd></div>
     </dl>
-    {% else %}<p>Credential status is unavailable.</p>{% endif %}
-    <p class="field-note">Secret values are managed through the local CLI and never rendered here.</p>
+    {% else %}<p>凭据状态暂时不可用。</p>{% endif %}
+    <p class="field-note">密钥由本地命令行工具管理，永远不会在此页面渲染。</p>
   </section>
 
   <section class="panel" aria-labelledby="memory-title">
-    <div class="panel-heading"><h2 id="memory-title">Project memory</h2><span class="count-chip">{{ memory | length }}</span></div>
-    <p class="project-label">Project: {{ project_id }}</p>
+    <div class="panel-heading"><h2 id="memory-title">项目记忆</h2><span class="count-chip">{{ memory | length }}</span></div>
+    <p class="project-label">项目：{{ project_id }}</p>
     <ul class="memory-list">
       {% for item in memory %}<li><strong>{{ item.type }}</strong><span>{{ item.content }}</span></li>
-      {% else %}<li class="empty-state">No retained project memory.</li>{% endfor %}
+      {% else %}<li class="empty-state">没有保留的项目记忆。</li>{% endfor %}
     </ul>
-    <button type="button" class="button button-danger" id="clear-memory" data-project="{{ project_id }}">Clear project memory</button>
+    <button type="button" class="button button-danger" id="clear-memory" data-project="{{ project_id }}">清除项目记忆</button>
   </section>
 </div>
 {% endblock %}

@@ -1,33 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>{% block title %}SafeFix{% endblock %} · governed repair console</title>
+  <title>{% block title %}SafeFix{% endblock %} · 受治理的修复控制台</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">跳到主要内容</a>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="SafeFix home">
+    <a class="brand" href="/" aria-label="SafeFix 首页">
       <span class="brand-mark" aria-hidden="true">SF/</span>
       <span>SafeFix</span>
     </a>
-    <p class="system-label">GOVERNED REPAIR HARNESS</p>
-    <nav aria-label="Primary navigation">
-      <a href="/">New run</a>
-      <a href="/settings">Settings</a>
+    <p class="system-label">受治理的修复控制台</p>
+    <nav aria-label="主要导航">
+      <a href="/">新建运行</a>
+      <a href="/settings">设置</a>
     </nav>
   </header>
   <main id="main" class="shell">
     {% block content %}{% endblock %}
   </main>
   <footer>
-    <span>LOCAL-FIRST</span>
-    <span>POLICY-GATED</span>
-    <span>NO TELEMETRY</span>
+    <span>本地优先</span>
+    <span>策略把关</span>
+    <span>无遥测</span>
   </footer>
 </body>
 </html>

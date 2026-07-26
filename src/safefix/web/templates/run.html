@@ -1,15 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Run {{ run.run_id }}{% endblock %}
+{% block title %}运行 {{ run.run_id }}{% endblock %}
 {% block content %}
 <section class="run-header" data-run-id="{{ run.run_id }}" data-terminal="{{ 'true' if terminal else 'false' }}">
   <div>
-    <p class="eyebrow">RUN / {{ run.run_id }}</p>
+    <p class="eyebrow">运行 / {{ run.run_id }}</p>
     <h1>{{ run.description }}</h1>
     <p class="run-path">{{ run.workspace_root }}</p>
   </div>
   <div class="status-block">
-    <span>Current state</span>
-    <strong id="run-status" aria-live="polite" data-status="{{ run.status.value }}">{{ run.status.value }}</strong>
+    <span>当前状态</span>
+    <strong id="run-status" aria-live="polite" data-status="{{ run.status.value }}">{{ status_label }}</strong>
+    <small>机器码 · {{ run.status.value }}</small>
   </div>
 </section>
 
@@ -19,33 +20,37 @@
 <section class="approval-panel" aria-labelledby="approval-title" data-csrf="{{ approval.csrf_token }}">
   <div class="approval-stripe" aria-hidden="true"></div>
   <div>
-    <p class="eyebrow">HUMAN CHECKPOINT</p>
-    <h2 id="approval-title">This action crosses a write boundary.</h2>
-    <p>The policy rule <strong>CMD_GIT_WRITE</strong> requires a one-time decision. Approval applies only to the frozen action shown in this run.</p>
+    <p class="eyebrow">人工检查点</p>
+    <h2 id="approval-title">这个动作将跨越写入边界</h2>
+    <p>策略规则 <strong>CMD_GIT_WRITE</strong> 要求做出一次性决定。批准只适用于本次运行中已经冻结的动作。</p>
   </div>
   <div class="approval-actions">
-    <button type="button" class="button button-primary" data-decision="approve">Approve once</button>
-    <button type="button" class="button button-danger" data-decision="reject">Reject</button>
+    <button type="button" class="button button-primary" data-decision="approve">仅批准这一次</button>
+    <button type="button" class="button button-danger" data-decision="reject">拒绝</button>
   </div>
 </section>
 {% endif %}
 
 <section class="timeline-section" aria-labelledby="timeline-title">
   <div class="section-heading">
-    <div><p class="eyebrow">AUDIT STREAM</p><h2 id="timeline-title">Decision timeline</h2></div>
-    {% if not terminal %}<button type="button" class="button button-quiet" id="cancel-run">Cancel run</button>{% endif %}
+    <div><p class="eyebrow">审计流</p><h2 id="timeline-title">决策时间线</h2></div>
+    {% if not terminal %}<button type="button" class="button button-quiet" id="cancel-run">取消运行</button>{% endif %}
   </div>
   <ol id="timeline" class="timeline">
     {% for event in events %}
     <li class="event event-{{ event.event_type | lower }}" data-event-type="{{ event.event_type }}">
       <div class="event-index">{{ "%02d" | format(event.sequence) }}</div>
       <div class="event-body">
-        <div class="event-meta"><strong>{{ event.event_type | replace("_", " ") }}</strong><time>{{ event.created_at }}</time></div>
-        <pre>{{ event.redacted_payload }}</pre>
+        <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type | replace("_", " ")) }}</strong><time>{{ event.created_at }}</time></div>
+        {% if event.redacted_payload.summary %}<p class="event-summary">{{ event.redacted_payload.summary }}</p>{% endif %}
+        <details>
+          <summary>查看技术细节</summary>
+          <pre>{{ event.redacted_payload }}</pre>
+        </details>
       </div>
     </li>
     {% else %}
-    <li class="empty-state">No audit events have been recorded yet.</li>
+    <li class="empty-state">尚未记录审计事件。</li>
     {% endfor %}
   </ol>
 </section>

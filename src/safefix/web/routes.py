@@ -24,6 +24,25 @@ _TERMINAL = {
     RunStatus.CANCELLED,
 }
 
+_STATUS_LABELS = {
+    RunStatus.CREATED: "已创建",
+    RunStatus.RUNNING: "运行中",
+    RunStatus.AWAITING_APPROVAL: "等待人工批准",
+    RunStatus.SUCCESS: "演示成功",
+    RunStatus.BLOCKED: "已被安全策略拦截",
+    RunStatus.NO_PROGRESS: "没有取得进展",
+    RunStatus.BUDGET_EXCEEDED: "已达到执行预算",
+    RunStatus.FAILED: "运行失败",
+    RunStatus.CANCELLED: "已取消",
+}
+
+_EVENT_LABELS = {
+    "MODEL_REQUEST": "模型请求",
+    "POLICY_DECISION": "策略判断",
+    "TOOL_RESULT": "工具结果",
+    "DEMO_EVENT": "演示步骤",
+}
+
 
 class CreateRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -89,6 +108,10 @@ def create_router(dependencies: Any) -> APIRouter:
                 "events": events,
                 "approval": access,
                 "terminal": snapshot.status in _TERMINAL,
+                "status_label": _STATUS_LABELS.get(
+                    snapshot.status, snapshot.status.value
+                ),
+                "event_labels": _EVENT_LABELS,
             },
         )
         if access is not None:
