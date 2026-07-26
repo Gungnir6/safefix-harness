@@ -2,14 +2,18 @@ stages: [test, quality, build]
 
 unit-test:
   stage: test
-  image: python:3.12-slim
+  image:
+    name: python:3.12-slim
+    pull_policy: [always, if-not-present]
   script:
     - python -m pip install -e ".[dev]"
     - python -m pytest -q
 
 lint-type:
   stage: quality
-  image: python:3.12-slim
+  image:
+    name: python:3.12-slim
+    pull_policy: [always, if-not-present]
   needs: [unit-test]
   script:
     - python -m pip install -e ".[dev]"
@@ -21,6 +25,7 @@ secret-scan:
   image:
     name: zricethezav/gitleaks:v8.24.2
     entrypoint: [""]
+    pull_policy: [always, if-not-present]
   needs: [unit-test]
   variables:
     GIT_DEPTH: "0"
@@ -29,8 +34,12 @@ secret-scan:
 
 image-build:
   stage: build
-  image: docker:27-cli
-  services: [docker:27-dind]
+  image:
+    name: docker:27-cli
+    pull_policy: [always, if-not-present]
+  services:
+    - name: docker:27-dind
+      pull_policy: [always, if-not-present]
   needs: [unit-test, lint-type, secret-scan]
   script:
     - docker build --tag safefix-harness:$CI_COMMIT_SHA .

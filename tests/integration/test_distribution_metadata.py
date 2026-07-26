@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
 from fastapi.testclient import TestClient
 
 from safefix.cli import main
@@ -26,6 +27,16 @@ def test_required_delivery_files_and_ci_job_exist() -> None:
     gitlab = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
     for job in ("unit-test:", "lint-type:", "secret-scan:", "image-build:"):
         assert job in gitlab
+
+
+def test_gitlab_ci_can_fall_back_to_cached_images() -> None:
+    pipeline = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    for job in ("unit-test", "lint-type", "secret-scan", "image-build"):
+        image = pipeline[job]["image"]
+        assert image["pull_policy"] == ["always", "if-not-present"]
+    service = pipeline["image-build"]["services"][0]
+    assert service["pull_policy"] == ["always", "if-not-present"]
 
 
 def test_readme_has_required_submission_sections() -> None:
