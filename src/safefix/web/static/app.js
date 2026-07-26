@@ -36,6 +36,19 @@ const eventLabels = Object.freeze({
   DEMO_EVENT: "演示步骤"
 });
 
+const eventSummaries = Object.freeze({
+  MODEL_REQUEST: "模型正在请求下一步受治理的动作。",
+  ACTION: "模型提出了一个结构化动作，等待策略检查。",
+  POLICY_DECISION: "安全策略已完成对动作的判定。",
+  TOOL_RESULT: "工具执行结果已返回并进入审计记录。",
+  APPROVAL_REQUESTED: "高风险动作已暂停，等待人工审批。",
+  APPROVAL_APPROVED: "人工审批已通过，冻结动作可以继续。",
+  APPROVAL_EXPIRED: "审批请求已过期，动作不会执行。",
+  APPROVAL_REJECTED: "人工审批已拒绝，动作不会执行。",
+  APPROVAL_CANCELLED: "审批请求已取消，动作不会执行。",
+  DEMO_EVENT: "演示已记录一个确定性步骤。"
+});
+
 function explainError(code) {
   const explanation = Object.hasOwn(errorMessages, code) ? errorMessages[code] : null;
   return explanation ? `${explanation} (${code})` : code;
@@ -48,6 +61,11 @@ function statusLabel(code, publicDemo = false) {
 
 function eventLabel(code) {
   return eventLabels[code] || code;
+}
+
+function eventSummary(type, payload) {
+  if (payload?.summary) return payload.summary;
+  return eventSummaries[type] || null;
 }
 
 async function requestJson(url, options = {}) {
@@ -154,10 +172,11 @@ if (runHeader) {
       meta.appendChild(timestamp);
       body.appendChild(meta);
 
-      if (event.payload?.summary) {
+      const summaryText = eventSummary(event.type, event.payload);
+      if (summaryText) {
         const summary = document.createElement("p");
         summary.className = "event-summary";
-        summary.textContent = event.payload.summary;
+        summary.textContent = summaryText;
         body.appendChild(summary);
       }
 

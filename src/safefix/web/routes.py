@@ -50,6 +50,19 @@ _EVENT_LABELS = {
     "DEMO_EVENT": "演示步骤",
 }
 
+_EVENT_SUMMARIES = {
+    "MODEL_REQUEST": "模型正在请求下一步受治理的动作。",
+    "ACTION": "模型提出了一个结构化动作，等待策略检查。",
+    "POLICY_DECISION": "安全策略已完成对动作的判定。",
+    "TOOL_RESULT": "工具执行结果已返回并进入审计记录。",
+    "APPROVAL_REQUESTED": "高风险动作已暂停，等待人工审批。",
+    "APPROVAL_APPROVED": "人工审批已通过，冻结动作可以继续。",
+    "APPROVAL_EXPIRED": "审批请求已过期，动作不会执行。",
+    "APPROVAL_REJECTED": "人工审批已拒绝，动作不会执行。",
+    "APPROVAL_CANCELLED": "审批请求已取消，动作不会执行。",
+    "DEMO_EVENT": "演示已记录一个确定性步骤。",
+}
+
 
 class CreateRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -122,6 +135,7 @@ def create_router(dependencies: Any) -> APIRouter:
                     else _STATUS_LABELS.get(snapshot.status, snapshot.status.value)
                 ),
                 "event_labels": _EVENT_LABELS,
+                "event_summaries": _EVENT_SUMMARIES,
                 "event_json": lambda payload: json.dumps(
                     payload, ensure_ascii=False, sort_keys=True
                 ),

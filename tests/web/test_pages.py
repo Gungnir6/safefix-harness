@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import subprocess
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -11,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from safefix.domain import RunStatus
+from safefix.governance.audit import AuditStore
 from safefix.web.app import AppDependencies, create_app
 from tests.web.test_api import FakeService, _snapshot
 
@@ -124,7 +126,6 @@ class SuccessPageService(PageService):
 
 class EventLabelPageService(PageService):
     def list_events(self, run_id: str) -> list[object]:
-        del run_id
         event_types = (
             "MODEL_REQUEST",
             "ACTION",
@@ -138,15 +139,14 @@ class EventLabelPageService(PageService):
             "DEMO_EVENT",
             "FUTURE_EVENT",
         )
-        return [
-            SimpleNamespace(
-                sequence=index,
-                event_type=event_type,
-                redacted_payload={"code": event_type},
-                created_at=datetime.now(UTC),
-            )
-            for index, event_type in enumerate(event_types, start=1)
-        ]
+        connection = sqlite3.connect(":memory:")
+        try:
+            store = AuditStore(connection)
+            for event_type in event_types:
+                store.append(run_id, event_type, {"code": event_type})
+            return store.list_events(run_id)
+        finally:
+            connection.close()
 
 
 def test_local_home_is_accessible_and_has_task_controls() -> None:
@@ -267,8 +267,8 @@ class FakeElement {
             && Object.hasOwn(child.dataset, "sequence")) {
           matches.push(child);
         }
-        if (selector === ".empty-state"
-            && child.className.split(" ").includes("empty-state")) {
+        if (selector.startsWith(".")
+            && child.className.split(" ").includes(selector.slice(1))) {
           matches.push(child);
         }
         visit(child);
@@ -391,6 +391,28 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
     }]
   );
   const stillEmpty = await runTimelineScenario([], true, []);
+  const fallbackTimeline = await runTimelineScenario(
+    [],
+    true,
+    [
+      "MODEL_REQUEST",
+      "ACTION",
+      "POLICY_DECISION",
+      "TOOL_RESULT",
+      "APPROVAL_REQUESTED",
+      "APPROVAL_APPROVED",
+      "APPROVAL_EXPIRED",
+      "APPROVAL_REJECTED",
+      "APPROVAL_CANCELLED",
+      "DEMO_EVENT",
+      "FUTURE_EVENT"
+    ].map((type, index) => ({
+      sequence: index + 10,
+      type,
+      payload: { code: type },
+      created_at: "2026-07-26T00:00:03Z"
+    }))
+  );
   const publicStatus = createPage({
     publicDemo: true,
     fetch: async (url) => {
@@ -456,6 +478,12 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
     deduplicatedSequences: synced.timeline
       .querySelectorAll("[data-sequence]")
       .map((item) => item.dataset.sequence),
+    syncedSummaries: synced.timeline
+      .querySelectorAll(".event-summary")
+      .map((item) => item.textContent),
+    fallbackSummaries: fallbackTimeline.timeline
+      .querySelectorAll(".event-summary")
+      .map((item) => item.textContent),
     populatedTimeline: {
       emptyCount: populated.timeline.querySelectorAll(".empty-state").length,
       sequences: populated.timeline
@@ -521,6 +549,19 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
             "dataStatus": "SUCCESS",
         },
         "deduplicatedSequences": ["1", "2"],
+        "syncedSummaries": ["新增事件"],
+        "fallbackSummaries": [
+            "模型正在请求下一步受治理的动作。",
+            "模型提出了一个结构化动作，等待策略检查。",
+            "安全策略已完成对动作的判定。",
+            "工具执行结果已返回并进入审计记录。",
+            "高风险动作已暂停，等待人工审批。",
+            "人工审批已通过，冻结动作可以继续。",
+            "审批请求已过期，动作不会执行。",
+            "人工审批已拒绝，动作不会执行。",
+            "审批请求已取消，动作不会执行。",
+            "演示已记录一个确定性步骤。",
+        ],
         "populatedTimeline": {"emptyCount": 0, "sequences": ["3"]},
         "emptyTimeline": {"emptyCount": 1, "eventCount": 0},
         "cancellation": {
@@ -662,6 +703,14 @@ def test_run_page_localizes_all_real_audit_events_and_preserves_unknown_code() -
         _node_text(_find_nodes(item["children"], "strong")[0])  # type: ignore[arg-type]
         for item in event_items
     ]
+    summaries = [
+        _node_text(nodes[0]) if (nodes := _find_nodes(item["children"], "p")) else None  # type: ignore[arg-type]
+        for item in event_items
+    ]
+    details = [
+        json.loads(_node_text(_find_nodes(item["children"], "pre")[0]))  # type: ignore[arg-type]
+        for item in event_items
+    ]
 
     assert labels == [
         "模型请求",
@@ -675,6 +724,35 @@ def test_run_page_localizes_all_real_audit_events_and_preserves_unknown_code() -
         "审批已取消",
         "演示步骤",
         "FUTURE_EVENT",
+    ]
+    assert summaries == [
+        "模型正在请求下一步受治理的动作。",
+        "模型提出了一个结构化动作，等待策略检查。",
+        "安全策略已完成对动作的判定。",
+        "工具执行结果已返回并进入审计记录。",
+        "高风险动作已暂停，等待人工审批。",
+        "人工审批已通过，冻结动作可以继续。",
+        "审批请求已过期，动作不会执行。",
+        "人工审批已拒绝，动作不会执行。",
+        "审批请求已取消，动作不会执行。",
+        "演示已记录一个确定性步骤。",
+        None,
+    ]
+    assert details == [
+        {"code": event_type}
+        for event_type in (
+            "MODEL_REQUEST",
+            "ACTION",
+            "POLICY_DECISION",
+            "TOOL_RESULT",
+            "APPROVAL_REQUESTED",
+            "APPROVAL_APPROVED",
+            "APPROVAL_EXPIRED",
+            "APPROVAL_REJECTED",
+            "APPROVAL_CANCELLED",
+            "DEMO_EVENT",
+            "FUTURE_EVENT",
+        )
     ]
 
 

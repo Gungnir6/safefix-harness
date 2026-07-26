@@ -42,7 +42,8 @@
       <div class="event-index">{{ "%02d" | format(event.sequence) }}</div>
       <div class="event-body">
         <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type) }}</strong><time>{{ event.created_at }}</time></div>
-        {% if event.redacted_payload.summary %}<p class="event-summary">{{ event.redacted_payload.summary }}</p>{% endif %}
+        {% set event_summary = event.redacted_payload.summary or event_summaries.get(event.event_type) %}
+        {% if event_summary %}<p class="event-summary">{{ event_summary }}</p>{% endif %}
         <details>
           <summary>查看技术细节</summary>
           <pre>{{ event_json(event.redacted_payload) }}</pre>
