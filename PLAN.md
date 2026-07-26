@@ -1455,7 +1455,7 @@ unit-test:
 
 Include project overview, installation, local Keyring setup/status/update/clear, Docker secret and `.env` risk, local WebUI/CLI commands, public demo, distribution commands, directory structure, three-level security boundary, Docker-vs-native limitations, supported platforms, tests/demos, architecture, deployment, third-party licenses and the final public URL after deployment.
 
-- [ ] **Step 7: Run full verification and secret scan**
+- [x] **Step 7: Run full verification and secret scan**
 
 Run: `python -m pytest`
 
@@ -1465,8 +1465,8 @@ Run the configured linter, type checker and secret scanner over tracked files an
 
 Expected: zero errors and zero verified secrets.
 
-本地测试、Ruff 与 mypy 已通过；本机未安装 Gitleaks，Git 历史扫描由合并请求流水线的 `secret-scan` job 完成。
-MR 首次运行暴露学校 Runner 访问 Docker Hub 的可用性问题，且管理员只允许 `always` 拉取策略；所有 job 镜像及 DinD 服务均改走 GitLab Dependency Proxy，在保持管理员策略的同时复用 GitLab 侧镜像缓存。
+本地测试、Ruff 与 mypy 已通过。仓库迁移至 [GitHub](https://github.com/Gungnir6/safefix-harness) 后，最终 [GitHub Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) 全部通过：Linux 801 passed、19 skipped，Ruff、mypy、Gitleaks 和 Docker 镜像构建成功。
+迁移前 GitLab MR 首次运行曾暴露学校 Runner 访问 Docker Hub 的可用性问题，且管理员只允许 `always` 拉取策略；保留的 GitLab CI 已改走 Dependency Proxy。
 
 - [ ] **Step 8: Deploy and verify public demo**
 
@@ -1528,5 +1528,5 @@ Update this table only with actual commits; do not prefill hashes.
 | T14 | Completed | `35daee5`; merge `a72afc9` | [!14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14) | Quick-delivery mode, no independent review; 800 passed, 2 skipped; Ruff passed |
 | T15 | Completed | `a6b9384`; merge `583c15b` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
 | T16 | Completed / Merged | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
-| T17 | Completed (awaiting merge/deploy) | `3c405c9` | [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Quick-delivery mode, no independent review; 817 passed, 2 skipped; Ruff/mypy/build passed; Render deploy and CI secret scan pending external service |
+| T17 | Completed on GitHub main (deploy pending) | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161` | [GitHub main](https://github.com/Gungnir6/safefix-harness) / legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Quick-delivery mode; [Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) passed 801 tests with Ruff, mypy, Gitleaks and Docker build; Render deploy remains pending |
 | Gate 2 | Pending | — | — | Final submission |

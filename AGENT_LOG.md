@@ -198,10 +198,11 @@
 
 ## T17 — Distribution, CI, README and Public-Demo Release
 
-- 时间：2026-07-22 +08:00；分支 / MR：`t17-distribution-ci-docs` / [GitLab !18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18)，待合并。
+- 时间：2026-07-22–2026-07-26 +08:00；分支：`t17-distribution-ci-docs`；迁移前 [GitLab !18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18)，当前主仓库为 [GitHub](https://github.com/Gungnir6/safefix-harness)，实现已进入 `main`。
 - 实现：`3c405c9 build(distribution): 添加可复现分发与持续集成`。新增可复现 wheel/sdist、非 root Python 3.12 Docker 镜像、GitLab/GitHub CI、Render Blueprint、完整 README、`/health`、默认公开 mock Web 服务及打包后的演示 fixture。
 - 回归修复：发现 T16 同一秒内连续写入等长源码可能命中旧 `.pyc`；将中间错误补丁改为不同长度，三个场景连续三轮均 PASS。
 - 验证：T17 RED 为 6 failed，GREEN 为 6 passed；全量 817 passed、2 skipped；Ruff、mypy、`git diff --check` 通过；wheel 与 sdist 构建成功并核验模板、静态资源和 fixture 均在 wheel 内。
-- 外部状态：本机 Docker Desktop 守护进程未启动，因此本地镜像构建未执行完成；本机没有 Gitleaks 与 Render 凭据，镜像构建/历史 secret scan 交给 MR CI，Render 实际部署等待仓库所有者授权。没有伪造在线 URL。
-- CI 修复：MR 重试在检出仓库前卡于 `Pulling docker image python:3.12-slim`，随后确认管理员仅允许 `always`，仓库不能启用 `if-not-present`。按 GitLab 官方模式，将全部 job 镜像及 DinD 服务切换到 `CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX`，以 GitLab 侧代理缓存避开 Runner 直连 Docker Hub，并新增 YAML 语义回归测试。
+- 外部状态：Render 实际部署仍等待仓库所有者账户授权；没有伪造在线 URL。
+- CI 修复：迁移前 GitLab Runner 因 Docker Hub 拉取及管理员 `always` 策略失败，保留配置改走 Dependency Proxy。迁移 GitHub 后，`8f86cb9` 将仅适用于 Windows 的 `.EXE/.CMD` 测试限定到 Windows，`61eb61a` 将 Ruff 固定在已验证的 `<0.16`，`b259161` 将 GHCR 镜像标签改为全小写。
+- GitHub 验证：[Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) 在提交 `b259161` 上全部通过：Linux 801 passed、19 skipped；Ruff 通过；mypy 对 30 个源码文件无问题；Gitleaks 未发现秘密；非 root Docker 镜像构建成功。
 - 模式：按学生要求采用快速交付，不执行独立子代理评审；文档已在提交与推送阶段同步更新。

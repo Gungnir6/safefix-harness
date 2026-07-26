@@ -2,6 +2,8 @@
 
 SafeFix 是一个带确定性安全边界的自动代码修复实验框架。模型输出先被解析为结构化动作，再经过路径、命令、审批、审计和验证规则，才允许影响工作区。本仓库包含 CLI、Web 控制台以及不需要真实模型密钥的离线演示。
 
+主仓库：[Gungnir6/safefix-harness](https://github.com/Gungnir6/safefix-harness)。
+
 ## Installation
 
 需要 Python 3.12：
@@ -48,7 +50,7 @@ docker build -t safefix .
 docker run --rm -p 8000:8000 safefix
 ```
 
-GitLab CI 执行测试、lint/type、历史 secret scan 和镜像构建；GitHub Actions 执行同类检查，仅在受保护的 tag 工作流中向 GHCR 推送镜像。
+GitHub Actions 执行测试、lint/type、Git 历史 secret scan 和镜像构建，仅在 tag 工作流中向 `ghcr.io/gungnir6/safefix-harness` 推送镜像。迁移前的 GitLab CI 配置保留用于课程环境兼容。
 
 ## Project Structure
 
