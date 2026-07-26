@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -751,6 +752,47 @@ def test_local_run_page_has_no_demo_verdict_and_keeps_payload_escaped() -> None:
         ]
         for item in event_items
     )
+
+
+def test_tool_result_acid_style_is_scoped_to_local_event_structure() -> None:
+    local_client = TestClient(
+        create_app(AppDependencies(service=PageService()))
+    )
+    public_client = TestClient(
+        create_app(AppDependencies(service=PageService(), public_demo=True))
+    )
+    local_page = _parse_page(local_client.get("/runs/run-1").text)
+    public_page = _parse_page(public_client.get("/runs/run-1").text)
+
+    def tool_result(page: _PageParser) -> dict[str, object]:
+        return next(
+            node
+            for node in _find_nodes(page.roots, "li")
+            if node["attrs"].get("data-event-type") == "TOOL_RESULT"  # type: ignore[union-attr]
+        )
+
+    def matches_local_selector(node: dict[str, object]) -> bool:
+        attrs = node["attrs"]
+        return (
+            "event-tool_result"
+            in str(attrs.get("class", "")).split()  # type: ignore[union-attr]
+            and "data-state" not in attrs  # type: ignore[operator]
+        )
+
+    local_tool_result = tool_result(local_page)
+    public_tool_result = tool_result(public_page)
+    assert matches_local_selector(local_tool_result)
+    assert not matches_local_selector(public_tool_result)
+
+    css = local_client.get("/static/app.css").text
+    rules = {
+        selector.strip(): declarations
+        for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+    }
+    local_selector = (
+        ".event-tool_result:not([data-state]) .event-meta strong"
+    )
+    assert "color: var(--acid);" in rules[local_selector]
 
 
 def test_run_page_explains_status_and_keeps_escaped_technical_details() -> None:

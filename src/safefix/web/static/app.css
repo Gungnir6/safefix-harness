@@ -283,6 +283,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .event-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 12px; }
 .event-meta strong { color: var(--cyan); font-size: 12px; letter-spacing: .08em; }
 .event-policy_decision .event-meta strong { color: var(--amber); }
+.event-tool_result:not([data-state]) .event-meta strong { color: var(--acid); }
 .event-meta time { margin-left: auto; color: var(--muted); font-size: 11px; }
 .event-state {
   display: inline-flex;
