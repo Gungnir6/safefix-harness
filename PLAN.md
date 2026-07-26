@@ -1510,7 +1510,9 @@ Record the T17 hash and required evidence after both reviews.
 - [x] RED：先扩展真实 `PublicDemoService` 三场景页面测试与 Node 动态 DOM 行为测试；`tests/web/test_pages.py` 得到 5 failed、18 passed，失败精确指向缺少结论卡、状态徽标/回退和公开 SUCCESS 新文案。
 - [x] GREEN：最小实现结论卡、证据网格、服务端/客户端六态时间线和模式化 SUCCESS 文案；`tests/web/test_pages.py` 为 23 passed。
 - [x] Web 完整回归：仓库根 `.venv` 下 `pytest tests/web -q` 为 33 passed，伴随 1 条既有 `StarletteDeprecationWarning`；Ruff 全通过；危险 DOM API 扫描无匹配；`git diff --check` 无错误。
-- [ ] 浏览器验收：待主代理审查后执行三场景桌面/760px 以下响应式检查，确认失败/拦截显著性、证据单列和无横向溢出。
+- [x] 浏览器验收：真实运行 `guardrail`、`feedback`、`approval` 三场景；桌面端均突出机制结论、关键证据和语义状态，390px 窄屏无横向溢出。
+- [x] 最终验证：843 passed、2 skipped；Ruff、mypy、危险 DOM API 扫描和 `git diff --check` 全通过。
+- [x] 最终整分支审查：Critical / Important / Minor 均为 0，结论 `Ready to merge: Yes`。
 
 ---
 
