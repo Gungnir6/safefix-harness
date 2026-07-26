@@ -70,3 +70,28 @@ CSS 同步移除工具结果标题的无条件酸性绿；公开事件标题现�
 - `git diff --check`：退出码 0。
 
 修复未修改核心 demo、策略、审批、工具或路由 API；未合并、推送或删除工作树。
+
+## 审查修复第二轮
+
+### 提交
+
+- 修复提交：`5a9ae86ae1c1b6fe4a0ff771ed7f6752c193d920`
+- 提交信息：`fix(web): 保留本地工具结果样式`
+
+### RED / GREEN
+
+第二轮审查确认第一轮修复删除了本地真实 `TOOL_RESULT` 原有的酸性绿标题样式。先加入页面/CSS 契约测试，验证本地 `TOOL_RESULT` 无 `data-state`、公开 `TOOL_RESULT` 有 `data-state`，并要求本地专用选择器显式存在：
+
+- RED：`pytest tests/web/test_pages.py -q` 为 **1 failed、23 passed**；真实页面结构断言通过，失败精确指向缺少 `.event-tool_result:not([data-state]) .event-meta strong` 规则。
+- GREEN：新增这一条本地专用规则后，同一命令为 **24 passed**。
+
+该选择器不会命中公开带 `data-state` 的事件；公开标题继续由显式 state 规则控制，不依赖规则的偶然先后顺序。
+
+### 新鲜验证
+
+- `C:\Users\Gungnir\Desktop\safefix-harness\.venv\Scripts\python.exe -m pytest tests/web -q`：**34 passed**，另有 1 条既有第三方 `StarletteDeprecationWarning`。
+- `C:\Users\Gungnir\Desktop\safefix-harness\.venv\Scripts\python.exe -m ruff check src/safefix/web tests/web`：`All checks passed!`
+- `rg -n "innerHTML|insertAdjacentHTML|document\.write" src/safefix/web`：无匹配。
+- `git diff --check`：退出码 0。
+
+本轮只修改 `app.css`、对应页面契约测试和本报告；未合并、推送或删除工作树。
