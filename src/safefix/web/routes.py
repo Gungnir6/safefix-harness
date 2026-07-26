@@ -86,6 +86,13 @@ def _json(value: Any) -> Any:
     return value
 
 
+def _run_response(service: Any, snapshot: Any, public_demo: bool) -> dict[str, Any]:
+    body = dict(_json(snapshot))
+    if public_demo and hasattr(service, "get_presentation"):
+        body["presentation"] = service.get_presentation(snapshot.run_id)
+    return body
+
+
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, LookupError):
         return HTTPException(404, {"code": "RUN_NOT_FOUND"})
@@ -126,10 +133,15 @@ def create_router(dependencies: Any) -> APIRouter:
             context={
                 "run": snapshot,
                 "events": events,
+                "presentation": (
+                    service.get_presentation(run_id)
+                    if dependencies.public_demo and hasattr(service, "get_presentation")
+                    else None
+                ),
                 "approval": access,
                 "terminal": snapshot.status in _TERMINAL,
                 "status_label": (
-                    "演示成功"
+                    "机制验证通过"
                     if dependencies.public_demo
                     and snapshot.status is RunStatus.SUCCESS
                     else _STATUS_LABELS.get(snapshot.status, snapshot.status.value)
@@ -213,7 +225,7 @@ def create_router(dependencies: Any) -> APIRouter:
             raise _error(exc) from None
         if dependencies.public_demo and snapshot.status not in _TERMINAL:
             active_runs.add(snapshot.run_id)
-        return _json(snapshot)
+        return _run_response(service, snapshot, dependencies.public_demo)
 
     @router.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> Any:
@@ -223,7 +235,7 @@ def create_router(dependencies: Any) -> APIRouter:
             raise _error(exc) from None
         if getattr(snapshot, "status", None) in _TERMINAL:
             active_runs.discard(run_id)
-        return _json(snapshot)
+        return _run_response(service, snapshot, dependencies.public_demo)
 
     @router.get("/api/runs/{run_id}/events")
     def list_events(run_id: str) -> list[dict[str, Any]]:

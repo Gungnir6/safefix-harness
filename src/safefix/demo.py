@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 import shutil
@@ -257,6 +258,55 @@ _EVENT_SUMMARIES = {
     "TOOL_CALLS:1": "只有获得批准的原始动作执行了一次。",
 }
 
+_EVENT_PRESENTATION = {
+    "POLICY:DENY": ("blocked", "已拦截"),
+    "RULE:CMD_PRIVILEGE_ESCALATION": ("blocked", "规则命中"),
+    "TOOL_CALLS:0": ("passed", "已验证"),
+    "VALIDATION:FAIL": ("failed", "验证失败"),
+    "PATCH:WRONG": ("changed", "尝试修正"),
+    "VALIDATION:STILL_FAIL": ("failed", "仍未通过"),
+    "PATCH:CORRECT": ("changed", "已修正"),
+    "VALIDATION:PASS": ("passed", "验证通过"),
+    "APPROVAL:PENDING": ("pending", "等待审批"),
+    "STORE:REOPENED": ("info", "状态恢复"),
+    "ACTION_MISMATCH:BLOCKED": ("blocked", "篡改拦截"),
+    "APPROVAL:APPROVED": ("passed", "批准一次"),
+    "TOKEN_REPLAY:BLOCKED": ("blocked", "复用拒绝"),
+    "TOOL_CALLS:1": ("passed", "执行一次"),
+}
+
+_SCENARIO_PRESENTATION = {
+    "guardrail": {
+        "verdict": "机制验证通过",
+        "conclusion": "危险命令在进入工具层前被确定性策略拒绝。",
+        "evidence": (
+            "危险命令已拒绝",
+            "命中禁止提权规则",
+            "工具调用次数为零",
+        ),
+    },
+    "feedback": {
+        "verdict": "机制验证通过",
+        "conclusion": "系统把客观验证失败回灌给循环，并据此生成正确修复。",
+        "evidence": (
+            "首次验证失败",
+            "错误补丁仍未通过",
+            "根据反馈完成修正",
+            "最终验证通过",
+        ),
+    },
+    "approval": {
+        "verdict": "机制验证通过",
+        "conclusion": "高风险动作只对冻结的原始动作授予一次性能力。",
+        "evidence": (
+            "进入人工检查点",
+            "篡改动作被拦截",
+            "原动作只批准一次",
+            "授权复用被拒绝",
+        ),
+    },
+}
+
 
 class PublicDemoService:
     """Small in-memory adapter used by the packaged public demo."""
@@ -264,6 +314,7 @@ class PublicDemoService:
     def __init__(self) -> None:
         self._runs: dict[str, RunSnapshot] = {}
         self._events: dict[str, list[Any]] = {}
+        self._presentations: dict[str, dict[str, object]] = {}
 
     async def create(self, *, task: str, project_path: str, **_: Any) -> RunSnapshot:
         scenario = task.strip().lower()
@@ -293,6 +344,7 @@ class PublicDemoService:
             updated_at=now,
         )
         self._runs[run_id] = snapshot
+        self._presentations[run_id] = deepcopy(_SCENARIO_PRESENTATION[scenario])
         self._events[run_id] = [
             SimpleNamespace(
                 sequence=index,
@@ -300,6 +352,8 @@ class PublicDemoService:
                 redacted_payload={
                     "code": message,
                     "summary": _EVENT_SUMMARIES.get(message, message),
+                    "state": _EVENT_PRESENTATION.get(message, ("info", "信息"))[0],
+                    "state_label": _EVENT_PRESENTATION.get(message, ("info", "信息"))[1],
                 },
                 created_at=now,
             )
@@ -316,6 +370,10 @@ class PublicDemoService:
     def list_events(self, run_id: str) -> list[Any]:
         self.get(run_id)
         return self._events[run_id]
+
+    def get_presentation(self, run_id: str) -> dict[str, object]:
+        self.get(run_id)
+        return deepcopy(self._presentations[run_id])
 
     async def cancel(self, run_id: str) -> RunSnapshot:
         return self.get(run_id)

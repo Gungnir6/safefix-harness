@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 
 from safefix.demo import PublicDemoService
 from safefix.domain import (
@@ -180,6 +181,88 @@ def test_public_demo_exposes_chinese_explanations_and_machine_codes() -> None:
         ("PATCH:CORRECT", "系统根据验证反馈生成了正确补丁。"),
         ("VALIDATION:PASS", "再次验证通过，修复完成。"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_states", "evidence_count", "expected_codes"),
+    [
+        (
+            "guardrail",
+            ["blocked", "blocked", "passed"],
+            3,
+            [
+                "POLICY:DENY",
+                "RULE:CMD_PRIVILEGE_ESCALATION",
+                "TOOL_CALLS:0",
+            ],
+        ),
+        (
+            "feedback",
+            ["failed", "changed", "failed", "changed", "passed"],
+            4,
+            [
+                "VALIDATION:FAIL",
+                "PATCH:WRONG",
+                "VALIDATION:STILL_FAIL",
+                "PATCH:CORRECT",
+                "VALIDATION:PASS",
+            ],
+        ),
+        (
+            "approval",
+            ["pending", "info", "blocked", "passed", "blocked", "passed"],
+            4,
+            [
+                "APPROVAL:PENDING",
+                "STORE:REOPENED",
+                "ACTION_MISMATCH:BLOCKED",
+                "APPROVAL:APPROVED",
+                "TOKEN_REPLAY:BLOCKED",
+                "TOOL_CALLS:1",
+            ],
+        ),
+    ],
+)
+def test_public_demo_api_exposes_stable_scenario_presentation_and_event_states(
+    scenario: str,
+    expected_states: list[str],
+    evidence_count: int,
+    expected_codes: list[str],
+) -> None:
+    client = TestClient(
+        create_app(AppDependencies(service=PublicDemoService(), public_demo=True))
+    )
+
+    created = client.post("/api/runs", json={"task": scenario})
+
+    assert created.status_code == 202
+    created_body = created.json()
+    assert created_body["presentation"]["verdict"] == "机制验证通过"
+    assert len(created_body["presentation"]["evidence"]) == evidence_count
+    run_id = created_body["run_id"]
+    events = client.get(f"/api/runs/{run_id}/events").json()
+    assert [event["payload"]["code"] for event in events] == expected_codes
+    assert [event["payload"]["state"] for event in events] == expected_states
+    assert all(event["payload"]["state_label"] for event in events)
+
+    fetched = client.get(f"/api/runs/{run_id}")
+
+    assert fetched.status_code == 200
+    assert fetched.json()["presentation"] == created_body["presentation"]
+
+
+def test_local_api_run_responses_do_not_gain_demo_presentation() -> None:
+    client = TestClient(create_app(AppDependencies(service=FakeService())))
+
+    created = client.post(
+        "/api/runs", json={"task": "fix value", "project_path": "C:/project"}
+    )
+    fetched = client.get("/api/runs/run-1")
+
+    assert created.status_code == 202
+    assert "presentation" not in created.json()
+    assert fetched.status_code == 200
+    assert "presentation" not in fetched.json()
 
 
 def test_approval_response_hides_capability_and_requires_csrf() -> None:
