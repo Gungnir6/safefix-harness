@@ -1505,6 +1505,15 @@ Record the T17 hash and required evidence after both reviews.
 
 ---
 
+## 演示结果清晰度 — Task 2
+
+- [x] RED：先扩展真实 `PublicDemoService` 三场景页面测试与 Node 动态 DOM 行为测试；`tests/web/test_pages.py` 得到 5 failed、18 passed，失败精确指向缺少结论卡、状态徽标/回退和公开 SUCCESS 新文案。
+- [x] GREEN：最小实现结论卡、证据网格、服务端/客户端六态时间线和模式化 SUCCESS 文案；`tests/web/test_pages.py` 为 23 passed。
+- [x] Web 完整回归：仓库根 `.venv` 下 `pytest tests/web -q` 为 33 passed，伴随 1 条既有 `StarletteDeprecationWarning`；Ruff 全通过；危险 DOM API 扫描无匹配；`git diff --check` 无错误。
+- [ ] 浏览器验收：待主代理审查后执行三场景桌面/760px 以下响应式检查，确认失败/拦截显著性、证据单列和无横向溢出。
+
+---
+
 ## Gate 1: Per-Task Evidence and Review
 
 For every formal task T01–T17:

@@ -2,6 +2,10 @@ const terminalStates = new Set([
   "SUCCESS", "BLOCKED", "NO_PROGRESS", "BUDGET_EXCEEDED", "FAILED", "CANCELLED"
 ]);
 
+const demoStates = new Set([
+  "blocked", "failed", "pending", "changed", "passed", "info"
+]);
+
 const errorMessages = Object.freeze({
   INVALID_STATE: "当前状态不能执行这个操作",
   RUN_NOT_FOUND: "找不到这次运行",
@@ -55,7 +59,7 @@ function explainError(code) {
 }
 
 function statusLabel(code, publicDemo = false) {
-  if (code === "SUCCESS" && publicDemo) return "演示成功";
+  if (code === "SUCCESS" && publicDemo) return "机制验证通过";
   return statusLabels[code] || code;
 }
 
@@ -66,6 +70,16 @@ function eventLabel(code) {
 function eventSummary(type, payload) {
   if (payload?.summary) return payload.summary;
   return Object.hasOwn(eventSummaries, type) ? eventSummaries[type] : null;
+}
+
+function demoState(payload) {
+  return demoStates.has(payload?.state) ? payload.state : "info";
+}
+
+function demoStateLabel(payload) {
+  return demoStates.has(payload?.state) && payload?.state_label
+    ? payload.state_label
+    : "信息";
 }
 
 async function requestJson(url, options = {}) {
@@ -153,6 +167,7 @@ if (runHeader) {
       item.className = "event";
       item.dataset.sequence = String(event.sequence);
       item.dataset.eventType = event.type;
+      item.dataset.state = demoState(event.payload);
       seen.add(String(event.sequence));
 
       const index = document.createElement("div");
@@ -166,9 +181,13 @@ if (runHeader) {
       meta.className = "event-meta";
       const label = document.createElement("strong");
       label.textContent = eventLabel(event.type);
+      const state = document.createElement("span");
+      state.className = "event-state";
+      state.textContent = demoStateLabel(event.payload);
       const timestamp = document.createElement("time");
       timestamp.textContent = event.created_at || "";
       meta.appendChild(label);
+      meta.appendChild(state);
       meta.appendChild(timestamp);
       body.appendChild(meta);
 

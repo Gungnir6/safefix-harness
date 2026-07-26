@@ -211,6 +211,50 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .status-block strong { color: var(--amber); letter-spacing: .08em; }
 .status-block small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; letter-spacing: .08em; }
 
+.demo-verdict {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 20px 28px;
+  margin-top: 32px;
+  border: 1px solid color-mix(in srgb, var(--acid) 45%, var(--line));
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(185, 242, 39, .08), transparent 58%),
+    rgba(17, 21, 21, .74);
+  box-shadow: inset 4px 0 0 rgba(185, 242, 39, .72);
+}
+.verdict-mark {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--acid);
+  place-items: center;
+  color: var(--acid);
+  font: 700 26px/1 var(--display);
+}
+.verdict-copy { min-width: 0; }
+.verdict-copy .eyebrow { margin-bottom: 8px; color: var(--acid); }
+.verdict-copy h2 { margin-bottom: 8px; }
+.verdict-copy > p:last-child { margin-bottom: 0; color: #c9d2cc; }
+.evidence-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 1px;
+  background: var(--line);
+  list-style: none;
+}
+.evidence-grid li {
+  min-width: 0;
+  padding: 12px 14px;
+  background: #0d1010;
+  color: #dce3df;
+  font-size: 12px;
+}
+.evidence-grid span { margin-right: 9px; color: var(--cyan); }
+
 .approval-panel {
   position: relative;
   display: grid;
@@ -230,11 +274,31 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .event { display: grid; grid-template-columns: 70px 1fr; border-bottom: 1px solid var(--line); }
 .event-index { padding: 24px 16px 24px 0; color: var(--muted); font-size: 12px; }
 .event-body { border-left: 1px solid var(--line); padding: 24px 0 24px 28px; }
-.event-meta { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 12px; }
+.event[data-state="blocked"] .event-body { border-left-color: var(--danger); box-shadow: inset 3px 0 0 var(--danger); }
+.event[data-state="failed"] .event-body { border-left-color: var(--amber); box-shadow: inset 3px 0 0 var(--amber); }
+.event[data-state="pending"] .event-body { border-left-color: #f0d34f; box-shadow: inset 3px 0 0 #f0d34f; }
+.event[data-state="changed"] .event-body { border-left-color: var(--cyan); box-shadow: inset 3px 0 0 var(--cyan); }
+.event[data-state="passed"] .event-body { border-left-color: var(--acid); box-shadow: inset 3px 0 0 var(--acid); }
+.event[data-state="info"] .event-body { border-left-color: var(--muted); box-shadow: inset 3px 0 0 var(--muted); }
+.event-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 12px; }
 .event-meta strong { color: var(--cyan); font-size: 12px; letter-spacing: .08em; }
 .event-policy_decision .event-meta strong { color: var(--amber); }
 .event-tool_result .event-meta strong { color: var(--acid); }
-.event-meta time { color: var(--muted); font-size: 11px; }
+.event-meta time { margin-left: auto; color: var(--muted); font-size: 11px; }
+.event-state {
+  display: inline-flex;
+  border: 1px solid currentColor;
+  padding: 3px 7px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: .08em;
+}
+.event[data-state="blocked"] .event-state { color: var(--danger); }
+.event[data-state="failed"] .event-state { color: var(--amber); }
+.event[data-state="pending"] .event-state { color: #f0d34f; }
+.event[data-state="changed"] .event-state { color: var(--cyan); }
+.event[data-state="passed"] .event-state { color: var(--acid); }
 .event-summary { max-width: 72ch; margin: 0 0 14px; color: #d2dbd5; }
 details { border-left: 2px solid var(--line); padding-left: 14px; }
 details[open] { border-left-color: var(--cyan); }
@@ -275,6 +339,8 @@ footer { display: flex; justify-content: center; gap: 34px; border-top: 1px soli
   .field { grid-column: 1; }
   .scenario-grid { grid-template-columns: 1fr; }
   .scenario-copy { min-height: 0; }
+  .demo-verdict { grid-template-columns: 1fr; }
+  .evidence-grid { grid-column: 1; grid-template-columns: 1fr; }
   .trust-grid { grid-template-columns: 1fr; }
   .trust-grid article + article { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; }
   .approval-actions, .form-actions { align-items: stretch; flex-direction: column; }

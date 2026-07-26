@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from safefix.demo import PublicDemoService
 from safefix.domain import RunStatus
 from safefix.governance.audit import AuditStore
 from safefix.web.app import AppDependencies, create_app
@@ -414,6 +415,32 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
       created_at: "2026-07-26T00:00:03Z"
     }))
   );
+  const stateTimeline = await runTimelineScenario(
+    [],
+    false,
+    [
+      {
+        sequence: 30,
+        type: "DEMO_EVENT",
+        payload: {
+          summary: "初次验证失败",
+          state: "failed",
+          state_label: "验证失败"
+        },
+        created_at: "2026-07-26T00:00:04Z"
+      },
+      {
+        sequence: 31,
+        type: "DEMO_EVENT",
+        payload: {
+          summary: "未知状态事件",
+          state: "future",
+          state_label: "伪造标签"
+        },
+        created_at: "2026-07-26T00:00:05Z"
+      }
+    ]
+  );
   const publicStatus = createPage({
     publicDemo: true,
     fetch: async (url) => {
@@ -485,6 +512,14 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
     fallbackSummaries: fallbackTimeline.timeline
       .querySelectorAll(".event-summary")
       .map((item) => item.textContent),
+    stateEvents: {
+      states: stateTimeline.timeline
+        .querySelectorAll("[data-sequence]")
+        .map((item) => item.dataset.state),
+      labels: stateTimeline.timeline
+        .querySelectorAll(".event-state")
+        .map((item) => item.textContent)
+    },
     populatedTimeline: {
       emptyCount: populated.timeline.querySelectorAll(".empty-state").length,
       sequences: populated.timeline
@@ -530,7 +565,7 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
             "constructor",
         ],
         "statuses": ["已创建", "运行中", "等待人工批准", "运行成功"],
-        "publicSuccess": "演示成功",
+        "publicSuccess": "机制验证通过",
         "events": [
             "模型请求",
             "模型动作",
@@ -563,6 +598,10 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
             "审批请求已取消，动作不会执行。",
             "演示已记录一个确定性步骤。",
         ],
+        "stateEvents": {
+            "states": ["failed", "info"],
+            "labels": ["验证失败", "信息"],
+        },
         "populatedTimeline": {"emptyCount": 0, "sequences": ["3"]},
         "emptyTimeline": {"emptyCount": 1, "eventCount": 0},
         "cancellation": {
@@ -572,6 +611,97 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
             "notice": "取消运行失败：当前状态不能执行这个操作 (INVALID_STATE)",
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("scenario", "required_states", "evidence"),
+    [
+        (
+            "guardrail",
+            {"blocked", "passed"},
+            (
+                "危险命令已拒绝",
+                "命中禁止提权规则",
+                "工具调用次数为零",
+            ),
+        ),
+        (
+            "feedback",
+            {"failed", "changed", "passed"},
+            (
+                "首次验证失败",
+                "错误补丁仍未通过",
+                "根据反馈完成修正",
+                "最终验证通过",
+            ),
+        ),
+        (
+            "approval",
+            {"pending", "blocked", "passed"},
+            (
+                "进入人工检查点",
+                "篡改动作被拦截",
+                "原动作只批准一次",
+                "授权复用被拒绝",
+            ),
+        ),
+    ],
+)
+def test_public_demo_run_page_highlights_verdict_evidence_and_event_states(
+    scenario: str,
+    required_states: set[str],
+    evidence: tuple[str, ...],
+) -> None:
+    client = TestClient(
+        create_app(AppDependencies(service=PublicDemoService(), public_demo=True))
+    )
+    created = client.post("/api/runs", json={"task": scenario})
+    run_id = created.json()["run_id"]
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert "机制验证结论" in response.text
+    assert "机制验证通过" in response.text
+    parser = _parse_page(response.text)
+    sections = _find_nodes(parser.roots, "section")
+    verdict = next(
+        section
+        for section in sections
+        if "demo-verdict"
+        in str(section["attrs"].get("class", "")).split()  # type: ignore[union-attr]
+    )
+    assert _find_nodes(verdict["children"], "ul")[0]["attrs"]["class"] == (  # type: ignore[arg-type,index]
+        "evidence-grid"
+    )
+    assert all(item in _node_text(verdict) for item in evidence)
+    event_items = [
+        node
+        for node in _find_nodes(parser.roots, "li")
+        if "event"
+        in str(node["attrs"].get("class", "")).split()  # type: ignore[union-attr]
+    ]
+    states = {str(item["attrs"].get("data-state")) for item in event_items}  # type: ignore[union-attr]
+    assert required_states <= states
+    for item in event_items:
+        badges = [
+            node
+            for node in _find_nodes(item["children"], "span")  # type: ignore[arg-type]
+            if "event-state"
+            in str(node["attrs"].get("class", "")).split()  # type: ignore[union-attr]
+        ]
+        assert len(badges) == 1
+        assert _node_text(badges[0])
+
+
+def test_local_run_page_has_no_demo_verdict_and_keeps_payload_escaped() -> None:
+    client = TestClient(create_app(AppDependencies(service=PageService())))
+
+    response = client.get("/runs/run-1")
+
+    assert 'class="demo-verdict"' not in response.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+    assert "<script>alert(1)</script>" not in response.text
 
 
 def test_run_page_explains_status_and_keeps_escaped_technical_details() -> None:
@@ -686,7 +816,7 @@ def test_run_page_uses_mode_specific_workspace_and_success_labels() -> None:
     assert "隔离内置工作区" in public.text
     assert "不访问真实项目" in public.text
     assert "C:/project" not in public.text
-    assert "演示成功" in public.text
+    assert "机制验证通过" in public.text
 
 
 def test_run_page_localizes_all_real_audit_events_and_preserves_unknown_code() -> None:
