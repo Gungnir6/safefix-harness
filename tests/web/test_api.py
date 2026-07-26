@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from safefix.demo import PublicDemoService
 from safefix.domain import (
     ApprovalRequest,
     ApprovalStatus,
@@ -141,6 +142,19 @@ def test_public_mode_forces_embedded_project_and_mock_provider() -> None:
     assert response.status_code == 202
     assert service.created[0]["project_path"] == "C:/embedded"
     assert service.created[0]["provider"] == "mock"
+
+
+def test_public_demo_runs_inside_the_api_event_loop() -> None:
+    client = TestClient(
+        create_app(
+            AppDependencies(service=PublicDemoService(), public_demo=True)
+        )
+    )
+
+    response = client.post("/api/runs", json={"task": "feedback"})
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "SUCCESS"
 
 
 def test_approval_response_hides_capability_and_requires_csrf() -> None:

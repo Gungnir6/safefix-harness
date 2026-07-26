@@ -1467,6 +1467,7 @@ Expected: zero errors and zero verified secrets.
 
 本地测试、Ruff 与 mypy 已通过。仓库迁移至 [GitHub](https://github.com/Gungnir6/safefix-harness) 后，最终 [GitHub Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) 全部通过：Linux 801 passed、19 skipped，Ruff、mypy、Gitleaks 和 Docker 镜像构建成功。
 迁移前 GitLab MR 首次运行曾暴露学校 Runner 访问 Docker Hub 的可用性问题，且管理员只允许 `always` 拉取策略；保留的 GitLab CI 已改走 Dependency Proxy。
+首次人工 WebUI 体验暴露公开演示在 FastAPI 事件循环内嵌套 `asyncio.run()`；真实 API 回归测试先稳定复现 409，再将同步演示移入工作线程。修复后本地完整回归为 819 passed、2 skipped，真实 `feedback` HTTP 请求返回 `SUCCESS`。
 
 - [ ] **Step 8: Deploy and verify public demo**
 

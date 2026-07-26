@@ -205,4 +205,5 @@
 - 外部状态：Render 实际部署仍等待仓库所有者账户授权；没有伪造在线 URL。
 - CI 修复：迁移前 GitLab Runner 因 Docker Hub 拉取及管理员 `always` 策略失败，保留配置改走 Dependency Proxy。迁移 GitHub 后，`8f86cb9` 将仅适用于 Windows 的 `.EXE/.CMD` 测试限定到 Windows，`61eb61a` 将 Ruff 固定在已验证的 `<0.16`，`b259161` 将 GHCR 镜像标签改为全小写。
 - GitHub 验证：[Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) 在提交 `b259161` 上全部通过：Linux 801 passed、19 skipped；Ruff 通过；mypy 对 30 个源码文件无问题；Gitleaks 未发现秘密；非 root Docker 镜像构建成功。
+- 首次人工体验修复：从 WebUI 启动 `feedback` 场景稳定返回 409 `INVALID_STATE`。根因是异步 FastAPI 路由直接调用内部使用 `asyncio.run()` 的同步演示，形成嵌套事件循环；新增真实 `PublicDemoService` API 回归测试，并通过 `asyncio.to_thread()` 隔离同步演示。修复后真实 HTTP 请求返回 `SUCCESS`，完整测试 819 passed、2 skipped，Ruff 与 mypy 通过。
 - 模式：按学生要求采用快速交付，不执行独立子代理评审；文档已在提交与推送阶段同步更新。

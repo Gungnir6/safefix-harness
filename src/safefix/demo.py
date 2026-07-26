@@ -246,7 +246,7 @@ class PublicDemoService:
         scenario = task.strip().lower()
         if scenario not in SCENARIOS:
             scenario = "guardrail"
-        result = run_scenario(scenario)
+        result = await asyncio.to_thread(run_scenario, scenario)
         now = datetime.now(UTC)
         run_id = f"demo-{uuid.uuid4().hex[:12]}"
         snapshot = RunSnapshot(
