@@ -63,6 +63,48 @@ def test_in_place_workspace_uses_resolved_source_without_copy(tmp_path: Path) ->
     assert prepared.metadata_path is None
 
 
+def test_isolated_workspace_excludes_file_symlink_to_outside_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    outside_secret = tmp_path / "outside.env"
+    outside_secret.write_text("SECRET=must-not-copy\n", encoding="utf-8")
+    link = source / "config"
+    try:
+        link.symlink_to(outside_secret)
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
+
+    prepared = prepare_workspace(
+        source, tmp_path / "data", in_place=False, sensitive_patterns=()
+    )
+
+    assert not (prepared.path / "config").exists()
+
+
+def test_isolated_workspace_excludes_directory_symlink_to_outside_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    outside_directory = tmp_path / "outside"
+    outside_directory.mkdir()
+    (outside_directory / "secret.txt").write_text("must-not-copy\n", encoding="utf-8")
+    link = source / "linked-directory"
+    try:
+        link.symlink_to(outside_directory, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
+
+    prepared = prepare_workspace(
+        source, tmp_path / "data", in_place=False, sensitive_patterns=()
+    )
+
+    assert not (prepared.path / "linked-directory").exists()
+    assert not (prepared.path / "linked-directory" / "secret.txt").exists()
+
+
 @pytest.mark.parametrize("project_name", ("missing", "regular-file"))
 def test_prepare_workspace_rejects_missing_or_non_directory_project(
     tmp_path: Path, project_name: str

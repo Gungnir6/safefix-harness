@@ -120,9 +120,13 @@ def _copy_ignore(
                 continue
             candidate = relative_directory / name
             candidate_path = candidate.as_posix()
+            source_path = directory_path / name
             try:
+                if source_path.is_symlink():
+                    ignored.add(name)
+                    continue
                 matches_sensitive_pattern = sensitive_paths.match_file(candidate_path)
-                if (directory_path / name).is_dir():
+                if source_path.is_dir():
                     matches_sensitive_pattern |= sensitive_paths.match_file(
                         f"{candidate_path}/"
                     )
