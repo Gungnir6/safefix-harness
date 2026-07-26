@@ -54,6 +54,7 @@ SafeFix 已经实现自有的 AgentLoop、结构化动作解析、文件与进�
 - 根据 provider 创建 `OpenAICompatibleClient` 或 `ScriptedMockLLM`；
 - 基于有效工作区创建 `WorkspaceBoundary`、文件工具、进程工具和 `ValidatorRunner`；
 - 创建 `ToolRegistry`、`PolicyEngine`、`FeedbackEngine`、`ContextBuilder` 与 `AgentLoop`；
+- 使用解析后的原项目路径作为稳定 `project_id`，使用隔离副本路径作为 `workspace_root`，从而让记忆跨隔离运行复用；
 - 返回供 `TaskService` 和 CLI 使用的受管运行时对象；
 - 在退出时关闭 HTTP 和数据库资源。
 
@@ -64,6 +65,7 @@ CLI 不再接受“未注入时失败”的默认路径。测试仍可通过显�
 新增工作区管理边界：
 
 - 默认模式为 `isolated`；
+- 数据目录优先使用 `--data-dir`，其次使用 `SAFEFIX_DATA_DIR`；没有覆盖时，Windows 使用 `%LOCALAPPDATA%\SafeFix`，其他平台遵循 `XDG_DATA_HOME` 或 `~/.local/share/safefix`；
 - 验证输入目录存在、为目录且可读；
 - 在 SafeFix 数据目录下预先创建 `runs/<execution-id>/workspace`，启动 AgentLoop 后将其生成的 `run_id` 写入该执行目录的元数据；
 - 复制项目时排除 `.git`、`.venv`、缓存、构建输出、SafeFix 数据目录和配置中的敏感模式；
@@ -101,6 +103,7 @@ safefix run C:\path\to\project --task "修复失败的测试"
 - 位置参数 `project`；
 - 必需参数 `--task`；
 - `--config`，默认 `safefix.yaml`；
+- `--data-dir`，用于显式覆盖运行工作区和 SQLite 的保存位置；
 - `--provider`，默认 `openai-compatible`；
 - `--in-place`，默认关闭；
 - `--mock-script`，仅供 Mock 离线运行；
@@ -161,8 +164,9 @@ CLI 不打印审批 token、CSRF token、API key 或敏感原始载荷。
 7. 被允许的动作由 ToolRegistry 分发。
 8. 工具结果与验证器输出进入 FeedbackEngine，再反馈给下一轮模型上下文。
 9. 每个动作、策略决定和工具结果进入审计链。
-10. CLI 处理审批暂停，直到成功、失败、阻塞、预算耗尽、无进展或取消。
-11. CLI 输出最终摘要，并保留隔离工作区和持久化审计证据。
+10. 成功终态将任务、停止原因和修改文件写入脱敏的 `repair_summary` 记忆；不保存原始对话或验证器全文。
+11. CLI 处理审批暂停，直到成功、失败、阻塞、预算耗尽、无进展或取消。
+12. CLI 输出最终摘要，并保留隔离工作区和持久化审计证据。
 
 ## 错误处理与安全
 
