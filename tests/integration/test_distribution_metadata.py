@@ -34,9 +34,9 @@ def test_gitlab_ci_can_fall_back_to_cached_images() -> None:
 
     for job in ("unit-test", "lint-type", "secret-scan", "image-build"):
         image = pipeline[job]["image"]
-        assert image["pull_policy"] == ["always", "if-not-present"]
+        assert image["pull_policy"] == "if-not-present"
     service = pipeline["image-build"]["services"][0]
-    assert service["pull_policy"] == ["always", "if-not-present"]
+    assert service["pull_policy"] == "if-not-present"
 
 
 def test_readme_has_required_submission_sections() -> None:

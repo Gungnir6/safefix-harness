@@ -1466,7 +1466,7 @@ Run the configured linter, type checker and secret scanner over tracked files an
 Expected: zero errors and zero verified secrets.
 
 本地测试、Ruff 与 mypy 已通过；本机未安装 Gitleaks，Git 历史扫描由合并请求流水线的 `secret-scan` job 完成。
-MR 首次运行暴露学校 Runner 强制远程拉取 Docker Hub 镜像的可用性问题；所有 job 镜像及 DinD 服务均已配置 `always` → `if-not-present` 回退，以便远端不可用时复用 Runner 缓存。
+MR 首次运行暴露学校 Runner 强制远程拉取 Docker Hub 镜像的可用性问题；所有 job 镜像及 DinD 服务均改为 `if-not-present`，优先复用 Runner 缓存。
 
 - [ ] **Step 8: Deploy and verify public demo**
 

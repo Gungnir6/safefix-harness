@@ -203,5 +203,5 @@
 - 回归修复：发现 T16 同一秒内连续写入等长源码可能命中旧 `.pyc`；将中间错误补丁改为不同长度，三个场景连续三轮均 PASS。
 - 验证：T17 RED 为 6 failed，GREEN 为 6 passed；全量 817 passed、2 skipped；Ruff、mypy、`git diff --check` 通过；wheel 与 sdist 构建成功并核验模板、静态资源和 fixture 均在 wheel 内。
 - 外部状态：本机 Docker Desktop 守护进程未启动，因此本地镜像构建未执行完成；本机没有 Gitleaks 与 Render 凭据，镜像构建/历史 secret scan 交给 MR CI，Render 实际部署等待仓库所有者授权。没有伪造在线 URL。
-- CI 修复：MR 重试在检出仓库前卡于 `Pulling docker image python:3.12-slim`。上一轮同一 Runner 已缓存该镜像，根因是默认 `always` 策略仍强制访问 Docker Hub；按 GitLab 官方支持的多策略配置，为全部 job 镜像及 DinD 服务增加 `if-not-present` 回退，并新增 YAML 语义回归测试。
+- CI 修复：MR 重试在检出仓库前卡于 `Pulling docker image python:3.12-slim`。上一轮同一 Runner 已缓存该镜像，根因是默认 `always` 策略仍强制访问 Docker Hub；按 GitLab 官方支持的策略，为全部 job 镜像及 DinD 服务配置 `if-not-present`，并新增 YAML 语义回归测试。
 - 模式：按学生要求采用快速交付，不执行独立子代理评审；文档已在提交与推送阶段同步更新。
