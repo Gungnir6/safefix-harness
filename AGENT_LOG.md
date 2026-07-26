@@ -216,3 +216,13 @@
 - 文档：README 分别说明 CLI 与 WebUI、三个公开演示场景、`127.0.0.1:8000` 本地启动访问方式，并明确未提供虚构公网地址；PLAN 同步勾选本任务交付项。
 - 验证：`python -m pytest tests/web/test_pages.py tests/web/test_api.py -q` 为 20 passed、1 条第三方 `StarletteDeprecationWarning`；`python -m ruff check src/safefix/web tests/web` 为 `All checks passed!`；`rg -n "innerHTML|insertAdjacentHTML|document\.write" src/safefix/web` 无匹配（预期退出码 1）；`git diff --check` 退出码 0。
 - 技能 / 约束：使用 `executing-plans`、`test-driven-development`、`verification-before-completion`；严格使用仓库根 `.venv`，未调用系统 `python.exe`，未合并、推送或删除工作树。
+
+## WebUI 中文引导演示 — 最终整分支审查修复
+
+- 时间：2026-07-26 +08:00；分支 / 工作树：`webui-chinese-guided-demo` / `.worktrees/webui-chinese-guided-demo`。
+- 实现提交：`b7c09d9dc9e610184283a82c2b0adf10c75fe108`（`fix(web): 对齐演示文案与真实审计语义`）。
+- 修复：安全边界卡改为真实的提权破坏命令策略拒绝与零工具调用语义；公开设置页明确使用无需凭据的确定性 Mock 且不查询本地凭据；反馈演示为错误补丁后的再次失败使用独立事件码和准确摘要；服务端与 JavaScript 补齐 `ACTION`、`POLICY_DECISION`、五种实际 `APPROVAL_*`、`MODEL_REQUEST`、`TOOL_RESULT`、`DEMO_EVENT` 中文标签，并让未知类型保留原机器码。
+- 同轮修复：公开结果页只显示隔离内置工作区、不泄露内置真实路径；服务端技术详情改为自动转义的合法 JSON；`SUCCESS` 在公开模式显示“演示成功”、本地模式显示“运行成功”，初始渲染和轮询保持一致。
+- TDD 证据：复用工作树中已存在且与最终审查 brief 一致的未提交回归测试，先在旧实现上得到 8 failed、23 passed；最小实现后聚焦测试为 31 passed。
+- 最终验证：仓库根 `.venv` 下聚焦测试 31 passed；全量 834 passed、2 skipped；Ruff 全通过；mypy 对 30 个源码文件无问题；`git diff --check` 通过。仅有既存的第三方 `StarletteDeprecationWarning`。
+- 约束：未使用系统 `python.exe`，未改变审批、策略、工具执行和审计安全语义；未合并、推送或删除工作树。

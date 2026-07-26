@@ -1492,6 +1492,19 @@ Record the T17 hash and required evidence after both reviews.
 
 ---
 
+## WebUI 中文引导演示 — 最终整分支审查修复
+
+- [x] 安全边界卡与真实 `guardrail` 提权破坏命令拒绝、零工具调用语义一致。
+- [x] 公开设置页明确显示确定性 Mock 且不查询/暗示真实凭据；本地设置页保留真实凭据状态。
+- [x] 反馈演示区分初次失败与错误补丁后的再次失败，并验证完整事件序列和摘要。
+- [x] 服务端与 JavaScript 覆盖实际审计事件中文标签，未知类型回退原机器码。
+- [x] 公开结果页隐藏真实工作区路径；技术详情使用安全 JSON；成功标签按公开/本地模式一致渲染。
+- [x] RED：8 failed、23 passed；GREEN：31 passed。
+- [x] 最终验证：834 passed、2 skipped；Ruff、mypy、`git diff --check` 全通过。
+- [x] 实现提交：`b7c09d9dc9e610184283a82c2b0adf10c75fe108`（`fix(web): 对齐演示文案与真实审计语义`）。
+
+---
+
 ## Gate 1: Per-Task Evidence and Review
 
 For every formal task T01–T17:
