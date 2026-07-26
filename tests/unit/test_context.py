@@ -59,3 +59,13 @@ def test_context_never_includes_approval_tokens_or_raw_audit_payloads() -> None:
     assert "frozen_action_json" not in rendered
     assert "audit payload" not in rendered
 
+
+def test_context_system_message_requires_inspection_feedback_and_validation() -> None:
+    messages = ContextBuilder(None, MemorySettings()).build(_snapshot())
+    system = messages[0].content
+
+    assert "Inspect relevant files before editing" in system
+    assert "Use run_validation" in system
+    assert "Use the latest tool result and feedback" in system
+    assert "finish only after validation succeeds" in system
+

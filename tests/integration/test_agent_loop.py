@@ -75,11 +75,11 @@ class FakeApprovals:
 
 class FakeAudit:
     def __init__(self) -> None:
-        self.events: list[str] = []
+        self.events: list[tuple[str, object]] = []
 
     def append(self, run_id: str, event_type: str, payload: object) -> object:
-        del run_id, payload
-        self.events.append(event_type)
+        del run_id
+        self.events.append((event_type, payload))
         return object()
 
 
@@ -115,6 +115,7 @@ class LoopFixture:
     loop: AgentLoop
     registry: SpyRegistry
     approvals: FakeApprovals
+    audit: FakeAudit
 
 
 def _settings() -> SafeFixSettings:
@@ -142,11 +143,15 @@ def _settings() -> SafeFixSettings:
 
 
 def _loop(
-    script: list[str], validation_successes: tuple[bool, ...] = (True,)
+    script: list[str],
+    validation_successes: tuple[bool, ...] = (True,),
+    *,
+    audit: FakeAudit | None = None,
 ) -> LoopFixture:
     settings = _settings()
     registry = SpyRegistry(validation_successes)
     approvals = FakeApprovals()
+    audit = audit or FakeAudit()
     loop = AgentLoop(
         llm=ScriptedMockLLM(script),
         context=ContextBuilder(None, settings.memory),
@@ -156,10 +161,10 @@ def _loop(
         tools=registry,
         feedback=FeedbackEngine(no_progress_limit=2),
         run_store=RunStore(sqlite3.connect(":memory:")),
-        audit=FakeAudit(),
+        audit=audit,
         settings=settings,
     )
-    return LoopFixture(loop, registry, approvals)
+    return LoopFixture(loop, registry, approvals, audit)
 
 
 @pytest.mark.asyncio
@@ -223,4 +228,79 @@ async def test_cancel_pending_run() -> None:
     cancelled = await fixture.loop.cancel(paused.run_id)
 
     assert cancelled.status is RunStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_tool_results_and_feedback_are_audited_in_action_order() -> None:
+    fixture = _loop(
+        [
+            '{"type":"run_validation","id":"v1","reason":"check",'
+            '"validator_id":"pytest"}',
+            '{"type":"run_validation","id":"v2","reason":"check again",'
+            '"validator_id":"pytest"}',
+        ],
+        validation_successes=(False, True),
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="validate the project",
+    )
+
+    event_types = [
+        event_type for event_type, payload in fixture.audit.events
+    ]
+    assert snapshot.status is RunStatus.SUCCESS
+    assert event_types == [
+        "ACTION",
+        "POLICY_DECISION",
+        "TOOL_RESULT",
+        "FEEDBACK",
+        "ACTION",
+        "POLICY_DECISION",
+        "TOOL_RESULT",
+        "FEEDBACK",
+    ]
+    assert [
+        payload["action_id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "TOOL_RESULT"
+    ] == ["v1", "v2"]
+
+
+class FailingEvidenceAudit(FakeAudit):
+    def __init__(self, failing_event_type: str) -> None:
+        super().__init__()
+        self._failing_event_type = failing_event_type
+
+    def append(self, run_id: str, event_type: str, payload: object) -> object:
+        if event_type == self._failing_event_type:
+            raise RuntimeError("raw audit storage detail")
+        return super().append(run_id, event_type, payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_event_type", ["TOOL_RESULT", "FEEDBACK"])
+async def test_evidence_audit_failure_stops_before_another_action(
+    failing_event_type: str,
+) -> None:
+    audit = FailingEvidenceAudit(failing_event_type)
+    fixture = _loop(
+        [
+            '{"type":"run_validation","id":"v1","reason":"check",'
+            '"validator_id":"pytest"}',
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+        ],
+        validation_successes=(False, True),
+        audit=audit,
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="validate the project",
+    )
+
+    assert snapshot.status is RunStatus.FAILED
+    assert snapshot.stop_reason == "audit unavailable"
+    assert len(fixture.registry.calls) == 1
 
