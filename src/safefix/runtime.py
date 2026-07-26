@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import httpx
 
@@ -81,30 +81,64 @@ def _close_failed_http(http: httpx.AsyncClient) -> None:
     worker.join()
 
 
-def create_runtime(
+def _fallback_failed_http_close(http: httpx.AsyncClient) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(http.aclose())
+        except BaseException:
+            pass
+        return
+    try:
+        coroutine = http.aclose()
+    except BaseException:
+        return
+    try:
+        loop.create_task(coroutine)
+    except BaseException:
+        coroutine.close()
+
+
+def _scrub_secret_holders(
+    audit: AuditStore | None,
+    memory: MemoryStore | None,
+    approvals: ApprovalStateMachine | None,
+) -> None:
+    if audit is not None:
+        audit._secrets = ()
+    if memory is not None:
+        memory._secrets = ()
+    if approvals is not None:
+        approvals._secrets = ()
+        approvals._audit._secrets = ()
+
+
+def _build_runtime(
     settings: SafeFixSettings,
     prepared: PreparedWorkspace,
-    data_dir: Path,
+    database_path: Path,
     *,
     provider: str,
     credential_service: CredentialService,
     mock_actions: Sequence[str] | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
-) -> RuntimeSession:
-    if provider not in {"mock", "openai-compatible"}:
-        raise RuntimeConfigurationError("unsupported provider")
-    if provider == "mock" and mock_actions is None:
-        raise RuntimeConfigurationError("mock actions are required")
-
+) -> RuntimeSession | None:
     secret_values: tuple[str, ...] = ()
-    if provider == "openai-compatible":
-        secret_values = (credential_service.get_for_request(provider),)
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-    database_path = data_dir / "safefix.sqlite3"
+    secret_obtained = False
     connection: sqlite3.Connection | None = None
     http: httpx.AsyncClient | None = None
+    audit: AuditStore | None = None
+    memory: MemoryStore | None = None
+    approvals: ApprovalStateMachine | None = None
+    llm: Any = None
+    loop: AgentLoop | None = None
+    service: TaskService | None = None
+    failure: BaseException | None = None
     try:
+        if provider == "openai-compatible":
+            secret_values = (credential_service.get_for_request(provider),)
+            secret_obtained = True
         connection = sqlite3.connect(database_path)
         boundary = WorkspaceBoundary(
             prepared.path,
@@ -150,7 +184,7 @@ def create_runtime(
         parser = ActionParser()
         http = httpx.AsyncClient(transport=http_transport)
         if provider == "mock":
-            llm: Any = ScriptedMockLLM(tuple(mock_actions or ()))
+            llm = ScriptedMockLLM(tuple(mock_actions or ()))
         else:
             llm = OpenAICompatibleClient(
                 http,
@@ -187,7 +221,7 @@ def create_runtime(
             if loop_taken:
                 raise RuntimeConfigurationError("runtime loop is already in use")
             loop_taken = True
-            return loop
+            return cast(AgentLoop, loop)
 
         service = TaskService(
             loop_factory,
@@ -206,9 +240,71 @@ def create_runtime(
             _connection=connection,
             _http=http,
         )
-    except BaseException:
+    except BaseException as exc:
+        failure = exc
+
+    try:
         if http is not None:
-            _close_failed_http(http)
+            try:
+                _close_failed_http(http)
+            except BaseException:
+                try:
+                    _fallback_failed_http_close(http)
+                except BaseException:
+                    pass
+    finally:
         if connection is not None:
-            connection.close()
-        raise
+            try:
+                connection.close()
+            except BaseException:
+                pass
+    if secret_obtained:
+        _scrub_secret_holders(audit, memory, approvals)
+        secret_values = ()
+        failure = None
+        llm = None
+        loop = None
+        service = None
+        audit = None
+        memory = None
+        approvals = None
+        del credential_service
+        return None
+    assert failure is not None
+    raise failure
+
+
+def _raise_runtime_initialization_failed() -> NoReturn:
+    raise RuntimeConfigurationError("runtime initialization failed") from None
+
+
+def create_runtime(
+    settings: SafeFixSettings,
+    prepared: PreparedWorkspace,
+    data_dir: Path,
+    *,
+    provider: str,
+    credential_service: CredentialService,
+    mock_actions: Sequence[str] | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
+) -> RuntimeSession:
+    if provider not in {"mock", "openai-compatible"}:
+        raise RuntimeConfigurationError("unsupported provider")
+    if provider == "mock" and mock_actions is None:
+        raise RuntimeConfigurationError("mock actions are required")
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    database_path = data_dir / "safefix.sqlite3"
+    session = _build_runtime(
+        settings,
+        prepared,
+        database_path,
+        provider=provider,
+        credential_service=credential_service,
+        mock_actions=mock_actions,
+        http_transport=http_transport,
+    )
+    del credential_service
+    if session is None:
+        _raise_runtime_initialization_failed()
+    return session

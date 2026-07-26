@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -21,8 +22,13 @@ from safefix.config import (
 from safefix.credentials import CredentialError, CredentialService
 from safefix.domain import RunStatus
 from safefix.execution_workspace import PreparedWorkspace, prepare_workspace
-from safefix.governance.audit import AuditUnavailable
+from safefix.governance.approvals import ApprovalStateMachine
+from safefix.governance.audit import AuditStore, AuditUnavailable
+from safefix.memory import MemoryStore
 from safefix.runtime import RuntimeConfigurationError, create_runtime
+
+
+_TRACEBACK_TEST_SECRET = "sk-traceback-never-leaks"
 
 
 class FakeCredentials:
@@ -93,6 +99,29 @@ def _prepared(tmp_path: Path) -> tuple[PreparedWorkspace, Path]:
         sensitive_patterns=(".env",),
     )
     return prepared, data_dir
+
+
+def _assert_exception_graph_is_secret_free(
+    error: BaseException,
+    secret: str,
+) -> None:
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        assert secret not in repr(current)
+        traceback = current.__traceback__
+        while traceback is not None:
+            for name, value in traceback.tb_frame.f_locals.items():
+                assert secret not in repr(value), name
+            traceback = traceback.tb_next
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
 
 
 @pytest.mark.asyncio
@@ -388,6 +417,130 @@ async def test_constructor_failure_closes_every_opened_resource(
     assert http.closed is True
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         connections[0].execute("SELECT 1")
+
+
+@pytest.mark.asyncio
+async def test_http_cleanup_failure_still_closes_sqlite_and_uses_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+
+    class RecordingHttpClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    http = RecordingHttpClient()
+    connections: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(path: Path) -> sqlite3.Connection:
+        connection = real_connect(path)
+        connections.append(connection)
+        return connection
+
+    def fail_loop_construction(**kwargs: object) -> None:
+        del kwargs
+        raise RuntimeError("loop construction failed")
+
+    def fail_http_cleanup(http_client: object) -> None:
+        del http_client
+        raise RuntimeError("cleanup scheduling failed")
+
+    monkeypatch.setattr("safefix.runtime.sqlite3.connect", recording_connect)
+    monkeypatch.setattr(
+        "safefix.runtime.httpx.AsyncClient",
+        lambda *, transport: http,
+    )
+    monkeypatch.setattr("safefix.runtime.AgentLoop", fail_loop_construction)
+    monkeypatch.setattr(
+        "safefix.runtime._close_failed_http",
+        fail_http_cleanup,
+    )
+
+    with pytest.raises(RuntimeError, match="loop construction failed"):
+        create_runtime(
+            _settings(),
+            prepared,
+            data_dir,
+            provider="mock",
+            credential_service=_credentials(),
+            mock_actions=(
+                '{"type":"finish","id":"1","reason":"done","summary":"complete"}',
+            ),
+        )
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connections[0].execute("SELECT 1")
+    await asyncio.sleep(0)
+    assert http.closed is True
+
+
+@pytest.mark.asyncio
+async def test_secret_bearing_constructor_failure_is_scrubbed_and_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+    audits: list[AuditStore] = []
+    memories: list[MemoryStore] = []
+    approvals: list[ApprovalStateMachine] = []
+
+    class RecordingAuditStore(AuditStore):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            audits.append(self)
+
+    class RecordingMemoryStore(MemoryStore):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            memories.append(self)
+
+    class RecordingApprovalStateMachine(ApprovalStateMachine):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            approvals.append(self)
+
+    def fail_loop_construction(**kwargs: object) -> None:
+        del kwargs
+        raise RuntimeError(
+            f"provider driver exposed {_TRACEBACK_TEST_SECRET}"
+        )
+
+    monkeypatch.setattr("safefix.runtime.AuditStore", RecordingAuditStore)
+    monkeypatch.setattr("safefix.runtime.MemoryStore", RecordingMemoryStore)
+    monkeypatch.setattr(
+        "safefix.runtime.ApprovalStateMachine",
+        RecordingApprovalStateMachine,
+    )
+    monkeypatch.setattr("safefix.runtime.AgentLoop", fail_loop_construction)
+
+    with pytest.raises(BaseException) as captured:
+        create_runtime(
+            _settings(),
+            prepared,
+            data_dir,
+            provider="openai-compatible",
+            credential_service=_credentials(_TRACEBACK_TEST_SECRET),
+            http_transport=httpx.MockTransport(
+                lambda request: httpx.Response(500, request=request)
+            ),
+        )
+
+    error = captured.value
+    assert type(error) is RuntimeConfigurationError
+    assert str(error) == "runtime initialization failed"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    _assert_exception_graph_is_secret_free(error, _TRACEBACK_TEST_SECRET)
+    assert len(audits) == len(memories) == len(approvals) == 1
+    assert audits[0]._secrets == ()
+    assert memories[0]._secrets == ()
+    assert approvals[0]._secrets == ()
+    assert approvals[0]._audit._secrets == ()
 
 
 @pytest.mark.asyncio
