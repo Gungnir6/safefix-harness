@@ -40,4 +40,4 @@ jobs:
         with:
           context: .
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
-          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          tags: ghcr.io/gungnir6/safefix-harness:${{ github.ref_name }}
