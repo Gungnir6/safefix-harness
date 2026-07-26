@@ -283,7 +283,6 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .event-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 12px; }
 .event-meta strong { color: var(--cyan); font-size: 12px; letter-spacing: .08em; }
 .event-policy_decision .event-meta strong { color: var(--amber); }
-.event-tool_result .event-meta strong { color: var(--acid); }
 .event-meta time { margin-left: auto; color: var(--muted); font-size: 11px; }
 .event-state {
   display: inline-flex;
@@ -294,11 +293,17 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
   line-height: 1.2;
   letter-spacing: .08em;
 }
+.event[data-state="blocked"] .event-meta strong,
 .event[data-state="blocked"] .event-state { color: var(--danger); }
+.event[data-state="failed"] .event-meta strong,
 .event[data-state="failed"] .event-state { color: var(--amber); }
+.event[data-state="pending"] .event-meta strong,
 .event[data-state="pending"] .event-state { color: #f0d34f; }
+.event[data-state="changed"] .event-meta strong,
 .event[data-state="changed"] .event-state { color: var(--cyan); }
+.event[data-state="passed"] .event-meta strong,
 .event[data-state="passed"] .event-state { color: var(--acid); }
+.event[data-state="info"] .event-meta strong { color: var(--muted); }
 .event-summary { max-width: 72ch; margin: 0 0 14px; color: #d2dbd5; }
 details { border-left: 2px solid var(--line); padding-left: 14px; }
 details[open] { border-left-color: var(--cyan); }

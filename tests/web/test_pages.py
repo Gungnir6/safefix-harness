@@ -349,10 +349,16 @@ function createPage({
   };
 }
 
-async function runTimelineScenario(initialSequences, placeholder, events) {
+async function runTimelineScenario(
+  initialSequences,
+  placeholder,
+  events,
+  publicDemo = false
+) {
   const page = createPage({
     initialSequences,
     placeholder,
+    publicDemo,
     fetch: async (url) => {
       if (url.endsWith("/events")) return makeResponse(events);
       return makeResponse({ status: "SUCCESS" });
@@ -439,7 +445,22 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
         },
         created_at: "2026-07-26T00:00:05Z"
       }
-    ]
+    ],
+    true
+  );
+  const localStateTimeline = await runTimelineScenario(
+    [],
+    false,
+    [{
+      sequence: 32,
+      type: "TOOL_RESULT",
+      payload: {
+        summary: "本地工具失败",
+        state: "failed",
+        state_label: "验证失败"
+      },
+      created_at: "2026-07-26T00:00:06Z"
+    }]
   );
   const publicStatus = createPage({
     publicDemo: true,
@@ -517,6 +538,14 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
         .querySelectorAll("[data-sequence]")
         .map((item) => item.dataset.state),
       labels: stateTimeline.timeline
+        .querySelectorAll(".event-state")
+        .map((item) => item.textContent)
+    },
+    localStateEvents: {
+      hasStateAttributes: localStateTimeline.timeline
+        .querySelectorAll("[data-sequence]")
+        .map((item) => Object.hasOwn(item.dataset, "state")),
+      labels: localStateTimeline.timeline
         .querySelectorAll(".event-state")
         .map((item) => item.textContent)
     },
@@ -601,6 +630,10 @@ async function runTimelineScenario(initialSequences, placeholder, events) {
         "stateEvents": {
             "states": ["failed", "info"],
             "labels": ["验证失败", "信息"],
+        },
+        "localStateEvents": {
+            "hasStateAttributes": [False],
+            "labels": [],
         },
         "populatedTimeline": {"emptyCount": 0, "sequences": ["3"]},
         "emptyTimeline": {"emptyCount": 1, "eventCount": 0},
@@ -702,6 +735,22 @@ def test_local_run_page_has_no_demo_verdict_and_keeps_payload_escaped() -> None:
     assert 'class="demo-verdict"' not in response.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
     assert "<script>alert(1)</script>" not in response.text
+    event_items = [
+        node
+        for node in _find_nodes(_parse_page(response.text).roots, "li")
+        if "event"
+        in str(node["attrs"].get("class", "")).split()  # type: ignore[union-attr]
+    ]
+    assert all("data-state" not in item["attrs"] for item in event_items)  # type: ignore[operator]
+    assert all(
+        not [
+            node
+            for node in _find_nodes(item["children"], "span")  # type: ignore[arg-type]
+            if "event-state"
+            in str(node["attrs"].get("class", "")).split()  # type: ignore[union-attr]
+        ]
+        for item in event_items
+    )
 
 
 def test_run_page_explains_status_and_keeps_escaped_technical_details() -> None:

@@ -54,14 +54,16 @@
   </div>
   <ol id="timeline" class="timeline">
     {% for event in events %}
+    {% if public_demo %}
     {% set raw_state = event.redacted_payload.state %}
     {% set state_allowed = raw_state in ("blocked", "failed", "pending", "changed", "passed", "info") %}
     {% set event_state = raw_state if state_allowed else "info" %}
     {% set event_state_label = event.redacted_payload.state_label if state_allowed and event.redacted_payload.state_label else "信息" %}
-    <li class="event event-{{ event.event_type | lower }}" data-sequence="{{ event.sequence }}" data-event-type="{{ event.event_type }}" data-state="{{ event_state }}">
+    {% endif %}
+    <li class="event event-{{ event.event_type | lower }}" data-sequence="{{ event.sequence }}" data-event-type="{{ event.event_type }}"{% if public_demo %} data-state="{{ event_state }}"{% endif %}>
       <div class="event-index">{{ "%02d" | format(event.sequence) }}</div>
       <div class="event-body">
-        <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type) }}</strong><span class="event-state">{{ event_state_label }}</span><time>{{ event.created_at }}</time></div>
+        <div class="event-meta"><strong>{{ event_labels.get(event.event_type, event.event_type) }}</strong>{% if public_demo %}<span class="event-state">{{ event_state_label }}</span>{% endif %}<time>{{ event.created_at }}</time></div>
         {% set event_summary = event.redacted_payload.summary or event_summaries.get(event.event_type) %}
         {% if event_summary %}<p class="event-summary">{{ event_summary }}</p>{% endif %}
         <details>
