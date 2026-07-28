@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 from typing import Any, TextIO
+import unicodedata
 
 from safefix.config import ConfigError, load_settings
 from safefix.credentials import CredentialError, CredentialService
@@ -35,6 +36,7 @@ _DEFAULT_STDOUT = sys.stdout
 _DEFAULT_STDERR = sys.stderr
 _MAX_RENDERED_EVENT_CHARS = 2_048
 _MAX_RENDERED_VALUE_CHARS = 512
+_MAX_APPROVAL_EXECUTION_CHARS = 4_096
 _SENSITIVE_KEY_PARTS = (
     "token",
     "key",
@@ -63,6 +65,10 @@ _UNAVAILABLE_REASONS = (
     "persistence unavailable",
     "memory storage is unavailable",
 )
+
+
+class _UnsafeApprovalDisplay(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +143,26 @@ def _bounded_text(value: str) -> str:
     return value[:_MAX_RENDERED_VALUE_CHARS] + "…[已截断]"
 
 
+def _unicode_escape(character: str) -> str:
+    codepoint = ord(character)
+    if codepoint <= 0xFFFF:
+        return f"\\u{codepoint:04x}"
+    codepoint -= 0x10000
+    high = 0xD800 + (codepoint >> 10)
+    low = 0xDC00 + (codepoint & 0x3FF)
+    return f"\\u{high:04x}\\u{low:04x}"
+
+
+def _terminal_safe_json(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False)
+    return "".join(
+        _unicode_escape(character)
+        if unicodedata.category(character) in {"Cc", "Cf"}
+        else character
+        for character in encoded
+    )
+
+
 def _safe_payload(value: Any, *, depth: int = 0) -> Any:
     if depth >= 6:
         return "[已截断]"
@@ -206,7 +232,7 @@ def _render_events(
 def _approval_prompt(request: ApprovalRequest) -> str:
     action_type = "unknown"
     detail = "参数: 动作详情不可用"
-    reason = json.dumps("未提供", ensure_ascii=False)
+    reason = _terminal_safe_json("未提供")
     try:
         raw = json.loads(request.frozen_action_json)
         if not isinstance(raw, dict):
@@ -215,22 +241,27 @@ def _approval_prompt(request: ApprovalRequest) -> str:
         if not isinstance(safe, dict):
             raise ValueError
         action_type = _bounded_text(str(safe.get("type", "unknown")))
-        reason = json.dumps(
+        reason = _terminal_safe_json(
             _bounded_text(str(safe.get("reason", "未提供"))),
-            ensure_ascii=False,
         )
         if action_type == "run_process":
-            program = json.dumps(
-                _bounded_text(str(safe.get("program", ""))),
-                ensure_ascii=False,
-            )
-            args = safe.get("args", [])
-            if not isinstance(args, list):
-                args = []
-            encoded_args = json.dumps(args, ensure_ascii=False)
+            program_value = raw.get("program")
+            args = raw.get("args")
+            if not isinstance(program_value, str) or not (
+                isinstance(args, list)
+                and all(isinstance(argument, str) for argument in args)
+            ):
+                raise _UnsafeApprovalDisplay
+            program = _terminal_safe_json(program_value)
+            encoded_args = _terminal_safe_json(args)
+            if (
+                len(program) + len(encoded_args)
+                > _MAX_APPROVAL_EXECUTION_CHARS
+            ):
+                raise _UnsafeApprovalDisplay
             detail = (
-                f"程序: {_bounded_text(program)}\n"
-                f"参数: {_bounded_text(encoded_args)}"
+                f"程序: {program}\n"
+                f"参数: {encoded_args}"
             )
         else:
             visible = {
@@ -239,7 +270,9 @@ def _approval_prompt(request: ApprovalRequest) -> str:
                 if key not in {"id", "reason", "type"}
             }
             detail = "参数: " + _bounded_text(
-                json.dumps(visible, ensure_ascii=False, sort_keys=True)
+                _terminal_safe_json(
+                    dict(sorted(visible.items())),
+                )
             )
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
@@ -429,22 +462,31 @@ async def _run_cli_async(
             )
         while snapshot.status is RunStatus.AWAITING_APPROVAL:
             access = runtime.service.get_approval(snapshot.run_id)
-            prompt = _approval_prompt(access.request)
-            if options.non_interactive:
-                if not options.json_output:
-                    stdout.write(prompt)
-                    stdout.write("\n非交互模式：已拒绝此动作。\n")
+            try:
+                prompt = _approval_prompt(access.request)
+            except _UnsafeApprovalDisplay:
+                message = (
+                    "\n需要一次性审批\n"
+                    "动作执行语义过长或无效，无法完整安全展示；已自动拒绝。\n"
+                )
+                (stderr if options.json_output else stdout).write(message)
                 approved = False
             else:
-                if options.json_output:
-                    stderr.write(prompt)
-                    answer = input_fn("")
-                elif input_fn is _DEFAULT_INPUT and stdout is sys.stdout:
-                    answer = input_fn(prompt)
+                if options.non_interactive:
+                    if not options.json_output:
+                        stdout.write(prompt)
+                        stdout.write("\n非交互模式：已拒绝此动作。\n")
+                    approved = False
                 else:
-                    stdout.write(prompt)
-                    answer = input_fn(prompt)
-                approved = answer.strip().lower() == "y"
+                    if options.json_output:
+                        stderr.write(prompt)
+                        answer = input_fn("")
+                    elif input_fn is _DEFAULT_INPUT and stdout is sys.stdout:
+                        answer = input_fn(prompt)
+                    else:
+                        stdout.write(prompt)
+                        answer = input_fn(prompt)
+                    approved = answer.strip().lower() == "y"
             if not approved:
                 approval_rejected = True
             snapshot = (

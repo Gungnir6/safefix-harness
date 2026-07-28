@@ -97,10 +97,12 @@ class FakeService:
         *,
         approved: RunSnapshot | None = None,
         rejected: RunSnapshot | None = None,
+        approval_access: ApprovalAccess | None = None,
     ) -> None:
         self._created = created
         self._approved = approved
         self._rejected = rejected
+        self._approval_access = approval_access or _approval()
         self.create_calls: list[dict[str, Any]] = []
         self.approved: list[tuple[str, str]] = []
         self.rejected: list[tuple[str, str]] = []
@@ -113,7 +115,7 @@ class FakeService:
 
     def get_approval(self, run_id: str) -> ApprovalAccess:
         assert run_id == "run-1"
-        return _approval()
+        return self._approval_access
 
     async def approve(self, run_id: str, capability: str) -> RunSnapshot:
         self.approved.append((run_id, capability))
@@ -581,6 +583,64 @@ def test_json_interactive_approval_keeps_stdout_machine_readable(
     assert "one-time-capability" not in stdout.getvalue() + stderr.getvalue()
 
 
+def test_overlong_approval_execution_is_rejected_without_reading_input(
+    tmp_path: Path,
+) -> None:
+    access = _approval()
+    dangerous_tail = "--upload=" + ("x" * 10_000) + "\nthen-delete"
+    action = {
+        "type": "run_process",
+        "id": "process-1",
+        "reason": "run verified command",
+        "program": "git",
+        "args": ["commit", dangerous_tail],
+    }
+    request = access.request.model_copy(
+        update={
+            "frozen_action_json": json.dumps(
+                action,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
+    )
+    approval_access = ApprovalAccess(
+        request,
+        access.capability,
+        access.csrf_token,
+    )
+    service = FakeService(
+        _snapshot(RunStatus.AWAITING_APPROVAL),
+        rejected=_snapshot(RunStatus.SUCCESS, stop_reason="validation succeeded"),
+        approval_access=approval_access,
+    )
+    runtime = FakeRuntime(tmp_path, service)
+    stdout = StringIO()
+    input_called = False
+
+    def input_fn(prompt: str) -> str:
+        nonlocal input_called
+        input_called = True
+        return "y"
+
+    result = run_cli(
+        _options(tmp_path),
+        credential_service=FakeCredentials(),
+        input_fn=input_fn,
+        stdout=stdout,
+        runtime_factory=lambda *args, **kwargs: runtime,
+        workspace_factory=_workspace_factory(_prepared(tmp_path)),
+    )
+
+    assert result == 6
+    assert input_called is False
+    assert service.approved == []
+    assert service.rejected == [("run-1", "one-time-capability")]
+    assert "无法完整安全展示" in stdout.getvalue()
+    assert "已截断" not in stdout.getvalue()
+    assert "then-delete" not in stdout.getvalue()
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -652,4 +712,36 @@ def test_approval_prompt_preserves_argument_boundaries_and_escapes_controls() ->
     assert '理由: "review\\n\\u001b[31munsafe"' in prompt
     assert "line one\nline two" not in prompt
     assert "\x1b" not in prompt
+    assert access.capability not in prompt
+
+
+def test_approval_prompt_escapes_terminal_controls_but_keeps_chinese_readable() -> None:
+    access = _approval()
+    action = {
+        "type": "run_process",
+        "id": "process-1",
+        "reason": "批准中文\u009b警告\u202e尾",
+        "program": "工具\u009b危险\u202eexe",
+        "args": ["提交中文", "参数\u009b尾", "\u202e反转"],
+    }
+    request = access.request.model_copy(
+        update={
+            "frozen_action_json": json.dumps(
+                action,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
+    )
+
+    prompt = _approval_prompt(request)
+
+    assert "\u009b" not in prompt
+    assert "\u202e" not in prompt
+    assert '程序: "工具\\u009b危险\\u202eexe"' in prompt
+    assert (
+        '参数: ["提交中文", "参数\\u009b尾", "\\u202e反转"]'
+        in prompt
+    )
+    assert '理由: "批准中文\\u009b警告\\u202e尾"' in prompt
     assert access.capability not in prompt

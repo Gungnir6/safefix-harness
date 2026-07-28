@@ -78,3 +78,11 @@
 - RED：拒绝后的 `SUCCESS/BLOCKED` 分别错误返回 `0/5`；JSON stdout 被 prompt 污染；审批参数丢边界且控制字符直出；重复 sequence 输出两次。
 - GREEN：四组定向测试分别为 `2 passed`、`1 passed`、`2 passed`、`1 passed`。
 - 最终门禁：pytest `70 passed, 1 warning`；Ruff `All checks passed!`；mypy `Success: no issues found in 2 source files`。
+
+## 审查修复轮次 2/5
+
+- program/args 使用完整终端安全 JSON 编码展示，不再截断后请求批准；编码后的执行语义超过 4096 字符或结构无效时，CLI 不读取输入，自动 reject 并退出 `6`。
+- reason 保留明确截断标记；program、args、reason 中的 Unicode `Cc` 与 `Cf` 字符显式转义，覆盖 U+009B 与 U+202E，同时普通中文保持可读。
+- RED：超长危险尾部仍调用输入并进入 approve；U+009B/U+202E 原字符直接进入审批输出。
+- GREEN：两组定向测试各 `1 passed`。
+- 最终门禁：pytest `72 passed, 1 warning`；Ruff `All checks passed!`；mypy `Success: no issues found in 2 source files`。
