@@ -207,6 +207,17 @@ class AgentLoop:
                     snapshot, StopDecision(code=RunStatus.FAILED, reason="model call failed")
                 )
 
+            if (
+                isinstance(action, ApplyPatchAction)
+                and snapshot.budget.remaining_repairs == 0
+            ):
+                return self._stop(
+                    snapshot,
+                    StopDecision(
+                        code=RunStatus.BUDGET_EXCEEDED,
+                        reason="repair budget exhausted",
+                    ),
+                )
             snapshot = self._consume_action_budget(snapshot, action)
             try:
                 self.audit.append(

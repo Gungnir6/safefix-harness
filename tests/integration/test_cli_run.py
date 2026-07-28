@@ -136,6 +136,10 @@ def test_mock_loader_materializes_only_documented_fixture_sha(tmp_path: Path) ->
         '{"type":"finish"}\nnot-json\n',
         '{"type":"finish","summary":"{UNKNOWN_TOKEN}"}\n',
         '{"type":"finish","summary":"{unknown-token}"}\n',
+        '{"type":"finish","summary":"{UNKNOWN.TOKEN}"}\n',
+        '{"type":"finish","summary":"{1TOKEN}"}\n',
+        '{"type":"finish","summary":"{ unknown }"}\n',
+        '{"type":"finish","summary":"{令牌}"}\n',
         '{"type":"finish","summary":NaN}\n',
     ),
 )
@@ -172,6 +176,29 @@ def test_mock_loader_rejects_missing_or_escaping_fixture_target(
         )
         with pytest.raises(ConfigError):
             load_mock_actions(script, workspace)
+
+
+def test_mock_loader_rejects_fixture_token_repeated_outside_expected_sha(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "calculator.py").write_bytes(b"fixture\n")
+    script = tmp_path / "actions.jsonl"
+    script.write_text(
+        json.dumps(
+            {
+                "type": "apply_patch",
+                "path": "calculator.py",
+                "expected_sha256": "{CALCULATOR_SHA256}",
+                "summary": "{CALCULATOR_SHA256}",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError):
+        load_mock_actions(script, workspace)
 
 
 def test_mock_loader_bounds_bytes_and_action_count(tmp_path: Path) -> None:

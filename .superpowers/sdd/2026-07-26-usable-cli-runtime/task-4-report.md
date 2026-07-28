@@ -97,3 +97,35 @@ warning 为既有 `StarletteDeprecationWarning`，来自 FastAPI TestClient/http
   `SUCCESS`，无法满足设计中“验证成功后再 finish”的明确契约；改动限制在该成功
   终止语义，失败、审批、审计和 demo 回归均已定向验证。
 - 本任务未构建 wheel；fresh-install wheel 验证属于计划 Task 5。
+
+## 审查修复轮次 1/5
+
+仅处理两个 Important：
+
+1. repair budget 改为动作级门禁。
+   - 根因：`FeedbackEngine.should_stop` 没有动作上下文，却在
+     `remaining_repairs == 0` 时全局终止，导致单次 patch 成功后无法执行 finish。
+   - 修复：全局停止规则继续负责 step、time 和 no-progress；解析到新的
+     `ApplyPatchAction` 后，AgentLoop 才检查剩余 repair 额度。零额度 patch 在工具
+     调用前以 `BUDGET_EXCEEDED` 停止，read/validation/finish 不受阻止。
+   - 测试准备阶段先发现 `repair_rounds=1` 必须配套
+     `no_progress_rounds=1`，修正 fixture 后再确认有效 RED。
+   - RED：三个精确用例 `3 failed`；GREEN：`3 passed`。
+   - 覆盖单次 patch 用尽额度后 finish 成功，以及第二次 patch 已被模型产生但未进入
+     ToolRegistry。
+2. Mock placeholder 改为递归广义 brace 检测。
+   - 根因：旧正则只匹配有限 ASCII 名称，且 `set` 丢失出现次数和字段位置。
+   - 修复：递归扫描所有 JSON key/value 字符串中的任意 brace-delimited 片段；
+     唯一允许值是顶层 `expected_sha256` 严格等于
+     `{CALCULATOR_SHA256}` 且全对象只出现一次。SHA 替换后再次扫描并失败关闭。
+   - RED：`5 failed, 7 passed`，四种绕过和重复合法 token 均被测试捕获。
+   - GREEN：`12 passed`。
+
+最终受影响回归：
+
+- AgentLoop、feedback、runtime、Task 4 CLI integration 和分发元数据：
+  `67 passed, 1 warning`。
+- Ruff：`All checks passed!`
+- mypy：`Success: no issues found in 33 source files`
+- warning 仍为既有 `StarletteDeprecationWarning`。
+- 按审查指令未重复三个 demo，未运行全套测试。

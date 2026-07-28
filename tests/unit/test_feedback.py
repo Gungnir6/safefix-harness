@@ -105,7 +105,6 @@ def test_mixed_validators_ignore_success_and_report_test_regression() -> None:
     "budget",
     [
         _budget(steps=0),
-        _budget(repairs=0),
         _budget(deadline_at=datetime.now(UTC) - timedelta(seconds=1)),
     ],
 )
@@ -121,6 +120,18 @@ def test_exhausted_budget_stops_run(budget: BudgetState) -> None:
 
     assert decision is not None
     assert decision.code == RunStatus.BUDGET_EXCEEDED
+
+
+def test_repair_budget_does_not_stop_without_action_context() -> None:
+    budget = _budget(repairs=0)
+    feedback = FeedbackEngine().from_results(
+        [_result("pytest", "1 failed")],
+        (),
+        remaining_steps=budget.remaining_steps,
+        remaining_repairs=budget.remaining_repairs,
+    )
+
+    assert FeedbackEngine().should_stop([feedback], budget) is None
 
 
 def test_success_and_repeated_action_digest_stop() -> None:

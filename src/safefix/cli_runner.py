@@ -42,7 +42,7 @@ _MAX_APPROVAL_EXECUTION_CHARS = 4_096
 _MAX_MOCK_SCRIPT_BYTES = 1024 * 1024
 _MAX_MOCK_ACTIONS = 1000
 _CALCULATOR_SHA256_TOKEN = "{CALCULATOR_SHA256}"
-_PLACEHOLDER = re.compile(r"\{[A-Za-z][A-Za-z0-9_-]*\}")
+_PLACEHOLDER = re.compile(r"\{[^{}]*\}", re.DOTALL)
 _SENSITIVE_KEY_PARTS = (
     "token",
     "key",
@@ -131,18 +131,22 @@ def _reject_mock_json_constant(value: str) -> None:
     raise ValueError("non-standard JSON constant")
 
 
-def _mock_placeholders(value: object) -> set[str]:
+def _mock_placeholders(value: object) -> list[str]:
     if isinstance(value, str):
-        return set(_PLACEHOLDER.findall(value))
+        return _PLACEHOLDER.findall(value)
     if isinstance(value, list):
-        return set().union(*(_mock_placeholders(item) for item in value))
+        return [
+            placeholder
+            for item in value
+            for placeholder in _mock_placeholders(item)
+        ]
     if isinstance(value, dict):
-        placeholders: set[str] = set()
+        placeholders: list[str] = []
         for key, item in value.items():
-            placeholders.update(_mock_placeholders(key))
-            placeholders.update(_mock_placeholders(item))
+            placeholders.extend(_mock_placeholders(key))
+            placeholders.extend(_mock_placeholders(item))
         return placeholders
-    return set()
+    return []
 
 
 def load_mock_actions(script_path: Path, workspace: Path) -> tuple[str, ...]:
@@ -177,12 +181,12 @@ def load_mock_actions(script_path: Path, workspace: Path) -> tuple[str, ...]:
             raise ConfigError("mock action line must be a JSON object")
 
         placeholders = _mock_placeholders(payload)
-        unknown = placeholders - {_CALCULATOR_SHA256_TOKEN}
-        if unknown:
+        if placeholders and (
+            placeholders != [_CALCULATOR_SHA256_TOKEN]
+            or payload.get("expected_sha256") != _CALCULATOR_SHA256_TOKEN
+        ):
             raise ConfigError("mock action script has an unsupported placeholder")
-        if _CALCULATOR_SHA256_TOKEN in placeholders:
-            if payload.get("expected_sha256") != _CALCULATOR_SHA256_TOKEN:
-                raise ConfigError("calculator SHA placeholder is misplaced")
+        if placeholders:
             target_path = payload.get("path")
             if not isinstance(target_path, str):
                 raise ConfigError("calculator SHA placeholder requires a target path")
@@ -197,6 +201,8 @@ def load_mock_actions(script_path: Path, workspace: Path) -> tuple[str, ...]:
                     "calculator SHA placeholder target is unavailable"
                 ) from exc
             payload["expected_sha256"] = digest
+            if _mock_placeholders(payload):
+                raise ConfigError("mock action script has an unsupported placeholder")
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         actions.append(line)
     return tuple(actions)

@@ -116,9 +116,10 @@ class LoopFixture:
     registry: SpyRegistry
     approvals: FakeApprovals
     audit: FakeAudit
+    llm: ScriptedMockLLM
 
 
-def _settings() -> SafeFixSettings:
+def _settings(*, repair_rounds: int = 3) -> SafeFixSettings:
     return SafeFixSettings(
         llm=LLMSettings(endpoint="https://example.test/v1", model="mock"),
         validators=(
@@ -133,8 +134,8 @@ def _settings() -> SafeFixSettings:
             ),
         ),
         budget=BudgetSettings(
-            repair_rounds=3,
-            no_progress_rounds=2,
+            repair_rounds=repair_rounds,
+            no_progress_rounds=min(2, repair_rounds),
             total_steps=10,
             wall_time_seconds=60,
         ),
@@ -147,13 +148,15 @@ def _loop(
     validation_successes: tuple[bool, ...] = (True,),
     *,
     audit: FakeAudit | None = None,
+    repair_rounds: int = 3,
 ) -> LoopFixture:
-    settings = _settings()
+    settings = _settings(repair_rounds=repair_rounds)
     registry = SpyRegistry(validation_successes)
     approvals = FakeApprovals()
     audit = audit or FakeAudit()
+    llm = ScriptedMockLLM(script)
     loop = AgentLoop(
-        llm=ScriptedMockLLM(script),
+        llm=llm,
         context=ContextBuilder(None, settings.memory),
         action_parser=ActionParser(),
         policy=FakePolicy(),
@@ -164,7 +167,7 @@ def _loop(
         audit=audit,
         settings=settings,
     )
-    return LoopFixture(loop, registry, approvals, audit)
+    return LoopFixture(loop, registry, approvals, audit, llm)
 
 
 @pytest.mark.asyncio
@@ -269,6 +272,47 @@ async def test_patch_validation_success_is_feedback_until_finish_succeeds() -> N
         if event_type == "ACTION"
     ] == ["p1", "done"]
     assert snapshot.changed_files == ("app.py",)
+
+
+@pytest.mark.asyncio
+async def test_single_repair_budget_allows_successful_patch_then_finish() -> None:
+    patch = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
+    fixture = _loop(
+        [
+            patch,
+            '{"type":"finish","id":"done","reason":"done","summary":"fixed"}',
+        ],
+        validation_successes=(True, True),
+        repair_rounds=1,
+    )
+
+    snapshot = await fixture.loop.start(project="fixture", description="fix value")
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert snapshot.budget.remaining_repairs == 0
+    assert fixture.llm.call_index == 2
+
+
+@pytest.mark.asyncio
+async def test_exhausted_repair_budget_blocks_next_patch_before_tool_execution() -> None:
+    patch_one = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
+    patch_two = '{"type":"apply_patch","id":"p2","reason":"fix again","path":"app.py","expected_sha256":"' + "1" * 64 + '","old_text":"b","new_text":"c","expected_replacements":1}'
+    fixture = _loop(
+        [patch_one, patch_two],
+        validation_successes=(True,),
+        repair_rounds=1,
+    )
+
+    snapshot = await fixture.loop.start(project="fixture", description="fix value")
+
+    assert snapshot.status is RunStatus.BUDGET_EXCEEDED
+    assert snapshot.stop_reason == "repair budget exhausted"
+    assert fixture.llm.call_index == 2
+    assert [
+        call.id
+        for call in fixture.registry.calls
+        if isinstance(call, ApplyPatchAction)
+    ] == ["p1"]
 
 
 @pytest.mark.asyncio
