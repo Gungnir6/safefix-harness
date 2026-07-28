@@ -234,3 +234,19 @@
 - 实现提交：`9d2390166458e7965978b0f3b7c47137684d0950`（`feat(web): 突出演示失败与机制结论`）。本地模式无静态假结论；服务端与客户端都只接受固定六态，未知状态回退“信息”；动态内容继续使用 `createElement`、`textContent` 和 `dataset`。
 - TDD / 验证：页面 RED 为 5 failed、18 passed，GREEN 为 23 passed；Web 完整回归 33 passed；Ruff 全通过；`innerHTML|insertAdjacentHTML|document.write` 扫描无匹配；`git diff --check` 无错误。仅有既有第三方 `StarletteDeprecationWarning`。
 - 技能 / 约束：使用 `test-driven-development`、`frontend-design` 与 `verification-before-completion`；始终调用仓库根 `.venv`，未使用系统 `python.exe`。浏览器桌面/窄屏视觉验收由主代理审查后完成；未合并、推送或删除工作树。
+
+## Usable CLI runtime — Task 5
+
+- 时间：2026-07-28 20:40–21:13 +08:00；分支 / 工作树：`usable-cli-runtime` / `.worktrees/usable-cli-runtime`。
+- 任务：完成 fresh-install wheel、CI smoke、真实 CLI 中文教程、计划/日志证据和最终本地门禁；不新增产品功能，不宣称未发生的 CI、Release 或部署。
+- 技能：`executing-plans`、`using-git-worktrees`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。工作树检测确认当前为 linked worktree、命名分支、非 submodule/非 detached HEAD。
+- Context：实现代理 `/root/cli_task5_delivery`，上游编排代理 `/root`。本子任务没有执行独立整分支评审；whole-branch review 与集成决定保留给上游 Final Review Gate。没有学生手工代码修改。
+- 实现：在 GitHub Actions 的现有 pytest/Ruff/mypy 后加入 fresh-wheel venv smoke，保持 Gitleaks 与 Docker job；dev extra 声明 `build>=1.2,<2`；README 改为可直接执行的真实 CLI 教程并明确外部状态；分发测试覆盖 demo validator 的运行时依赖。
+- 调试 / TDD：fresh wheel 首次 smoke 中三个启动器与 help 正常，但 `safefix-demo all` 的 feedback 断言失败。证据显示 fresh venv 的 `pytest_spec=None`，而 `demo.py` 固定使用当前解释器执行 `-m pytest -q`。新增 `test_runtime_dependencies_include_the_demo_validator` 后得到预期 RED，再把原有 `pytest>=8.3,<9` 从仅 dev extra 移到运行时依赖，定向测试 GREEN；重建 fresh wheel 后三个 demo PASS。
+- 构建环境：首次隔离 build 和 fresh pip install 均被网络沙箱阻断；按沙箱升级流程各只重跑一次后成功。记录的是本地构建/安装结果，不等同于 GitHub Actions。
+- 手工旅程：显式设置 `PYTHONPATH=<worktree>/src`，使用仓库根 `.venv` 的 `safefix.exe`；以工作树内 `SAFEFIX_DATA_DIR` 执行 `config init`、`config validate` 和 Mock run。第二次捕获仅设置 `PYTHONUTF8=1` 取得可读中文证据，没有改变运行语义。
+- 手工结果：exit 0；原 fixture SHA-256 未变；隔离副本修复为 `return left + right`；审计 SQLite 存在；输出包含隔离路径、验证失败、patch、验证通过、修改文件、SUCCESS 和审计路径；capability/CSRF/approval token、traceback、API key 扫描均无匹配。
+- 测试：第一轮全量 pytest `942 passed, 2 skipped, 1 warning in 58.59s`；Ruff 全通过；mypy 对 33 个源码文件无问题；三个 demo PASS；diff check exit 0。唯一 warning 是既有第三方 `StarletteDeprecationWarning`。
+- Docker：`docker version` 报告 `docker_engine` named pipe 不存在，daemon 未运行；因此 image build/container demo 为真实环境阻塞，没有伪称通过。
+- 清理：对 `.smoke-venv`、`dist`、`.manual-data`、`.manual-safefix.yaml` 逐个做绝对路径与工作树严格后代检查后删除。
+- 经验：fresh-install smoke 必须真正隔离 dev extra，否则会掩盖“演示使用 pytest、但 wheel 不声明 pytest”的分发缺口；CI 配置存在不代表 CI 已运行，本地 wheel、Docker daemon、Release 和公网部署必须分别记录证据。

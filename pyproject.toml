@@ -10,7 +10,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1", "httpx>=0.28,<1", "jinja2>=3.1,<4",
   "keyring>=25,<26", "pathspec>=0.12,<1", "pydantic>=2.10,<3",
-  "python-multipart>=0.0.20,<1", "PyYAML>=6,<7", "uvicorn>=0.34,<1",
+  "pytest>=8.3,<9", "python-multipart>=0.0.20,<1", "PyYAML>=6,<7",
+  "uvicorn>=0.34,<1",
 ]
 
 [project.scripts]
@@ -19,7 +20,13 @@ safefix-demo = "safefix.demo:main"
 safefix-public-demo = "safefix.cli:public_demo_main"
 
 [project.optional-dependencies]
-dev = ["hypothesis>=6.120,<7", "mypy>=1.14,<2", "pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.9,<0.16"]
+dev = [
+  "build>=1.2,<2",
+  "hypothesis>=6.120,<7",
+  "mypy>=1.14,<2",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.9,<0.16",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

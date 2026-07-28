@@ -1564,3 +1564,38 @@ Update this table only with actual commits; do not prefill hashes.
 | T16 | Completed / Merged | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
 | T17 | Completed on GitHub main (deploy pending) | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161` | [GitHub main](https://github.com/Gungnir6/safefix-harness) / legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Quick-delivery mode; [Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) passed 801 tests with Ruff, mypy, Gitleaks and Docker build; Render deploy remains pending |
 | Gate 2 | Pending | — | — | Final submission |
+
+## Usable CLI runtime
+
+### 任务与提交
+
+- Task 1（完整配置与持久化隔离工作区）：`48de56f`；符号链接失败关闭修复 `7e5e499`。RED 为缺少 `default_settings_yaml` 与 `safefix.execution_workspace`；最终定向验证为 63 passed，Ruff 与 mypy 通过。
+- Task 2（生产运行时组合根）：`07b9584`；凭据异常图清理、确定性资源关闭和安全退出码修复为 `1c05d31`、`6981331`、`32d6498`。RED 覆盖缺少运行时、稳定项目身份、审计结果和构造失败清理；任务最终定向验证为 33 passed，Ruff 与 mypy 通过。
+- Task 3（真实 CLI、审批交互与结果输出）：`15c66bf`；审批交互、安全完整展示修复为 `84651fc`、`05da5b5`。RED 覆盖 parser/template、缺少 runner、拒绝退出码、JSON stdout、动作边界与终端控制字符；任务最终门禁为 72 passed、1 条既有第三方 warning，Ruff 与 mypy 通过。
+- Task 4（完整 Mock 修复流程）：`1489907`；动作级 repair budget 与广义占位符失败关闭修复为 `0651614`。RED 覆盖缺失模板/loader、finish 前提前成功、补丁预算和占位符绕过；最终受影响回归为 67 passed、1 条既有第三方 warning，Ruff 与 mypy 通过。
+- Task 5（fresh wheel、CI、教程与最终证据）：本提交 `docs(cli): 完成真实运行与分发说明`。新增 Linux CI fresh-wheel smoke、声明 `build>=1.2,<2`、真实中文 CLI 教程、Windows fresh-wheel 与手工旅程证据。fresh wheel 首轮暴露 demo validator 只在 dev extra；新增分发依赖测试先 RED，再把既有 `pytest>=8.3,<9` 约束移到运行时依赖后 GREEN。
+
+### Task 5 本地证据（2026-07-28 +08:00）
+
+- wheel：仓库根 `.venv` 的 Python 3.12 执行 `-m build --wheel` 成功，生成 `safefix_harness-0.1.0-py3-none-any.whl`。
+- fresh Windows venv：仅安装 wheel 后，`safefix.exe`、`safefix-demo.exe`、`safefix-public-demo.exe` 均存在；`safefix --help` exit 0；guardrail、feedback、approval 均 PASS。
+- exact Mock journey：`config init`、`config validate` 与真实 `safefix run` exit 0；原 fixture SHA-256 前后相同；隔离副本包含 `return left + right`；输出包含初始验证失败、patch、验证通过、`calculator.py`、`SUCCESS`、结果工作区与审计数据库；未发现 capability/CSRF/approval token、traceback 或 API key。
+- 第一轮完整门禁：pytest `942 passed, 2 skipped, 1 warning in 58.59s`；warning 是既有 FastAPI TestClient 的 `StarletteDeprecationWarning`。Ruff `All checks passed!`；mypy `Success: no issues found in 33 source files`；三个 demo PASS；`git diff --check` exit 0。
+- 清理：删除 `.smoke-venv`、`dist`、`.manual-data` 和 `.manual-safefix.yaml` 前，均解析为当前工作树的严格后代路径；清理后 Git 状态只包含预期跟踪文件。
+- Docker：本机 `docker_engine` named pipe 不存在，Docker daemon 未运行，因此没有执行 image build/container demo，也不宣称通过。
+- 外部状态：当前提交尚无 GitHub Actions 结果、GitHub Release URL 或 Render 公网 URL；这些仍是集成后需要账户权限的独立步骤。
+
+### 设计验收映射
+
+1. fresh wheel 安装与 `safefix --help`：Task 5，本地通过。
+2. `config init` 后立即 `config validate`：Task 1/3/5，本地手工旅程通过。
+3. 缺少 key 时安全给出 keyring 配置命令：Task 2/3 自动测试。
+4. OpenAI-compatible 测试服务完整运行：Task 2 runtime HTTP Mock 自动测试。
+5. 默认不改原项目且结果/审计可定位：Task 1/4/5，自动测试与手工 SHA-256 证据。
+6. 只有 `--in-place` 修改原项目：Task 1/3/4 自动测试与 README 警告。
+7. 高风险动作等待审批且能力单次消费：Task 3 自动测试。
+8. 动作、治理、工具、反馈和最终结果可见：Task 2/3/5，审计自动测试与手工输出。
+9. Mock 端到端、provider 传输、隔离与分发入口：Task 2/4/5。
+10. pytest/Ruff/mypy/demo/diff 本地通过；Gitleaks 与 Docker jobs 保留在 CI。当前 Docker daemon 不可用，当前提交外部 CI 尚未运行。
+11. README 的安装、真实运行、Mock、凭据、隔离、原地和限制说明：Task 5。
+12. 公网 WebUI 与 GitHub Release：映射到 Final Gate 的外部状态步骤，当前未完成且未虚构链接。

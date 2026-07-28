@@ -1,0 +1,156 @@
+# Task 5 Report: Fresh-Install Distribution, Documentation, and Final Evidence
+
+## 状态
+
+Task 5 的本地交付项已完成：CI fresh-wheel smoke、声明式构建依赖、真实 CLI 中文教程、Windows fresh-wheel 安装、exact Mock 用户旅程、PLAN/AGENT_LOG 证据和本地质量门禁均已执行。Docker build/container demo 因本机 daemon 未运行而阻塞；当前提交尚无 GitHub Actions、GitHub Release 或 Render 部署外部结果，未宣称成功。
+
+## 改动
+
+- `.github/workflows/ci.yml`
+  - 在现有 pytest、Ruff、mypy 后新增 Linux clean venv wheel smoke。
+  - 保留 Gitleaks、Docker build/push 和原有 job 依赖。
+- `pyproject.toml`
+  - dev extra 新增 `build>=1.2,<2`。
+  - fresh wheel 暴露 demo validator 缺失后，将既有 `pytest>=8.3,<9` 约束从仅 dev extra 移到运行时依赖；未改变版本范围。
+- `README.md`
+  - 记录 Python 3.12、wheel/Release 安装、完整 config/keyring 流程、隔离默认值、结果/审计位置、`--in-place` 风险、审批、JSON、provider 限制、packaged Mock、WebUI 和 Docker。
+  - 明确 Mock 是固定动作验收 harness，不是通用智能模型。
+  - 明确当前提交没有可验证的 CI、Release 或公网 Render URL。
+- `tests/integration/test_distribution_metadata.py`
+  - 增加 demo validator 必须属于运行时依赖的回归。
+- `PLAN.md` / `AGENT_LOG.md`
+  - 记录 Tasks 1–5 的真实提交和 RED/GREEN/门禁证据，并逐项映射 12 条设计验收标准。
+
+## Fresh-wheel 证据
+
+所有 Python 命令使用：
+
+```text
+C:\Users\Gungnir\Desktop\safefix-harness\.venv\Scripts\python.exe
+```
+
+且 `PYTHONPATH` 指向当前 worktree 的 `src`。没有调用系统 Python。
+
+构建：
+
+```powershell
+python.exe -m build --wheel
+```
+
+结果：
+
+```text
+Successfully built safefix_harness-0.1.0-py3-none-any.whl
+```
+
+clean Windows venv 安装后：
+
+```text
+launcher OK: safefix.exe
+launcher OK: safefix-demo.exe
+launcher OK: safefix-public-demo.exe
+safefix --help: exit 0
+guardrail: PASS
+feedback: PASS
+approval: PASS
+```
+
+## Fresh-wheel RED / GREEN
+
+首次 wheel 构建和安装成功，三个启动器均存在且 help exit 0，但：
+
+```text
+guardrail: PASS
+AssertionError at passing_feedback.category is VALIDATION_SUCCESS
+safefix-demo all: exit 1
+```
+
+根因证据：
+
+```text
+fresh venv python = .smoke-venv\Scripts\python.exe
+pytest_spec = None
+```
+
+`safefix.demo` 通过该解释器执行 `-m pytest -q`，而 pytest 当时只在 dev extra。新增回归后的 RED：
+
+```text
+FAILED test_runtime_dependencies_include_the_demo_validator
+assert any(requirement.startswith("pytest") for requirement in requirements)
+```
+
+把原有 pytest 约束移至运行时依赖后的 GREEN：
+
+```text
+1 passed, 1 existing third-party warning
+```
+
+重建并全新安装后，三个 demo 全部 PASS。
+
+## Exact Mock CLI journey
+
+使用工作树内 `SAFEFIX_DATA_DIR` 执行：
+
+```powershell
+safefix.exe config init .manual-safefix.yaml
+safefix.exe config validate .manual-safefix.yaml
+safefix.exe run examples\python_bug --task "修复失败的加法测试" --config .manual-safefix.yaml --provider mock --mock-script examples\mock_repair.jsonl
+```
+
+结果：
+
+- exit 0；
+- 原 `examples/python_bug/calculator.py` 的 SHA-256 前后相同；
+- 输出包含“运行模式：隔离副本”、首次“验证失败”、`apply_patch`、后续“验证通过”、`修改文件: calculator.py`、`运行结果: SUCCESS` 和“审计数据库”；
+- 结果副本包含 `return left + right`；
+- 审计 SQLite 文件存在；
+- 输出未匹配 capability、CSRF、approval token、traceback、API key；
+- `PYTHONUTF8=1` 只用于 Windows PowerShell native-pipe 的可读中文捕获，没有改变 CLI 运行逻辑。
+
+## 第一轮完整本地验证
+
+```text
+pytest -q:
+942 passed, 2 skipped, 1 warning in 58.59s
+
+ruff check .:
+All checks passed!
+
+mypy src:
+Success: no issues found in 33 source files
+
+python -m safefix.demo all:
+guardrail: PASS
+feedback: PASS
+approval: PASS
+
+git diff --check:
+exit 0
+```
+
+唯一 warning 是既有 FastAPI TestClient 的 `StarletteDeprecationWarning`。
+
+## Docker 与外部状态
+
+Docker 探测：
+
+```text
+failed to connect to the docker API at npipe:////./pipe/docker_engine
+The system cannot find the file specified.
+```
+
+本机 Docker daemon 未运行，因此没有 image build 或 container demo 结果。GitHub Actions、Release 和 Render 部署需要集成后外部账户状态；当前未执行、未伪称成功。
+
+## 清理
+
+删除 `.smoke-venv`、`dist`、`.manual-data` 和 `.manual-safefix.yaml` 前，均通过绝对路径检查证明其为当前 worktree 的严格后代；清理后没有生成物残留。
+
+## 提交
+
+提交信息：
+
+```text
+docs(cli): 完成真实运行与分发说明
+```
+
+精确 SHA 由提交完成回执记录。

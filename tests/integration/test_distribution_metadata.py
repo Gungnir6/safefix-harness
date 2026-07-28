@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import yaml
 from fastapi.testclient import TestClient
@@ -11,6 +12,14 @@ from tests.web.test_api import FakeService
 
 
 ROOT = Path(__file__).parents[2]
+
+
+def test_runtime_dependencies_include_the_demo_validator() -> None:
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    requirements = metadata["project"]["dependencies"]
+
+    assert any(requirement.startswith("pytest") for requirement in requirements)
 
 
 def test_required_delivery_files_and_ci_job_exist() -> None:
