@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from typing import Any, TextIO
@@ -37,6 +39,10 @@ _DEFAULT_STDERR = sys.stderr
 _MAX_RENDERED_EVENT_CHARS = 2_048
 _MAX_RENDERED_VALUE_CHARS = 512
 _MAX_APPROVAL_EXECUTION_CHARS = 4_096
+_MAX_MOCK_SCRIPT_BYTES = 1024 * 1024
+_MAX_MOCK_ACTIONS = 1000
+_CALCULATOR_SHA256_TOKEN = "{CALCULATOR_SHA256}"
+_PLACEHOLDER = re.compile(r"\{[A-Za-z][A-Za-z0-9_-]*\}")
 _SENSITIVE_KEY_PARTS = (
     "token",
     "key",
@@ -120,16 +126,80 @@ def _credential_service() -> CredentialService:
     return CredentialService(keyring)
 
 
+def _reject_mock_json_constant(value: str) -> None:
+    del value
+    raise ValueError("non-standard JSON constant")
+
+
+def _mock_placeholders(value: object) -> set[str]:
+    if isinstance(value, str):
+        return set(_PLACEHOLDER.findall(value))
+    if isinstance(value, list):
+        return set().union(*(_mock_placeholders(item) for item in value))
+    if isinstance(value, dict):
+        placeholders: set[str] = set()
+        for key, item in value.items():
+            placeholders.update(_mock_placeholders(key))
+            placeholders.update(_mock_placeholders(item))
+        return placeholders
+    return set()
+
+
 def load_mock_actions(script_path: Path, workspace: Path) -> tuple[str, ...]:
-    del workspace
     try:
-        return tuple(
-            line.strip()
-            for line in script_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        )
+        with script_path.open("rb") as script:
+            raw = script.read(_MAX_MOCK_SCRIPT_BYTES + 1)
+        if len(raw) > _MAX_MOCK_SCRIPT_BYTES:
+            raise ConfigError("mock action script exceeds size limit")
+        text = raw.decode("utf-8")
+    except ConfigError:
+        raise
     except (OSError, UnicodeError) as exc:
         raise ConfigError("cannot read mock action script") from exc
+
+    lines = tuple(line.strip() for line in text.splitlines() if line.strip())
+    if not lines:
+        raise ConfigError("mock action script is blank")
+    if len(lines) > _MAX_MOCK_ACTIONS:
+        raise ConfigError("mock action script has too many actions")
+
+    workspace_root = workspace.resolve(strict=False)
+    actions: list[str] = []
+    for line in lines:
+        try:
+            payload = json.loads(
+                line,
+                parse_constant=_reject_mock_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+            raise ConfigError("mock action line is not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ConfigError("mock action line must be a JSON object")
+
+        placeholders = _mock_placeholders(payload)
+        unknown = placeholders - {_CALCULATOR_SHA256_TOKEN}
+        if unknown:
+            raise ConfigError("mock action script has an unsupported placeholder")
+        if _CALCULATOR_SHA256_TOKEN in placeholders:
+            if payload.get("expected_sha256") != _CALCULATOR_SHA256_TOKEN:
+                raise ConfigError("calculator SHA placeholder is misplaced")
+            target_path = payload.get("path")
+            if not isinstance(target_path, str):
+                raise ConfigError("calculator SHA placeholder requires a target path")
+            try:
+                target = (workspace_root / target_path).resolve(strict=True)
+                target.relative_to(workspace_root)
+                if not target.is_file():
+                    raise OSError
+                digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            except (OSError, ValueError) as exc:
+                raise ConfigError(
+                    "calculator SHA placeholder target is unavailable"
+                ) from exc
+            payload["expected_sha256"] = digest
+            line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        actions.append(line)
+    return tuple(actions)
 
 
 def _is_sensitive_key(key: str) -> bool:

@@ -13,6 +13,7 @@ from safefix.domain import (
     BudgetState,
     DecisionOutcome,
     FinishAction,
+    FeedbackCategory,
     RunSnapshot,
     RunStatus,
     RunValidationAction,
@@ -179,8 +180,15 @@ class AgentLoop:
             "model": self.settings.llm.model,
         }
         while snapshot.status is RunStatus.RUNNING:
+            stop_history = snapshot.feedback_history
+            if (
+                stop_history
+                and stop_history[-1].category
+                is FeedbackCategory.VALIDATION_SUCCESS
+            ):
+                stop_history = ()
             stop = self.feedback.should_stop(
-                snapshot.feedback_history,
+                stop_history,
                 snapshot.budget,
                 snapshot.action_digests,
             )
@@ -255,7 +263,20 @@ class AgentLoop:
     async def _dispatch(self, snapshot: RunSnapshot, action: Action) -> RunSnapshot:
         if isinstance(action, FinishAction):
             results = await self._run_validators(action.id)
-            return self._record_feedback(snapshot, results)
+            snapshot = self._record_feedback(snapshot, results)
+            if (
+                snapshot.status is RunStatus.RUNNING
+                and results
+                and all(result.success for result in results)
+            ):
+                return self._stop(
+                    snapshot,
+                    StopDecision(
+                        code=RunStatus.SUCCESS,
+                        reason="validation succeeded",
+                    ),
+                )
+            return snapshot
         try:
             result = await self.tools.dispatch(action)
         except Exception:

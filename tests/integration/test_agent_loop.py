@@ -208,7 +208,14 @@ async def test_approval_resume_executes_frozen_action_and_finishes() -> None:
 async def test_failed_validation_allows_two_repairs_then_succeeds() -> None:
     patch_one = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
     patch_two = '{"type":"apply_patch","id":"p2","reason":"fix again","path":"app.py","expected_sha256":"' + "1" * 64 + '","old_text":"b","new_text":"c","expected_replacements":1}'
-    fixture = _loop([patch_one, patch_two], validation_successes=(False, True))
+    fixture = _loop(
+        [
+            patch_one,
+            patch_two,
+            '{"type":"finish","id":"done","reason":"done","summary":"fixed"}',
+        ],
+        validation_successes=(False, True, True),
+    )
 
     snapshot = await fixture.loop.start(project="fixture", description="fix value")
 
@@ -216,6 +223,76 @@ async def test_failed_validation_allows_two_repairs_then_succeeds() -> None:
     assert snapshot.repair_round == 2
     assert snapshot.action_digests[0] != snapshot.action_digests[1]
     assert any(item.category.value == "TEST_FAILURE" for item in snapshot.feedback_history)
+
+
+@pytest.mark.asyncio
+async def test_validation_success_is_feedback_until_finish_succeeds() -> None:
+    fixture = _loop(
+        [
+            '{"type":"run_validation","id":"v1","reason":"check",'
+            '"validator_id":"pytest"}',
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+        ],
+        validation_successes=(True, True),
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="validate then finish",
+    )
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert [
+        payload["id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "ACTION"
+    ] == ["v1", "done"]
+
+
+@pytest.mark.asyncio
+async def test_patch_validation_success_is_feedback_until_finish_succeeds() -> None:
+    patch = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
+    fixture = _loop(
+        [
+            patch,
+            '{"type":"finish","id":"done","reason":"done","summary":"fixed"}',
+        ],
+        validation_successes=(True, True),
+    )
+
+    snapshot = await fixture.loop.start(project="fixture", description="fix value")
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert [
+        payload["id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "ACTION"
+    ] == ["p1", "done"]
+    assert snapshot.changed_files == ("app.py",)
+
+
+@pytest.mark.asyncio
+async def test_failed_finish_validation_returns_feedback_and_allows_retry() -> None:
+    fixture = _loop(
+        [
+            '{"type":"finish","id":"done-1","reason":"done","summary":"first"}',
+            '{"type":"finish","id":"done-2","reason":"retry","summary":"second"}',
+        ],
+        validation_successes=(False, True),
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="finish after validation",
+    )
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert [
+        payload["id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "ACTION"
+    ] == ["done-1", "done-2"]
+    assert snapshot.feedback_history[0].category.value == "TEST_FAILURE"
 
 
 @pytest.mark.asyncio
@@ -238,8 +315,9 @@ async def test_tool_results_and_feedback_are_audited_in_action_order() -> None:
             '"validator_id":"pytest"}',
             '{"type":"run_validation","id":"v2","reason":"check again",'
             '"validator_id":"pytest"}',
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
         ],
-        validation_successes=(False, True),
+        validation_successes=(False, True, True),
     )
 
     snapshot = await fixture.loop.start(
@@ -260,12 +338,16 @@ async def test_tool_results_and_feedback_are_audited_in_action_order() -> None:
         "POLICY_DECISION",
         "TOOL_RESULT",
         "FEEDBACK",
+        "ACTION",
+        "POLICY_DECISION",
+        "TOOL_RESULT",
+        "FEEDBACK",
     ]
     assert [
         payload["action_id"]
         for event_type, payload in fixture.audit.events
         if event_type == "TOOL_RESULT"
-    ] == ["v1", "v2"]
+    ] == ["v1", "v2", "done:pytest"]
 
 
 class FailingEvidenceAudit(FakeAudit):

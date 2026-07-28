@@ -77,6 +77,11 @@ def test_ignore_and_package_metadata_cover_secrets_and_assets() -> None:
     assert 'safefix = "safefix.cli:main"' in package
     assert 'safefix-demo = "safefix.demo:main"' in package
     assert '"examples/python_bug" = "safefix/_fixtures/python_bug"' in package
+    assert (ROOT / "examples" / "mock_repair.jsonl").is_file()
+    assert (
+        '"examples/mock_repair.jsonl" = "safefix/_fixtures/mock_repair.jsonl"'
+        in package
+    )
 
 
 def test_container_is_non_root_and_has_healthcheck() -> None:

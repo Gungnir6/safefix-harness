@@ -30,3 +30,4 @@ packages = ["src/safefix"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "examples/python_bug" = "safefix/_fixtures/python_bug"
+"examples/mock_repair.jsonl" = "safefix/_fixtures/mock_repair.jsonl"

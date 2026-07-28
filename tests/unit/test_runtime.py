@@ -279,6 +279,7 @@ async def test_runtime_registers_filesystem_process_and_validation_tools(
         f'"program":{program},"args":{args}}}',
         '{"type":"run_validation","id":"validation","reason":"validate",'
         '"validator_id":"python-check"}',
+        '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
     )
     runtime = create_runtime(
         _settings(),
@@ -328,7 +329,10 @@ async def test_runtime_registers_patch_tool(tmp_path: Path) -> None:
         data_dir,
         provider="mock",
         credential_service=_credentials(),
-        mock_actions=(action,),
+        mock_actions=(
+            action,
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+        ),
     )
 
     snapshot = await runtime.service.create(

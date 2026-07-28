@@ -1,0 +1,6 @@
+{"type":"list_files","id":"list-1","reason":"inspect project","path":"."}
+{"type":"read_file","id":"read-1","reason":"inspect failing code","path":"calculator.py"}
+{"type":"run_validation","id":"validate-1","reason":"capture objective failure","validator_id":"pytest"}
+{"type":"apply_patch","id":"patch-1","reason":"repair from validation feedback","path":"calculator.py","expected_sha256":"{CALCULATOR_SHA256}","old_text":"return left - right","new_text":"return left + right","expected_replacements":1}
+{"type":"run_validation","id":"validate-2","reason":"verify repair","validator_id":"pytest"}
+{"type":"finish","id":"finish-1","reason":"validated repair complete","summary":"pytest passes after repairing calculator.add"}
