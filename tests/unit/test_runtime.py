@@ -380,6 +380,7 @@ async def test_constructor_failure_closes_every_opened_resource(
             self.closed = False
 
         async def aclose(self) -> None:
+            await asyncio.sleep(0)
             self.closed = True
 
     http = RecordingHttpClient()
@@ -431,6 +432,7 @@ async def test_http_cleanup_failure_still_closes_sqlite_and_uses_fallback(
             self.closed = False
 
         async def aclose(self) -> None:
+            await asyncio.sleep(0)
             self.closed = True
 
     http = RecordingHttpClient()
@@ -475,7 +477,6 @@ async def test_http_cleanup_failure_still_closes_sqlite_and_uses_fallback(
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         connections[0].execute("SELECT 1")
-    await asyncio.sleep(0)
     assert http.closed is True
 
 
@@ -541,6 +542,44 @@ async def test_secret_bearing_constructor_failure_is_scrubbed_and_stable(
     assert memories[0]._secrets == ()
     assert approvals[0]._secrets == ()
     assert approvals[0]._audit._secrets == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signal_type", [KeyboardInterrupt, SystemExit])
+async def test_secret_bearing_signal_is_reissued_cleanly(
+    signal_type: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+
+    def interrupt_loop_construction(**kwargs: object) -> None:
+        del kwargs
+        raise signal_type(f"provider driver exposed {_TRACEBACK_TEST_SECRET}")
+
+    monkeypatch.setattr(
+        "safefix.runtime.AgentLoop",
+        interrupt_loop_construction,
+    )
+
+    with pytest.raises(BaseException) as captured:
+        create_runtime(
+            _settings(),
+            prepared,
+            data_dir,
+            provider="openai-compatible",
+            credential_service=_credentials(_TRACEBACK_TEST_SECRET),
+            http_transport=httpx.MockTransport(
+                lambda request: httpx.Response(500, request=request)
+            ),
+        )
+
+    error = captured.value
+    assert type(error) is signal_type
+    assert error.args == ()
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    _assert_exception_graph_is_secret_free(error, _TRACEBACK_TEST_SECRET)
 
 
 @pytest.mark.asyncio

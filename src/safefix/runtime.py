@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from pathlib import Path
 import sqlite3
 import threading
@@ -41,6 +42,12 @@ class RuntimeConfigurationError(RuntimeError):
     """The requested production runtime cannot be assembled safely."""
 
 
+class _BuildFailure(Enum):
+    CONFIGURATION = auto()
+    KEYBOARD_INTERRUPT = auto()
+    SYSTEM_EXIT = auto()
+
+
 @dataclass(slots=True)
 class RuntimeSession:
     service: TaskService
@@ -69,7 +76,7 @@ class RuntimeSession:
             self._connection.close()
 
 
-def _close_failed_http(http: httpx.AsyncClient) -> None:
+def _close_http_in_worker(http: httpx.AsyncClient) -> None:
     def close() -> None:
         try:
             asyncio.run(http.aclose())
@@ -81,23 +88,12 @@ def _close_failed_http(http: httpx.AsyncClient) -> None:
     worker.join()
 
 
+def _close_failed_http(http: httpx.AsyncClient) -> None:
+    _close_http_in_worker(http)
+
+
 def _fallback_failed_http_close(http: httpx.AsyncClient) -> None:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        try:
-            asyncio.run(http.aclose())
-        except BaseException:
-            pass
-        return
-    try:
-        coroutine = http.aclose()
-    except BaseException:
-        return
-    try:
-        loop.create_task(coroutine)
-    except BaseException:
-        coroutine.close()
+    _close_http_in_worker(http)
 
 
 def _scrub_secret_holders(
@@ -123,7 +119,7 @@ def _build_runtime(
     credential_service: CredentialService,
     mock_actions: Sequence[str] | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
-) -> RuntimeSession | None:
+) -> RuntimeSession | _BuildFailure:
     secret_values: tuple[str, ...] = ()
     secret_obtained = False
     connection: sqlite3.Connection | None = None
@@ -135,6 +131,7 @@ def _build_runtime(
     loop: AgentLoop | None = None
     service: TaskService | None = None
     failure: BaseException | None = None
+    failure_kind: _BuildFailure | None = None
     try:
         if provider == "openai-compatible":
             secret_values = (credential_service.get_for_request(provider),)
@@ -241,7 +238,12 @@ def _build_runtime(
             _http=http,
         )
     except BaseException as exc:
-        failure = exc
+        if isinstance(exc, KeyboardInterrupt):
+            failure_kind = _BuildFailure.KEYBOARD_INTERRUPT
+        elif isinstance(exc, SystemExit):
+            failure_kind = _BuildFailure.SYSTEM_EXIT
+        else:
+            failure = exc
 
     try:
         if http is not None:
@@ -269,13 +271,23 @@ def _build_runtime(
         memory = None
         approvals = None
         del credential_service
-        return None
+        return failure_kind or _BuildFailure.CONFIGURATION
+    if failure_kind is not None:
+        return failure_kind
     assert failure is not None
     raise failure
 
 
 def _raise_runtime_initialization_failed() -> NoReturn:
     raise RuntimeConfigurationError("runtime initialization failed") from None
+
+
+def _raise_clean_signal(failure: _BuildFailure) -> NoReturn:
+    if failure is _BuildFailure.KEYBOARD_INTERRUPT:
+        raise KeyboardInterrupt() from None
+    if failure is _BuildFailure.SYSTEM_EXIT:
+        raise SystemExit() from None
+    raise AssertionError("build failure is not a signal")
 
 
 def create_runtime(
@@ -295,7 +307,7 @@ def create_runtime(
 
     data_dir.mkdir(parents=True, exist_ok=True)
     database_path = data_dir / "safefix.sqlite3"
-    session = _build_runtime(
+    result = _build_runtime(
         settings,
         prepared,
         database_path,
@@ -305,6 +317,8 @@ def create_runtime(
         http_transport=http_transport,
     )
     del credential_service
-    if session is None:
+    if result is _BuildFailure.CONFIGURATION:
         _raise_runtime_initialization_failed()
-    return session
+    if isinstance(result, _BuildFailure):
+        _raise_clean_signal(result)
+    return result
