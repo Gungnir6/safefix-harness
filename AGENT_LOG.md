@@ -242,7 +242,7 @@
 - 技能：`executing-plans`、`using-git-worktrees`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。工作树检测确认当前为 linked worktree、命名分支、非 submodule/非 detached HEAD。
 - Context：实现代理 `/root/cli_task5_delivery`，上游编排代理 `/root`。本子任务没有执行独立整分支评审；whole-branch review 与集成决定保留给上游 Final Review Gate。没有学生手工代码修改。
 - 实现：在 GitHub Actions 的现有 pytest/Ruff/mypy 后加入 fresh-wheel venv smoke，保持 Gitleaks 与 Docker job；dev extra 声明 `build>=1.2,<2`；README 改为可直接执行的真实 CLI 教程并明确外部状态；分发测试覆盖 demo validator 的运行时依赖。
-- 调试 / TDD：fresh wheel 首次 smoke 中三个启动器与 help 正常，但 `safefix-demo all` 的 feedback 断言失败。证据显示 fresh venv 的 `pytest_spec=None`，而 `demo.py` 固定使用当前解释器执行 `-m pytest -q`。新增 `test_runtime_dependencies_include_the_demo_validator` 后得到预期 RED，再把原有 `pytest>=8.3,<9` 从仅 dev extra 移到运行时依赖，定向测试 GREEN；重建 fresh wheel 后三个 demo PASS。
+- 调试 / TDD：首轮已构建/安装 wheel，fresh venv 的 `pytest_spec=None` 且 `safefix-demo all` feedback 失败，证明 demo validator 的运行时依赖缺口；新增 `test_runtime_dependencies_include_the_demo_validator` 后得到预期 RED，再把原有 `pytest>=8.3,<9` 从仅 dev extra 移到运行时依赖，定向测试 GREEN。该轮 smoke 同时继承了工作树 `PYTHONPATH`，因此入口行为不作为 wheel 来源证据；来源证据由下述审查修复轮替代。
 - 构建环境：首次隔离 build 和 fresh pip install 均被网络沙箱阻断；按沙箱升级流程各只重跑一次后成功。记录的是本地构建/安装结果，不等同于 GitHub Actions。
 - 手工旅程：显式设置 `PYTHONPATH=<worktree>/src`，使用仓库根 `.venv` 的 `safefix.exe`；以工作树内 `SAFEFIX_DATA_DIR` 执行 `config init`、`config validate` 和 Mock run。第二次捕获仅设置 `PYTHONUTF8=1` 取得可读中文证据，没有改变运行语义。
 - 手工结果：exit 0；原 fixture SHA-256 未变；隔离副本修复为 `return left + right`；审计 SQLite 存在；输出包含隔离路径、验证失败、patch、验证通过、修改文件、SUCCESS 和审计路径；capability/CSRF/approval token、traceback、API key 扫描均无匹配。
@@ -250,3 +250,13 @@
 - Docker：`docker version` 报告 `docker_engine` named pipe 不存在，daemon 未运行；因此 image build/container demo 为真实环境阻塞，没有伪称通过。
 - 清理：对 `.smoke-venv`、`dist`、`.manual-data`、`.manual-safefix.yaml` 逐个做绝对路径与工作树严格后代检查后删除。
 - 经验：fresh-install smoke 必须真正隔离 dev extra，否则会掩盖“演示使用 pytest、但 wheel 不声明 pytest”的分发缺口；CI 配置存在不代表 CI 已运行，本地 wheel、Docker daemon、Release 和公网部署必须分别记录证据。
+
+## Usable CLI runtime — Task 5 审查修复轮次 1/5
+
+- 时间：2026-07-28 +08:00；审查发现：上一轮 smoke 会话继承 `PYTHONPATH=<worktree>/src`，因此 launcher 成功不能证明实际加载 wheel。
+- 证据修复：重新 build/install 前及每组 smoke 前均执行 `Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue` 并断言变量不存在。`.smoke-venv` Python 报告 `safefix.__file__` 为 `.smoke-venv\Lib\site-packages\safefix\__init__.py`，且不在工作树 `src`。
+- packaged resources：`importlib.resources` 定位到 site-packages 内 `_fixtures/python_bug` 和 `_fixtures/mock_repair.jsonl`，两者及 `calculator.py` 均存在。
+- 入口：三个 Windows launcher 均存在；无 `PYTHONPATH` 的 `safefix --help` exit 0、三个 demo PASS；`safefix-public-demo` 的 console entry 从已安装 wheel metadata 加载为 `safefix.cli:public_demo_main`，采用聚焦 import 检查避免启动长驻服务。
+- packaged Mock journey：把已安装资源复制到工作树临时输入目录，使用 `.smoke-venv` launcher 执行 `config init`、`config validate` 和 Mock run。`PYTHONPATHPresent=False`、exit 0、输入副本 SHA-256 未变、隔离结果含 `return left + right`、审计库存在、输出包含失败/patch/通过/SUCCESS，且无 traceback/capability。
+- Minor：README 明列 pytest 是运行时依赖，用于内置 feedback/Mock 验收和默认 validator；分发测试改用 `packaging.Requirement` 与 `canonicalize_name` 后精确断言依赖名为 `pytest`，避免 `pytest-fake` 等前缀误报。
+- 清理：`.smoke-venv`、`dist`、`.wheel-smoke-input`、`.wheel-smoke-data` 和 `.wheel-smoke-config.yaml` 均在解析为当前工作树严格后代后删除。

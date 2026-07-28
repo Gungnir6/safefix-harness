@@ -1578,10 +1578,11 @@ Update this table only with actual commits; do not prefill hashes.
 ### Task 5 本地证据（2026-07-28 +08:00）
 
 - wheel：仓库根 `.venv` 的 Python 3.12 执行 `-m build --wheel` 成功，生成 `safefix_harness-0.1.0-py3-none-any.whl`。
-- fresh Windows venv：仅安装 wheel 后，`safefix.exe`、`safefix-demo.exe`、`safefix-public-demo.exe` 均存在；`safefix --help` exit 0；guardrail、feedback、approval 均 PASS。
-- exact Mock journey：`config init`、`config validate` 与真实 `safefix run` exit 0；原 fixture SHA-256 前后相同；隔离副本包含 `return left + right`；输出包含初始验证失败、patch、验证通过、`calculator.py`、`SUCCESS`、结果工作区与审计数据库；未发现 capability/CSRF/approval token、traceback 或 API key。
+- fresh Windows venv（审查修复后证据）：所有 smoke 命令前显式移除 `PYTHONPATH`。wheel 及其声明的运行时依赖安装后，`safefix.__file__` 位于 `.smoke-venv/Lib/site-packages` 而非工作树 `src`；packaged `python_bug` 与 `mock_repair.jsonl` 均存在；三个 launcher 均存在，`safefix --help` exit 0，guardrail、feedback、approval 均 PASS，public-demo entry 可从 wheel metadata 加载。
+- source-checkout exact Mock journey：`config init`、`config validate` 与真实 `safefix run` exit 0；原 fixture SHA-256 前后相同；隔离副本包含 `return left + right`；输出包含初始验证失败、patch、验证通过、`calculator.py`、`SUCCESS`、结果工作区与审计数据库；未发现 capability/CSRF/approval token、traceback 或 API key。
+- packaged Mock journey（无 `PYTHONPATH`）：将 site-packages 内 fixture/script 复制到工作树临时目录后，以 `.smoke-venv` launcher 完成配置、解析与隔离修复；源副本未变，结果工作区含 `return left + right`，审计库存在，输出包含失败→patch→通过→SUCCESS 且无 traceback/capability。
 - 第一轮完整门禁：pytest `942 passed, 2 skipped, 1 warning in 58.59s`；warning 是既有 FastAPI TestClient 的 `StarletteDeprecationWarning`。Ruff `All checks passed!`；mypy `Success: no issues found in 33 source files`；三个 demo PASS；`git diff --check` exit 0。
-- 清理：删除 `.smoke-venv`、`dist`、`.manual-data` 和 `.manual-safefix.yaml` 前，均解析为当前工作树的严格后代路径；清理后 Git 状态只包含预期跟踪文件。
+- 清理：删除 `.smoke-venv`、`dist`、`.manual-data`、`.manual-safefix.yaml` 及审查轮的 `.wheel-smoke-*` 前，均解析为当前工作树的严格后代路径；清理后 Git 状态只包含预期跟踪文件。
 - Docker：本机 `docker_engine` named pipe 不存在，Docker daemon 未运行，因此没有执行 image build/container demo，也不宣称通过。
 - 外部状态：当前提交尚无 GitHub Actions 结果、GitHub Release URL 或 Render 公网 URL；这些仍是集成后需要账户权限的独立步骤。
 

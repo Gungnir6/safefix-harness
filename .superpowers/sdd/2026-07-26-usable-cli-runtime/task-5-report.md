@@ -23,13 +23,13 @@ Task 5 的本地交付项已完成：CI fresh-wheel smoke、声明式构建依�
 
 ## Fresh-wheel 证据
 
-所有 Python 命令使用：
+仓库测试与构建工具使用：
 
 ```text
 C:\Users\Gungnir\Desktop\safefix-harness\.venv\Scripts\python.exe
 ```
 
-且 `PYTHONPATH` 指向当前 worktree 的 `src`。没有调用系统 Python。
+fresh-install smoke 使用 `.smoke-venv\Scripts\python.exe` 和该环境生成的 launcher；构建开始及每组 smoke 前均显式删除 `PYTHONPATH` 并断言变量不存在。仓库源码测试才设置 `PYTHONPATH=<worktree>/src`，不再把它用于 wheel 来源证明。没有调用系统 Python。
 
 构建：
 
@@ -46,6 +46,10 @@ Successfully built safefix_harness-0.1.0-py3-none-any.whl
 clean Windows venv 安装后：
 
 ```text
+safefix_file=.smoke-venv\Lib\site-packages\safefix\__init__.py
+fixture=.smoke-venv\Lib\site-packages\safefix\_fixtures\python_bug
+mock_script=.smoke-venv\Lib\site-packages\safefix\_fixtures\mock_repair.jsonl
+public_demo_entry=safefix.cli:public_demo_main
 launcher OK: safefix.exe
 launcher OK: safefix-demo.exe
 launcher OK: safefix-public-demo.exe
@@ -85,9 +89,9 @@ assert any(requirement.startswith("pytest") for requirement in requirements)
 1 passed, 1 existing third-party warning
 ```
 
-重建并全新安装后，三个 demo 全部 PASS。
+首轮重建后的入口命令继承了工作树 `PYTHONPATH`，因此不能单独证明加载自 wheel；依赖 RED/GREEN 仍由 metadata 回归覆盖。审查修复轮以清除 `PYTHONPATH`、打印模块来源和 packaged resources 的新证据替代该入口来源结论。
 
-## Exact Mock CLI journey
+## Source-checkout exact Mock CLI journey
 
 使用工作树内 `SAFEFIX_DATA_DIR` 执行：
 
@@ -106,6 +110,61 @@ safefix.exe run examples\python_bug --task "修复失败的加法测试" --confi
 - 审计 SQLite 文件存在；
 - 输出未匹配 capability、CSRF、approval token、traceback、API key；
 - `PYTHONUTF8=1` 只用于 Windows PowerShell native-pipe 的可读中文捕获，没有改变 CLI 运行逻辑。
+
+## Review fix round 1: unpolluted wheel evidence
+
+重建 wheel 和 fresh venv 后，每组命令先执行：
+
+```powershell
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+if (Test-Path Env:PYTHONPATH) { throw "PYTHONPATH still set" }
+```
+
+来源与资源检查结果：
+
+```text
+safefix_file=C:\...\usable-cli-runtime\.smoke-venv\Lib\site-packages\safefix\__init__.py
+fixture=C:\...\usable-cli-runtime\.smoke-venv\Lib\site-packages\safefix\_fixtures\python_bug
+mock_script=C:\...\usable-cli-runtime\.smoke-venv\Lib\site-packages\safefix\_fixtures\mock_repair.jsonl
+public_demo_entry=safefix.cli:public_demo_main
+```
+
+检查同时断言 `safefix.__file__` 是 fresh venv `site-packages` 的后代且不是工作树 `src` 的后代；两个 packaged resources、fixture 的 `calculator.py` 及 public-demo console entry 都可加载。
+
+无 `PYTHONPATH` 的入口结果：
+
+```text
+launcher OK: safefix.exe
+launcher OK: safefix-demo.exe
+launcher OK: safefix-public-demo.exe
+safefix --help: exit 0
+guardrail: PASS
+feedback: PASS
+approval: PASS
+```
+
+public-demo 采用 console entry 聚焦 import 检查，避免启动无法自动退出的长驻服务。
+
+packaged Mock journey 将 site-packages 中的 fixture/script 复制到工作树临时目录，再使用 `.smoke-venv` launcher 执行 README 等价流程。结果：
+
+```text
+RunExit=0
+PYTHONPATHPresent=False
+PackagedInputCopied=True
+PackagedScriptCopied=True
+SourceCopyUnchanged=True
+IsolatedWorkspace=True
+FixedAddition=True
+HasFailure=True
+HasPatch=True
+HasPass=True
+HasSuccess=True
+AuditDatabaseExists=True
+LeaksTraceback=False
+LeaksCapability=False
+```
+
+分发依赖测试使用 `packaging.Requirement` 解析每个 requirement，再经 `canonicalize_name` 精确检查 `pytest`，不再接受 `pytest-fake` 一类前缀。README 也明确 pytest 用于内置 feedback/Mock 验收和 `config init` 的默认 validator。
 
 ## 第一轮完整本地验证
 

@@ -23,6 +23,8 @@ safefix --help
 
 Release 只有在仓库发布页出现实际 `.whl` 资产后才可使用；本 README 不把尚未发生的发布写成已完成。维护者可运行 `python -m build --wheel` 生成 `dist/` 下的 wheel。
 
+wheel 的运行时依赖包括 FastAPI、HTTPX、Jinja2、keyring、pathspec、Pydantic、PyYAML、Uvicorn 和 pytest。pytest 用于发行包内置的 feedback/Mock 验收以及 `config init` 默认生成的 Python validator；目标项目若不用 pytest，应在 `safefix.yaml` 中改成自己的结构化验证命令。
+
 ## Real CLI Tutorial
 
 先生成完整的保守配置。命令默认写入当前目录的 `safefix.yaml`，文件已存在时拒绝覆盖：

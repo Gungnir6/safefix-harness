@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 import yaml
 from fastapi.testclient import TestClient
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from safefix.cli import main
 from safefix.web.app import AppDependencies, create_app
@@ -18,8 +20,12 @@ def test_runtime_dependencies_include_the_demo_validator() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     requirements = metadata["project"]["dependencies"]
+    dependency_names = {
+        canonicalize_name(Requirement(requirement).name)
+        for requirement in requirements
+    }
 
-    assert any(requirement.startswith("pytest") for requirement in requirements)
+    assert "pytest" in dependency_names
 
 
 def test_required_delivery_files_and_ci_job_exist() -> None:
