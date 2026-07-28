@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import sqlite3
@@ -187,7 +187,7 @@ def _render_events(
 ) -> int:
     last_sequence = after_sequence
     for event in sorted(events, key=lambda item: item.sequence):
-        if event.sequence <= after_sequence:
+        if event.sequence <= last_sequence:
             continue
         payload = json.dumps(
             _safe_payload(event.redacted_payload),
@@ -205,8 +205,8 @@ def _render_events(
 
 def _approval_prompt(request: ApprovalRequest) -> str:
     action_type = "unknown"
-    detail = "动作详情不可用"
-    reason = "未提供"
+    detail = "参数: 动作详情不可用"
+    reason = json.dumps("未提供", ensure_ascii=False)
     try:
         raw = json.loads(request.frozen_action_json)
         if not isinstance(raw, dict):
@@ -215,26 +215,38 @@ def _approval_prompt(request: ApprovalRequest) -> str:
         if not isinstance(safe, dict):
             raise ValueError
         action_type = _bounded_text(str(safe.get("type", "unknown")))
-        reason = _bounded_text(str(safe.get("reason", "未提供")))
+        reason = json.dumps(
+            _bounded_text(str(safe.get("reason", "未提供"))),
+            ensure_ascii=False,
+        )
         if action_type == "run_process":
-            program = str(safe.get("program", ""))
+            program = json.dumps(
+                _bounded_text(str(safe.get("program", ""))),
+                ensure_ascii=False,
+            )
             args = safe.get("args", [])
             if not isinstance(args, list):
                 args = []
-            detail = " ".join([program, *(str(argument) for argument in args)]).strip()
+            encoded_args = json.dumps(args, ensure_ascii=False)
+            detail = (
+                f"程序: {_bounded_text(program)}\n"
+                f"参数: {_bounded_text(encoded_args)}"
+            )
         else:
             visible = {
                 key: value
                 for key, value in safe.items()
                 if key not in {"id", "reason", "type"}
             }
-            detail = json.dumps(visible, ensure_ascii=False, sort_keys=True)
+            detail = "参数: " + _bounded_text(
+                json.dumps(visible, ensure_ascii=False, sort_keys=True)
+            )
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
     return (
         "\n需要一次性审批\n"
         f"动作: {action_type}\n"
-        f"参数: {_bounded_text(detail)}\n"
+        f"{detail}\n"
         f"理由: {reason}\n"
         "风险等级: MEDIUM\n"
         "Approve this action once? [y/N] "
@@ -362,6 +374,7 @@ async def _run_cli_async(
     summary: RunSummary | None = None
     exit_code = 7
     error_message: str | None = None
+    approval_rejected = False
     try:
         settings = load_settings(options.config)
         data_dir = options.data_dir or default_data_dir()
@@ -423,13 +436,17 @@ async def _run_cli_async(
                     stdout.write("\n非交互模式：已拒绝此动作。\n")
                 approved = False
             else:
-                if input_fn is _DEFAULT_INPUT and stdout is sys.stdout:
+                if options.json_output:
+                    stderr.write(prompt)
+                    answer = input_fn("")
+                elif input_fn is _DEFAULT_INPUT and stdout is sys.stdout:
                     answer = input_fn(prompt)
                 else:
-                    if not options.json_output:
-                        stdout.write(prompt)
+                    stdout.write(prompt)
                     answer = input_fn(prompt)
                 approved = answer.strip().lower() == "y"
+            if not approved:
+                approval_rejected = True
             snapshot = (
                 await runtime.service.approve(
                     snapshot.run_id,
@@ -461,6 +478,8 @@ async def _run_cli_async(
             prepared,
             runtime.database_path,
         )
+        if approval_rejected and summary.exit_code != 7:
+            summary = replace(summary, exit_code=6)
         exit_code = summary.exit_code
     except BaseException as error:
         known = _known_error(error, options.provider)

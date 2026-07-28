@@ -257,7 +257,8 @@ def test_cli_approves_only_the_presented_action_once(tmp_path: Path) -> None:
     assert runtime.closed == 1
     output = stdout.getvalue()
     assert "需要一次性审批" in output
-    assert "git commit -m" in output
+    assert '程序: "git"' in output
+    assert '参数: ["commit", "-m", "fix tests"]' in output
     assert "one-time-capability" not in output
     assert "csrf-secret" not in output
     assert output.count('"success": true') == 1
@@ -295,6 +296,37 @@ def test_non_interactive_run_rejects_approval_without_prompt(
     assert service.approved == []
     assert prompted is False
     assert runtime.closed == 1
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "stop_reason"),
+    [
+        (RunStatus.SUCCESS, "validation succeeded"),
+        (RunStatus.BLOCKED, "policy denied action"),
+    ],
+)
+def test_rejected_approval_forces_exit_six_after_runtime_reaches_terminal_status(
+    tmp_path: Path,
+    terminal_status: RunStatus,
+    stop_reason: str,
+) -> None:
+    service = FakeService(
+        _snapshot(RunStatus.AWAITING_APPROVAL),
+        rejected=_snapshot(terminal_status, stop_reason=stop_reason),
+    )
+    runtime = FakeRuntime(tmp_path, service)
+
+    result = run_cli(
+        _options(tmp_path),
+        credential_service=FakeCredentials(),
+        input_fn=lambda prompt: "n",
+        stdout=StringIO(),
+        runtime_factory=lambda *args, **kwargs: runtime,
+        workspace_factory=_workspace_factory(_prepared(tmp_path)),
+    )
+
+    assert result == 6
+    assert service.rejected == [("run-1", "one-time-capability")]
 
 
 @pytest.mark.parametrize(
@@ -453,6 +485,29 @@ def test_event_rendering_skips_already_presented_sequences() -> None:
     assert "new feedback" in stdout.getvalue()
 
 
+def test_event_rendering_orders_and_deduplicates_sequences_within_one_batch() -> None:
+    stdout = StringIO()
+
+    last_sequence = _render_events(
+        [
+            _event(3, "FEEDBACK", {"summary": "third"}),
+            _event(2, "ACTION", {"reason": "second"}),
+            _event(2, "ACTION", {"reason": "duplicate"}),
+            _event(1, "ACTION", {"reason": "old"}),
+        ],
+        after_sequence=1,
+        stdout=stdout,
+    )
+
+    output = stdout.getvalue()
+    assert last_sequence == 3
+    assert output.count("[2]") == 1
+    assert "second" in output
+    assert "duplicate" not in output
+    assert "old" not in output
+    assert output.index("[2]") < output.index("[3]")
+
+
 def test_json_output_is_one_machine_readable_summary_without_banner(
     tmp_path: Path,
 ) -> None:
@@ -492,6 +547,40 @@ def test_json_output_is_one_machine_readable_summary_without_banner(
     assert "模型动作" not in stdout.getvalue()
 
 
+def test_json_interactive_approval_keeps_stdout_machine_readable(
+    tmp_path: Path,
+) -> None:
+    stdout = StringIO()
+    stderr = StringIO()
+    prompts: list[str] = []
+    service = FakeService(
+        _snapshot(RunStatus.AWAITING_APPROVAL),
+        approved=_snapshot(RunStatus.SUCCESS, stop_reason="validation succeeded"),
+    )
+    runtime = FakeRuntime(tmp_path, service)
+
+    def input_fn(prompt: str) -> str:
+        prompts.append(prompt)
+        stdout.write(prompt)
+        return "y"
+
+    result = run_cli(
+        _options(tmp_path, json_output=True),
+        credential_service=FakeCredentials(),
+        input_fn=input_fn,
+        stdout=stdout,
+        stderr=stderr,
+        runtime_factory=lambda *args, **kwargs: runtime,
+        workspace_factory=_workspace_factory(_prepared(tmp_path)),
+    )
+
+    assert result == 0
+    assert json.loads(stdout.getvalue())["status"] == "SUCCESS"
+    assert prompts == [""]
+    assert "需要一次性审批" in stderr.getvalue()
+    assert "one-time-capability" not in stdout.getvalue() + stderr.getvalue()
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -525,9 +614,42 @@ def test_approval_prompt_describes_frozen_action_without_sensitive_ids() -> None
     prompt = _approval_prompt(access.request)
 
     assert "需要一次性审批" in prompt
-    assert "git commit -m" in prompt
-    assert "save the verified repair" in prompt
+    assert '程序: "git"' in prompt
+    assert '参数: ["commit", "-m", "fix tests"]' in prompt
+    assert '理由: "save the verified repair"' in prompt
     assert access.capability not in prompt
     assert access.csrf_token not in prompt
     assert access.request.action_hash not in prompt
     assert access.request.one_time_token_hash not in prompt
+
+
+def test_approval_prompt_preserves_argument_boundaries_and_escapes_controls() -> None:
+    access = _approval()
+    action = {
+        "type": "run_process",
+        "id": "process-1",
+        "reason": "review\n\x1b[31munsafe",
+        "program": "C:\\Program Files\\Git\\bin\\git.exe",
+        "args": ["commit", "-m", "line one\nline two", "\x1b[31mred"],
+    }
+    request = access.request.model_copy(
+        update={
+            "frozen_action_json": json.dumps(
+                action,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
+    )
+
+    prompt = _approval_prompt(request)
+
+    assert '程序: "C:\\\\Program Files\\\\Git\\\\bin\\\\git.exe"' in prompt
+    assert (
+        '参数: ["commit", "-m", "line one\\nline two", "\\u001b[31mred"]'
+        in prompt
+    )
+    assert '理由: "review\\n\\u001b[31munsafe"' in prompt
+    assert "line one\nline two" not in prompt
+    assert "\x1b" not in prompt
+    assert access.capability not in prompt

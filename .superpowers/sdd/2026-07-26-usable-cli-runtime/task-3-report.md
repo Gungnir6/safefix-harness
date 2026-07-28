@@ -68,3 +68,13 @@
 
 - `load_mock_actions` 在 Task 3 只提供运行驱动所需的基础逐行加载。Task 4 已明确负责 JSON 对象校验、占位符替换、1 MiB/1000 action 上限与空脚本拒绝，本任务未提前扩展这些后续职责。
 - 未运行全套测试，按 brief 仅运行 Task 3 指定测试与 WebUI 回归。
+
+## 审查修复轮次 1/5
+
+- 审批一旦被 CLI 拒绝，即使真实运行随后返回 `SUCCESS` 或普通 `BLOCKED`，最终退出码仍为 `6`；治理、审计或持久化错误 `7` 保持更高优先级。
+- JSON 交互审批将说明写入 stderr，并使用空 prompt 读取输入，确保 stdout 只有最终 JSON。
+- 审批展示分别输出 JSON 编码的 program、args 和 reason，不再拼成 shell 命令；换行与 ANSI 控制字符保持转义。
+- 同一事件批次先按 sequence 排序，并以动态 `last_sequence` 去重。
+- RED：拒绝后的 `SUCCESS/BLOCKED` 分别错误返回 `0/5`；JSON stdout 被 prompt 污染；审批参数丢边界且控制字符直出；重复 sequence 输出两次。
+- GREEN：四组定向测试分别为 `2 passed`、`1 passed`、`2 passed`、`1 passed`。
+- 最终门禁：pytest `70 passed, 1 warning`；Ruff `All checks passed!`；mypy `Success: no issues found in 2 source files`。
