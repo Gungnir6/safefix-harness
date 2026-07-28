@@ -48,6 +48,12 @@ class _BuildFailure(Enum):
     SYSTEM_EXIT = auto()
 
 
+@dataclass(frozen=True, slots=True)
+class _BuildFailureResult:
+    kind: _BuildFailure
+    system_exit_code: int | None = None
+
+
 @dataclass(slots=True)
 class RuntimeSession:
     service: TaskService
@@ -119,7 +125,7 @@ def _build_runtime(
     credential_service: CredentialService,
     mock_actions: Sequence[str] | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
-) -> RuntimeSession | _BuildFailure:
+) -> RuntimeSession | _BuildFailureResult:
     secret_values: tuple[str, ...] = ()
     secret_obtained = False
     connection: sqlite3.Connection | None = None
@@ -132,6 +138,7 @@ def _build_runtime(
     service: TaskService | None = None
     failure: BaseException | None = None
     failure_kind: _BuildFailure | None = None
+    system_exit_code: int | None = None
     try:
         if provider == "openai-compatible":
             secret_values = (credential_service.get_for_request(provider),)
@@ -242,6 +249,10 @@ def _build_runtime(
             failure_kind = _BuildFailure.KEYBOARD_INTERRUPT
         elif isinstance(exc, SystemExit):
             failure_kind = _BuildFailure.SYSTEM_EXIT
+            if type(exc.code) is int or exc.code is None:
+                system_exit_code = exc.code
+            else:
+                system_exit_code = 1
         else:
             failure = exc
 
@@ -271,9 +282,12 @@ def _build_runtime(
         memory = None
         approvals = None
         del credential_service
-        return failure_kind or _BuildFailure.CONFIGURATION
+        return _BuildFailureResult(
+            failure_kind or _BuildFailure.CONFIGURATION,
+            system_exit_code,
+        )
     if failure_kind is not None:
-        return failure_kind
+        return _BuildFailureResult(failure_kind, system_exit_code)
     assert failure is not None
     raise failure
 
@@ -282,11 +296,11 @@ def _raise_runtime_initialization_failed() -> NoReturn:
     raise RuntimeConfigurationError("runtime initialization failed") from None
 
 
-def _raise_clean_signal(failure: _BuildFailure) -> NoReturn:
-    if failure is _BuildFailure.KEYBOARD_INTERRUPT:
+def _raise_clean_signal(failure: _BuildFailureResult) -> NoReturn:
+    if failure.kind is _BuildFailure.KEYBOARD_INTERRUPT:
         raise KeyboardInterrupt() from None
-    if failure is _BuildFailure.SYSTEM_EXIT:
-        raise SystemExit() from None
+    if failure.kind is _BuildFailure.SYSTEM_EXIT:
+        raise SystemExit(failure.system_exit_code) from None
     raise AssertionError("build failure is not a signal")
 
 
@@ -317,8 +331,11 @@ def create_runtime(
         http_transport=http_transport,
     )
     del credential_service
-    if result is _BuildFailure.CONFIGURATION:
+    if (
+        isinstance(result, _BuildFailureResult)
+        and result.kind is _BuildFailure.CONFIGURATION
+    ):
         _raise_runtime_initialization_failed()
-    if isinstance(result, _BuildFailure):
+    if isinstance(result, _BuildFailureResult):
         _raise_clean_signal(result)
     return result

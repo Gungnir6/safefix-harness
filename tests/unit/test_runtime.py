@@ -545,9 +545,7 @@ async def test_secret_bearing_constructor_failure_is_scrubbed_and_stable(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("signal_type", [KeyboardInterrupt, SystemExit])
-async def test_secret_bearing_signal_is_reissued_cleanly(
-    signal_type: type[BaseException],
+async def test_secret_bearing_keyboard_interrupt_is_reissued_cleanly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -555,7 +553,9 @@ async def test_secret_bearing_signal_is_reissued_cleanly(
 
     def interrupt_loop_construction(**kwargs: object) -> None:
         del kwargs
-        raise signal_type(f"provider driver exposed {_TRACEBACK_TEST_SECRET}")
+        raise KeyboardInterrupt(
+            f"provider driver exposed {_TRACEBACK_TEST_SECRET}"
+        )
 
     monkeypatch.setattr(
         "safefix.runtime.AgentLoop",
@@ -575,8 +575,72 @@ async def test_secret_bearing_signal_is_reissued_cleanly(
         )
 
     error = captured.value
-    assert type(error) is signal_type
+    assert type(error) is KeyboardInterrupt
     assert error.args == ()
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    _assert_exception_graph_is_secret_free(error, _TRACEBACK_TEST_SECRET)
+
+
+@pytest.mark.asyncio
+async def test_secret_bearing_system_exit_preserves_integer_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+
+    def exit_loop_construction(**kwargs: object) -> None:
+        del kwargs
+        raise SystemExit(7)
+
+    monkeypatch.setattr("safefix.runtime.AgentLoop", exit_loop_construction)
+
+    with pytest.raises(SystemExit) as captured:
+        create_runtime(
+            _settings(),
+            prepared,
+            data_dir,
+            provider="openai-compatible",
+            credential_service=_credentials(_TRACEBACK_TEST_SECRET),
+            http_transport=httpx.MockTransport(
+                lambda request: httpx.Response(500, request=request)
+            ),
+        )
+
+    error = captured.value
+    assert error.code == 7
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    _assert_exception_graph_is_secret_free(error, _TRACEBACK_TEST_SECRET)
+
+
+@pytest.mark.asyncio
+async def test_secret_bearing_system_exit_sanitizes_sensitive_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+
+    def exit_loop_construction(**kwargs: object) -> None:
+        del kwargs
+        raise SystemExit(_TRACEBACK_TEST_SECRET)
+
+    monkeypatch.setattr("safefix.runtime.AgentLoop", exit_loop_construction)
+
+    with pytest.raises(SystemExit) as captured:
+        create_runtime(
+            _settings(),
+            prepared,
+            data_dir,
+            provider="openai-compatible",
+            credential_service=_credentials(_TRACEBACK_TEST_SECRET),
+            http_transport=httpx.MockTransport(
+                lambda request: httpx.Response(500, request=request)
+            ),
+        )
+
+    error = captured.value
+    assert error.code == 1
     assert error.__cause__ is None
     assert error.__context__ is None
     _assert_exception_graph_is_secret_free(error, _TRACEBACK_TEST_SECRET)
