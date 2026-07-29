@@ -133,10 +133,11 @@ class TaskService:
 
     def _refresh_approval_access(self, snapshot: RunSnapshot, loop: Any) -> None:
         self._access.pop(snapshot.run_id, None)
-        approval_id = snapshot.pending_approval_id
+        approval_id = getattr(snapshot, "pending_approval_id", None)
+        if approval_id is None:
+            return
         if (
-            snapshot.status is not RunStatus.AWAITING_APPROVAL
-            or approval_id is None
+            getattr(snapshot, "status", None) is not RunStatus.AWAITING_APPROVAL
             or self._approvals is None
         ):
             return

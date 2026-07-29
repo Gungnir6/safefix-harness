@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +73,29 @@ class SuccessfulLoop:
     async def start(self, task: object) -> RunSnapshot:
         self.task = task
         return self.snapshot
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_snapshot_without_status_when_no_approval() -> None:
+    snapshot = SimpleNamespace(run_id="run-1", pending_approval_id=None)
+
+    class LegacyLoop:
+        async def start(self, task: object) -> object:
+            del task
+            return snapshot
+
+    service = TaskService(
+        lambda project_path, provider: LegacyLoop(),
+        RecordingRuns(_snapshot(RunStatus.SUCCESS)),
+    )
+
+    created = await service.create(
+        task="legacy injected run",
+        project_path="C:/workspace",
+        provider="mock",
+    )
+
+    assert created is snapshot
 
 
 @pytest.mark.asyncio
