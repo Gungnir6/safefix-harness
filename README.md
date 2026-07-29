@@ -1,99 +1,156 @@
 # SafeFix Harness
 
-SafeFix 是一个带确定性安全边界的自动代码修复实验框架。模型输出先被解析为结构化动作，再经过路径、命令、审批、审计和验证规则，才允许影响工作区。本仓库包含 CLI、Web 控制台以及不需要真实模型密钥的离线演示。
+SafeFix 是一个带确定性安全边界的自动代码修复实验框架。模型每轮只产生一个结构化动作；路径、命令、审批、审计和验证规则会在动作影响工作区前生效。仓库同时提供真实 CLI、WebUI 和无需模型密钥的离线机制演示。
 
 主仓库：[Gungnir6/safefix-harness](https://github.com/Gungnir6/safefix-harness)。
 
 ## Installation
 
-需要 Python 3.12：
+SafeFix 要求 Python `>=3.12,<3.13`。从源码开发安装：
 
 ```bash
 python -m venv .venv
+# 激活虚拟环境后
 python -m pip install -e ".[dev]"
 ```
 
-也可以构建标准 wheel/sdist：`python -m build`。
-
-## Usage
-
-SafeFix 同时提供 CLI 与 WebUI 两种使用方式。
-
-CLI 适合在终端中运行确定性机制演示：
+也可以从构建产物或 GitHub Release 资产安装 wheel：
 
 ```bash
-safefix demo
+python -m pip install safefix_harness-0.1.0-py3-none-any.whl
+safefix --help
+```
+
+Release 只有在仓库发布页出现实际 `.whl` 资产后才可使用；本 README 不把尚未发生的发布写成已完成。维护者可运行 `python -m build --wheel` 生成 `dist/` 下的 wheel。
+
+wheel 的运行时依赖包括 FastAPI、HTTPX、Jinja2、keyring、pathspec、Pydantic、PyYAML、Uvicorn 和 pytest。pytest 用于发行包内置的 feedback/Mock 验收以及 `config init` 默认生成的 Python validator；目标项目若不用 pytest，应在 `safefix.yaml` 中改成自己的结构化验证命令。
+
+## Real CLI Tutorial
+
+先生成完整的保守配置。命令默认写入当前目录的 `safefix.yaml`，文件已存在时拒绝覆盖：
+
+```bash
+safefix config init
+```
+
+按 OpenAI-compatible 服务修改 `llm.endpoint` 与 `llm.model`，并检查 `validators` 中的 Python 路径和命令适合目标项目。随后验证配置：
+
+```bash
+safefix config validate
+```
+
+## Credentials
+
+API key 存入系统 keyring，不进入 YAML、命令行或普通输出。`credentials set` 使用隐藏输入：
+
+```bash
+safefix credentials set --provider openai-compatible
+safefix credentials status --provider openai-compatible
+safefix credentials clear --provider openai-compatible
+```
+
+默认运行会把项目复制到持久化隔离工作区，原项目不会被修改：
+
+```bash
+safefix run C:\path\to\project --task "修复失败的测试"
+```
+
+可用 `--config PATH` 指定配置，以 `--data-dir PATH` 覆盖数据目录。未覆盖时，Windows 使用 `%LOCALAPPDATA%\SafeFix`，其他平台使用 `$XDG_DATA_HOME/safefix` 或 `~/.local/share/safefix`。CLI 会显示有效隔离工作区、运行状态、修改文件和审计数据库；结果通常位于数据目录的 `runs/<execution-id>/workspace`，审计记录位于数据目录的 `safefix.sqlite3`。
+
+高风险动作会完整展示动作类型、结构化参数、理由和风险，再询问 `Approve this action once? [y/N]`。授权只绑定当前冻结动作且只消费一次。`--non-interactive` 遇到审批时一律拒绝。
+
+> **危险：** `--in-place` 会直接修改原项目。只有明确需要且已自行备份或提交当前工作时才使用；路径围栏、敏感文件、命令策略和审批仍会生效，但 SafeFix 不会替你 commit、push 或发布。
+
+脚本消费最终摘要时使用 `--json`。stdout 只包含稳定 JSON 摘要；若需要人工审批，提示写入 stderr：
+
+```bash
+safefix run ./project --task "修复测试" --json
+```
+
+当前真实 provider 只支持 OpenAI-compatible `/chat/completions`。服务必须兼容该协议；供应商专用协议、自动提交/推送/部署和多 Agent 编排不在当前范围。网络、认证、限流、超时或畸形响应会安全失败，默认不显示 Python traceback。
+
+## Deterministic Mock
+
+发行 wheel 内含 `python_bug` fixture 和 `mock_repair.jsonl`。以下 PowerShell 示例从已安装包定位它们，并通过真实 `AgentLoop`、工具、验证器、审计和隔离工作区完成确定性验收：
+
+```powershell
+$fixture = & python -c "from importlib.resources import files; print(files('safefix').joinpath('_fixtures/python_bug'))"
+$script = & python -c "from importlib.resources import files; print(files('safefix').joinpath('_fixtures/mock_repair.jsonl'))"
+safefix config init .mock-safefix.yaml
+safefix run $fixture --task "修复失败的加法测试" --config .mock-safefix.yaml --provider mock --mock-script $script
+```
+
+在源码仓库中也可直接运行：
+
+```bash
+safefix run examples/python_bug --task "修复失败的加法测试" --config .mock-safefix.yaml --provider mock --mock-script examples/mock_repair.jsonl
+```
+
+Mock 是固定动作脚本驱动的离线验收 harness，用于复现安全与分发路径；它不是能理解任意任务的通用智能模型。独立机制演示可运行：
+
+```bash
 safefix-demo all
 ```
 
-WebUI 适合通过浏览器查看状态、机器码、审计时间线和一次性审批流程。启动本地公开演示：
+## Usage
+
+本地 WebUI 默认绑定回环地址：
 
 ```bash
 safefix serve --public-demo --host 127.0.0.1 --port 8000
 ```
 
-启动后在本机访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。公开演示完全使用内置项目和确定性 mock，不需要真实模型凭据，也不访问用户项目。`safefix run` 面向集成方，需由调用代码注入实际任务服务。
-
-## Credentials
-
-凭据通过系统 keyring 管理，不写入仓库：
-
-```bash
-safefix credentials set --provider openai-compatible
-safefix credentials status --provider openai-compatible
-safefix credentials clear --provider openai-compatible --yes
-```
-
-不要提交 `.env`、私钥、数据库或日志。公开演示只使用确定性 mock，不需要凭据。
+启动后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。公开演示只使用内置 fixture 和确定性 Mock，不访问用户项目、真实模型或本地凭据。只有需要局域网访问时才显式使用 `--host 0.0.0.0`。
 
 ## Public Demo
 
-`safefix-public-demo` 或上述 `safefix serve --public-demo` 命令会启动三个内置场景：
+`safefix-public-demo` 提供三个确定性场景：
 
-- **安全边界**：演示危险命令在执行前被确定性策略拦截，真实文件保持不变。
-- **验证反馈**：演示系统根据测试失败反馈调整补丁，直到验证通过。
-- **一次性审批**：演示高风险写入暂停等待人工决定，授权只绑定当前冻结动作且不能复用。
+- **安全边界**：危险命令在执行前被策略拒绝，工具调用为零。
+- **验证反馈**：错误补丁再次失败，正确补丁最终通过。
+- **一次性审批**：高风险动作暂停，授权只绑定冻结动作且不可重放。
 
-公开演示结果页会直接展示机制验证结论、关键证据，以及带中文状态徽标的审计时间线；中间的验证失败、策略拦截、修正和等待审批无需展开技术详情即可看见，最终通过也与过程状态明确区分。本地模式不会生成演示结论。
-
-每次运行都会复制隔离 fixture，不访问用户项目或真实模型。若确需让同一局域网内的其他设备访问，可显式使用 `--host 0.0.0.0`；默认的 `127.0.0.1` 仅供本机访问。本仓库不虚构或预置公网部署地址。
+仓库提供 Render 蓝图，但当前没有可验证的公网部署 URL；部署完成前不宣称公开 WebUI 已上线。
 
 ## Distribution
 
-项目使用 Hatchling 构建，wheel 内含 Web 模板、静态资源与演示 fixture。Docker 镜像基于 Python 3.12 slim，以 UID 10001 非 root 用户运行，并通过 `/health` 检查状态：
+项目使用 Hatchling 构建。wheel 包含 Web 模板、静态资源、Mock 脚本和 Python bug fixture。Docker 镜像基于 Python 3.12 slim，以 UID 10001 非 root 用户运行：
 
 ```bash
 docker build -t safefix .
 docker run --rm -p 8000:8000 safefix
+docker run --rm safefix python -m safefix.demo all
 ```
 
-GitHub Actions 执行测试、lint/type、Git 历史 secret scan 和镜像构建，仅在 tag 工作流中向 `ghcr.io/gungnir6/safefix-harness` 推送镜像。迁移前的 GitLab CI 配置保留用于课程环境兼容。
+GitHub Actions 执行 pytest、Ruff、mypy、fresh-wheel CLI smoke、Git 历史 secret scan 和镜像构建；只有 tag 工作流会尝试向 `ghcr.io/gungnir6/safefix-harness` 推送镜像。此处描述工作流配置，不代表当前提交已经在外部 CI 或 Release 中成功运行。
 
 ## Project Structure
 
 - `src/safefix/`：领域模型、治理、工具、运行时、CLI 与 Web。
 - `tests/`：单元、性质、集成和 Web 测试。
-- `examples/python_bug/`：可重复的离线演示项目。
-- `docs/`：架构决策、威胁模型及课程任务记录。
+- `examples/python_bug/`：确定性离线修复 fixture。
+- `examples/mock_repair.jsonl`：完整 Mock 修复动作脚本。
+- `docs/`：设计、实施计划、威胁模型与课程任务记录。
 
 ## Security Boundaries
 
-可信边界由工作区路径规范化、命令白名单、结构化动作校验、风险策略、一次性审批、输出脱敏审计和验证预算共同组成。公开模式禁止客户端指定项目路径和真实 provider，并限制请求速率与并发运行数。
+可信边界由工作区路径规范化、命令白名单、结构化动作校验、风险策略、一次性审批、输出脱敏审计和验证预算共同组成。隔离复制排除 `.git`、虚拟环境、缓存、构建输出、符号链接和配置的敏感路径。公开模式禁止客户端指定真实项目或 provider，并限制请求速率与并发运行数。
 
 ## Known Limitations
 
-- 默认 Web 服务是内存中的离线演示适配器，重启后记录消失。
-- `safefix run` 的真实模型/任务运行时需要集成方显式注入。
-- 容器默认只运行 mock 公开演示，不挂载或修改宿主源码。
-- Render 蓝图已提供，但仓库未保存账户凭据，部署 URL 需在 Render 中授权后生成。
+- 真实模型仅支持 OpenAI-compatible `/chat/completions`，具体服务的字段差异可能不兼容。
+- 默认 Web 服务是内存中的确定性公开演示；重启后演示记录消失。
+- Mock 只接受受限 JSONL 动作脚本，不理解任意自然语言任务。
+- Docker 默认启动公开 Mock WebUI，不会自动挂载或修改宿主源码。
+- GitHub Release 和公网 Render 部署需要仓库/平台账户权限，必须在外部成功后另行记录实际链接。
 
 ## Architecture
 
-主要数据流为：用户任务 → 模型适配器 → 动作解析器 → 确定性策略 → 受限工具 → 验证器 → 审计与反馈。Web 和 CLI 只负责输入输出，共用任务服务与治理层。
+主要数据流为：用户任务 → 模型适配器 → 动作解析器 → 确定性策略 → 受限工具 → 验证器 → 审计与反馈。CLI 通过运行时组合层构造并复用同一 `TaskService` 和 `AgentLoop`，不会建立简化的第二套循环。
 
 ## Deployment
 
-`render.yaml` 可直接创建 Docker Web Service，健康检查路径为 `/health`。也可以将 Dockerfile 部署到任意支持 OCI 镜像的平台。生产部署应配置 TLS、外部持久化、身份认证和更严格的限流。
+`render.yaml` 可创建 Docker Web Service，健康检查路径为 `/health`。生产部署还应配置 TLS、外部持久化、身份认证和更严格的限流。部署及 GitHub Release 都是独立外部状态步骤，不由本地构建结果替代。
 
 ## Third-Party Licenses
 

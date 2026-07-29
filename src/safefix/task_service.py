@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from safefix.domain import ApprovalRequest, RunSnapshot, Task, TaskMode
+from safefix.domain import ApprovalRequest, RunSnapshot, RunStatus, Task, TaskMode
 from safefix.run_store import RunNotFound
 
 
@@ -43,6 +43,7 @@ class TaskService:
         self._credentials = credential_service
         self._loops: dict[str, Any] = {}
         self._access: dict[str, ApprovalAccess] = {}
+        self._remembered_run_ids: set[str] = set()
 
     async def create(
         self,
@@ -50,6 +51,7 @@ class TaskService:
         task: str,
         project_path: str,
         provider: str,
+        project_id: str | None = None,
         mode: TaskMode = TaskMode.LOCAL,
     ) -> RunSnapshot:
         if provider != "mock" and self._credentials is not None:
@@ -57,7 +59,7 @@ class TaskService:
         loop = self._loop_factory(project_path, provider)
         domain_task = Task(
             id=str(uuid4()),
-            project_id=project_path,
+            project_id=project_id or project_path,
             workspace_root=project_path,
             description=task,
             mode=mode,
@@ -65,15 +67,8 @@ class TaskService:
         )
         snapshot = await loop.start(domain_task)
         self._loops[snapshot.run_id] = loop
-        approval_id = getattr(snapshot, "pending_approval_id", None)
-        if approval_id and self._approvals is not None:
-            capability = loop.take_approval_capability(approval_id)
-            if capability:
-                self._access[snapshot.run_id] = ApprovalAccess(
-                    self._approvals.get(approval_id),
-                    capability,
-                    secrets.token_urlsafe(24),
-                )
+        self._refresh_approval_access(snapshot, loop)
+        self._remember_terminal(snapshot)
         return snapshot
 
     def get(self, run_id: str) -> RunSnapshot:
@@ -99,7 +94,8 @@ class TaskService:
         if approval_id is None:
             raise TaskServiceError("run has no pending approval")
         snapshot = await loop.resume_approved(approval_id, token)
-        self._access.pop(run_id, None)
+        self._refresh_approval_access(snapshot, loop)
+        self._remember_terminal(snapshot)
         return snapshot
 
     async def reject(self, run_id: str, token: str) -> RunSnapshot:
@@ -108,7 +104,8 @@ class TaskService:
         if approval_id is None:
             raise TaskServiceError("run has no pending approval")
         snapshot = await loop.resume_rejected(approval_id, token)
-        self._access.pop(run_id, None)
+        self._refresh_approval_access(snapshot, loop)
+        self._remember_terminal(snapshot)
         return snapshot
 
     async def cancel(self, run_id: str) -> RunSnapshot:
@@ -133,3 +130,48 @@ class TaskService:
             return self._loops[run_id]
         except KeyError as exc:
             raise TaskServiceError("run is not active in this process") from exc
+
+    def _refresh_approval_access(self, snapshot: RunSnapshot, loop: Any) -> None:
+        approval_id = getattr(snapshot, "pending_approval_id", None)
+        if approval_id is None:
+            self._access.pop(snapshot.run_id, None)
+            return
+        if snapshot.status is not RunStatus.AWAITING_APPROVAL:
+            return
+        self._access.pop(snapshot.run_id, None)
+        if self._approvals is None:
+            return
+        capability = loop.take_approval_capability(approval_id)
+        if capability is None:
+            return
+        self._access[snapshot.run_id] = ApprovalAccess(
+            self._approvals.get(approval_id),
+            capability,
+            secrets.token_urlsafe(24),
+        )
+
+    def _remember_terminal(self, snapshot: RunSnapshot) -> None:
+        if (
+            self._memory is None
+            or snapshot.status is not RunStatus.SUCCESS
+            or snapshot.run_id in self._remembered_run_ids
+        ):
+            return
+        content = (
+            f"Task: {snapshot.description}\n"
+            f"Result: {snapshot.status.value}\n"
+            f"Changed files: {', '.join(snapshot.changed_files) or 'none'}"
+        )
+        storage_failed = False
+        try:
+            self._memory.add(
+                snapshot.project_id,
+                "repair_summary",
+                content,
+                snapshot.changed_files,
+            )
+        except Exception:
+            storage_failed = True
+        if storage_failed:
+            raise TaskServiceError("memory storage is unavailable")
+        self._remembered_run_ids.add(snapshot.run_id)

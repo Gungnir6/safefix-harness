@@ -13,9 +13,15 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("run")
-    run.add_argument("project")
+    run.add_argument("project", type=Path)
     run.add_argument("--task", required=True)
+    run.add_argument("--config", type=Path, default=Path("safefix.yaml"))
+    run.add_argument("--data-dir", type=Path)
     run.add_argument("--provider", default="openai-compatible")
+    run.add_argument("--in-place", action="store_true")
+    run.add_argument("--mock-script", type=Path)
+    run.add_argument("--non-interactive", action="store_true")
+    run.add_argument("--json", action="store_true")
 
     serve = commands.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
@@ -25,9 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     config = commands.add_parser("config").add_subparsers(
         dest="config_command", required=True
     )
-    config.add_parser("init").add_argument("path", nargs="?", default="safefix.yaml")
+    config.add_parser("init").add_argument(
+        "path", nargs="?", type=Path, default=Path("safefix.yaml")
+    )
     config.add_parser("validate").add_argument(
-        "path", nargs="?", default="safefix.yaml"
+        "path", nargs="?", type=Path, default=Path("safefix.yaml")
     )
 
     credentials = commands.add_parser("credentials").add_subparsers(
@@ -98,28 +106,53 @@ def main(
         return 0
 
     if args.command == "run":
-        if task_service is None:
-            raise RuntimeError("task service is not configured")
-        snapshot = asyncio.run(
-            task_service.create(
+        if task_service is not None:
+            snapshot = asyncio.run(
+                task_service.create(
+                    task=args.task,
+                    project_path=str(args.project),
+                    provider=args.provider,
+                )
+            )
+            print(f"{snapshot.run_id}: {snapshot.status.value}")
+            return 0
+
+        from safefix.cli_runner import CliRunOptions, run_cli
+
+        return run_cli(
+            CliRunOptions(
+                project=args.project,
                 task=args.task,
-                project_path=args.project,
+                config=args.config,
+                data_dir=args.data_dir,
                 provider=args.provider,
+                in_place=args.in_place,
+                mock_script=args.mock_script,
+                non_interactive=args.non_interactive,
+                json_output=args.json,
             )
         )
-        print(f"{snapshot.run_id}: {snapshot.status.value}")
-        return 0
 
     if args.command == "config":
-        path = Path(args.path)
-        if args.config_command == "init":
-            path.write_text(
-                "llm:\n  endpoint: https://example.invalid/v1\n", encoding="utf-8"
-            )
-        else:
-            from safefix.config import load_settings
+        from safefix.config import ConfigError, default_settings_yaml, load_settings
 
-            load_settings(path)
+        path = args.path
+        if args.config_command == "init":
+            try:
+                with path.open("x", encoding="utf-8", newline="\n") as config_file:
+                    config_file.write(default_settings_yaml())
+            except FileExistsError:
+                print(f"configuration already exists: {path}")
+                return 2
+            except OSError:
+                print(f"cannot write configuration: {path}")
+                return 2
+        else:
+            try:
+                load_settings(path)
+            except ConfigError as exc:
+                print(f"configuration error: {exc}")
+                return 2
         print(str(path))
         return 0
 

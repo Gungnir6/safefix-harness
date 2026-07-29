@@ -13,6 +13,7 @@ from safefix.domain import (
     BudgetState,
     DecisionOutcome,
     FinishAction,
+    FeedbackCategory,
     RunSnapshot,
     RunStatus,
     RunValidationAction,
@@ -136,24 +137,15 @@ class AgentLoop:
         result = ToolResult.failure(
             action.id, "POLICY_DENIED", "approval request was rejected"
         )
-        feedback = self.feedback.from_results(
-            (result,),
-            snapshot.changed_files,
-            snapshot.budget.remaining_steps,
-            snapshot.budget.remaining_repairs,
-        )
-        snapshot = self._save(
-            snapshot.model_copy(
-                update={
-                    "status": RunStatus.RUNNING,
-                    "pending_approval_id": None,
-                    "latest_tool_result": result,
-                    "feedback_history": snapshot.feedback_history + (feedback,),
-                    "updated_at": datetime.now(UTC),
-                }
-            )
+        snapshot = snapshot.model_copy(
+            update={
+                "status": RunStatus.RUNNING,
+                "pending_approval_id": None,
+                "updated_at": datetime.now(UTC),
+            }
         )
         del self._pending[approval_id]
+        snapshot = self._record_feedback(snapshot, (result,))
         return await self._run(snapshot)
 
     async def cancel(self, run_id: str) -> RunSnapshot:
@@ -188,8 +180,15 @@ class AgentLoop:
             "model": self.settings.llm.model,
         }
         while snapshot.status is RunStatus.RUNNING:
+            stop_history = snapshot.feedback_history
+            if (
+                stop_history
+                and stop_history[-1].category
+                is FeedbackCategory.VALIDATION_SUCCESS
+            ):
+                stop_history = ()
             stop = self.feedback.should_stop(
-                snapshot.feedback_history,
+                stop_history,
                 snapshot.budget,
                 snapshot.action_digests,
             )
@@ -208,6 +207,17 @@ class AgentLoop:
                     snapshot, StopDecision(code=RunStatus.FAILED, reason="model call failed")
                 )
 
+            if (
+                isinstance(action, ApplyPatchAction)
+                and snapshot.budget.remaining_repairs == 0
+            ):
+                return self._stop(
+                    snapshot,
+                    StopDecision(
+                        code=RunStatus.BUDGET_EXCEEDED,
+                        reason="repair budget exhausted",
+                    ),
+                )
             snapshot = self._consume_action_budget(snapshot, action)
             try:
                 self.audit.append(
@@ -264,7 +274,20 @@ class AgentLoop:
     async def _dispatch(self, snapshot: RunSnapshot, action: Action) -> RunSnapshot:
         if isinstance(action, FinishAction):
             results = await self._run_validators(action.id)
-            return self._record_feedback(snapshot, results)
+            snapshot = self._record_feedback(snapshot, results)
+            if (
+                snapshot.status is RunStatus.RUNNING
+                and results
+                and all(result.success for result in results)
+            ):
+                return self._stop(
+                    snapshot,
+                    StopDecision(
+                        code=RunStatus.SUCCESS,
+                        reason="validation succeeded",
+                    ),
+                )
+            return snapshot
         try:
             result = await self.tools.dispatch(action)
         except Exception:
@@ -279,8 +302,19 @@ class AgentLoop:
                 "updated_at": datetime.now(UTC),
             }
         )
+        try:
+            self.audit.append(
+                snapshot.run_id,
+                "TOOL_RESULT",
+                result.model_dump(mode="json"),
+            )
+        except Exception:
+            return self._stop(
+                snapshot,
+                StopDecision(code=RunStatus.FAILED, reason="audit unavailable"),
+            )
         if not result.success or isinstance(action, RunValidationAction):
-            return self._record_feedback(snapshot, (result,))
+            return self._record_feedback(snapshot, (result,), audit_results=False)
         if isinstance(action, ApplyPatchAction):
             return self._record_feedback(
                 snapshot, await self._run_validators(action.id)
@@ -341,10 +375,14 @@ class AgentLoop:
                 "updated_at": datetime.now(UTC),
             }
         )
-        return self._record_feedback(updated, (result,))
+        return self._record_feedback(updated, (result,), audit_results=False)
 
     def _record_feedback(
-        self, snapshot: RunSnapshot, results: tuple[ToolResult, ...]
+        self,
+        snapshot: RunSnapshot,
+        results: tuple[ToolResult, ...],
+        *,
+        audit_results: bool = True,
     ) -> RunSnapshot:
         feedback = self.feedback.from_results(
             results,
@@ -352,6 +390,24 @@ class AgentLoop:
             snapshot.budget.remaining_steps,
             snapshot.budget.remaining_repairs,
         )
+        try:
+            if audit_results:
+                for result in results:
+                    self.audit.append(
+                        snapshot.run_id,
+                        "TOOL_RESULT",
+                        result.model_dump(mode="json"),
+                    )
+            self.audit.append(
+                snapshot.run_id,
+                "FEEDBACK",
+                feedback.model_dump(mode="json"),
+            )
+        except Exception:
+            return self._stop(
+                snapshot,
+                StopDecision(code=RunStatus.FAILED, reason="audit unavailable"),
+            )
         return self._save(
             snapshot.model_copy(
                 update={

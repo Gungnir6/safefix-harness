@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
 from fastapi.testclient import TestClient
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from safefix.cli import main
 from safefix.web.app import AppDependencies, create_app
@@ -11,6 +14,18 @@ from tests.web.test_api import FakeService
 
 
 ROOT = Path(__file__).parents[2]
+
+
+def test_runtime_dependencies_include_the_demo_validator() -> None:
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    requirements = metadata["project"]["dependencies"]
+    dependency_names = {
+        canonicalize_name(Requirement(requirement).name)
+        for requirement in requirements
+    }
+
+    assert "pytest" in dependency_names
 
 
 def test_required_delivery_files_and_ci_job_exist() -> None:
@@ -77,6 +92,11 @@ def test_ignore_and_package_metadata_cover_secrets_and_assets() -> None:
     assert 'safefix = "safefix.cli:main"' in package
     assert 'safefix-demo = "safefix.demo:main"' in package
     assert '"examples/python_bug" = "safefix/_fixtures/python_bug"' in package
+    assert (ROOT / "examples" / "mock_repair.jsonl").is_file()
+    assert (
+        '"examples/mock_repair.jsonl" = "safefix/_fixtures/mock_repair.jsonl"'
+        in package
+    )
 
 
 def test_container_is_non_root_and_has_healthcheck() -> None:

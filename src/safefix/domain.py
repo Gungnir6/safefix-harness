@@ -248,6 +248,7 @@ class ApprovalRequest(_FrozenModel):
     frozen_action_json: str
     created_at: datetime
     expires_at: datetime
+    rule_ids: tuple[str, ...] = ()
     decided_at: datetime | None = None
 
 

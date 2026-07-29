@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+import sys
 from typing import Annotated, Literal, Self
 
 import yaml  # type: ignore[import-untyped]
@@ -101,6 +102,39 @@ class SafeFixSettings(_FrozenSettings):
     def validate_validator_ids(self) -> Self:
         _ensure_unique((validator.id for validator in self.validators), "validators")
         return self
+
+
+def default_settings_yaml() -> str:
+    raw = {
+        "llm": {
+            "endpoint": "https://api.openai.com/v1",
+            "model": "gpt-4.1-mini",
+        },
+        "validators": [
+            {
+                "id": "pytest",
+                "kind": "test",
+                "program": sys.executable,
+                "args": ["-m", "pytest", "-q"],
+                "timeout_seconds": 120,
+                "success_exit_codes": [0],
+                "output_limit_bytes": 65536,
+            }
+        ],
+        "policy": {
+            "sensitive_patterns": [".env", ".env.*", "**/*.pem", "**/.ssh/**"],
+            "allowed_programs": [sys.executable, "git"],
+            "denied_programs": ["sudo", "su", "powershell", "pwsh", "cmd", "sh", "bash"],
+        },
+        "budget": {
+            "repair_rounds": 3,
+            "no_progress_rounds": 2,
+            "total_steps": 20,
+            "wall_time_seconds": 900,
+        },
+        "memory": {"retrieval_limit": 5, "character_budget": 4000},
+    }
+    return yaml.safe_dump(raw, sort_keys=False, allow_unicode=True)
 
 
 def _safe_yaml_error(error: yaml.YAMLError) -> str:

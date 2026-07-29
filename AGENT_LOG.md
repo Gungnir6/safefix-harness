@@ -234,3 +234,38 @@
 - 实现提交：`9d2390166458e7965978b0f3b7c47137684d0950`（`feat(web): 突出演示失败与机制结论`）。本地模式无静态假结论；服务端与客户端都只接受固定六态，未知状态回退“信息”；动态内容继续使用 `createElement`、`textContent` 和 `dataset`。
 - TDD / 验证：页面 RED 为 5 failed、18 passed，GREEN 为 23 passed；Web 完整回归 33 passed；Ruff 全通过；`innerHTML|insertAdjacentHTML|document.write` 扫描无匹配；`git diff --check` 无错误。仅有既有第三方 `StarletteDeprecationWarning`。
 - 技能 / 约束：使用 `test-driven-development`、`frontend-design` 与 `verification-before-completion`；始终调用仓库根 `.venv`，未使用系统 `python.exe`。浏览器桌面/窄屏视觉验收由主代理审查后完成；未合并、推送或删除工作树。
+
+## Usable CLI runtime — Task 5
+
+- 时间：2026-07-28 20:40–21:13 +08:00；分支 / 工作树：`usable-cli-runtime` / `.worktrees/usable-cli-runtime`。
+- 任务：完成 fresh-install wheel、CI smoke、真实 CLI 中文教程、计划/日志证据和最终本地门禁；不新增产品功能，不宣称未发生的 CI、Release 或部署。
+- 技能：`executing-plans`、`using-git-worktrees`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。工作树检测确认当前为 linked worktree、命名分支、非 submodule/非 detached HEAD。
+- Context：实现代理 `/root/cli_task5_delivery`，上游编排代理 `/root`。本子任务没有执行独立整分支评审；whole-branch review 与集成决定保留给上游 Final Review Gate。没有学生手工代码修改。
+- 实现：在 GitHub Actions 的现有 pytest/Ruff/mypy 后加入 fresh-wheel venv smoke，保持 Gitleaks 与 Docker job；dev extra 声明 `build>=1.2,<2`；README 改为可直接执行的真实 CLI 教程并明确外部状态；分发测试覆盖 demo validator 的运行时依赖。
+- 调试 / TDD：首轮已构建/安装 wheel，fresh venv 的 `pytest_spec=None` 且 `safefix-demo all` feedback 失败，证明 demo validator 的运行时依赖缺口；新增 `test_runtime_dependencies_include_the_demo_validator` 后得到预期 RED，再把原有 `pytest>=8.3,<9` 从仅 dev extra 移到运行时依赖，定向测试 GREEN。该轮 smoke 同时继承了工作树 `PYTHONPATH`，因此入口行为不作为 wheel 来源证据；来源证据由下述审查修复轮替代。
+- 构建环境：首次隔离 build 和 fresh pip install 均被网络沙箱阻断；按沙箱升级流程各只重跑一次后成功。记录的是本地构建/安装结果，不等同于 GitHub Actions。
+- 手工旅程：显式设置 `PYTHONPATH=<worktree>/src`，使用仓库根 `.venv` 的 `safefix.exe`；以工作树内 `SAFEFIX_DATA_DIR` 执行 `config init`、`config validate` 和 Mock run。第二次捕获仅设置 `PYTHONUTF8=1` 取得可读中文证据，没有改变运行语义。
+- 手工结果：exit 0；原 fixture SHA-256 未变；隔离副本修复为 `return left + right`；审计 SQLite 存在；输出包含隔离路径、验证失败、patch、验证通过、修改文件、SUCCESS 和审计路径；capability/CSRF/approval token、traceback、API key 扫描均无匹配。
+- 测试：第一轮全量 pytest `942 passed, 2 skipped, 1 warning in 58.59s`；Ruff 全通过；mypy 对 33 个源码文件无问题；三个 demo PASS；diff check exit 0。唯一 warning 是既有第三方 `StarletteDeprecationWarning`。
+- Docker：`docker version` 报告 `docker_engine` named pipe 不存在，daemon 未运行；因此 image build/container demo 为真实环境阻塞，没有伪称通过。
+- 清理：对 `.smoke-venv`、`dist`、`.manual-data`、`.manual-safefix.yaml` 逐个做绝对路径与工作树严格后代检查后删除。
+- 经验：fresh-install smoke 必须真正隔离 dev extra，否则会掩盖“演示使用 pytest、但 wheel 不声明 pytest”的分发缺口；CI 配置存在不代表 CI 已运行，本地 wheel、Docker daemon、Release 和公网部署必须分别记录证据。
+
+## Usable CLI runtime — Task 5 审查修复轮次 1/5
+
+- 时间：2026-07-28 +08:00；审查发现：上一轮 smoke 会话继承 `PYTHONPATH=<worktree>/src`，因此 launcher 成功不能证明实际加载 wheel。
+- 证据修复：重新 build/install 前及每组 smoke 前均执行 `Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue` 并断言变量不存在。`.smoke-venv` Python 报告 `safefix.__file__` 为 `.smoke-venv\Lib\site-packages\safefix\__init__.py`，且不在工作树 `src`。
+- packaged resources：`importlib.resources` 定位到 site-packages 内 `_fixtures/python_bug` 和 `_fixtures/mock_repair.jsonl`，两者及 `calculator.py` 均存在。
+- 入口：三个 Windows launcher 均存在；无 `PYTHONPATH` 的 `safefix --help` exit 0、三个 demo PASS；`safefix-public-demo` 的 console entry 从已安装 wheel metadata 加载为 `safefix.cli:public_demo_main`，采用聚焦 import 检查避免启动长驻服务。
+- packaged Mock journey：把已安装资源复制到工作树临时输入目录，使用 `.smoke-venv` launcher 执行 `config init`、`config validate` 和 Mock run。`PYTHONPATHPresent=False`、exit 0、输入副本 SHA-256 未变、隔离结果含 `return left + right`、审计库存在、输出包含失败/patch/通过/SUCCESS，且无 traceback/capability。
+- Minor：README 明列 pytest 是运行时依赖，用于内置 feedback/Mock 验收和默认 validator；分发测试改用 `packaging.Requirement` 与 `canonicalize_name` 后精确断言依赖名为 `pytest`，避免 `pytest-fake` 等前缀误报。
+- 清理：`.smoke-venv`、`dist`、`.wheel-smoke-input`、`.wheel-smoke-data` 和 `.wheel-smoke-config.yaml` 均在解析为当前工作树严格后代后删除。
+
+## Usable CLI runtime — Final review fixes 轮次 1/5
+
+- 时间：2026-07-29 +08:00；分支 / 工作树：`usable-cli-runtime` / `.worktrees/usable-cli-runtime`；实现代理 `/root/usable_cli_final_fixes`，上游编排代理 `/root`。未使用系统 Python，所有源码测试均使用仓库根 `.venv` 和当前 worktree `PYTHONPATH`。
+- 修复：`TaskService` 统一刷新审批 access；批准或拒绝恢复到下一次审批时读取同一 loop 的新单次 capability，恢复调用抛错前不清旧 access。真实运行时测试证明双危险动作依次审批后成功、拒绝后可再次等待审批、不同审批的 capability 不同且旧 capability 不可复用。
+- 边界：`prepare_workspace` 在原地模式早退前解析并拒绝 workspace 内的 `data_dir`；`create_runtime` 在 `mkdir`/SQLite 连接前再次拒绝解析后位于有效 workspace 内的 data/database path。source、子目录及 `..` 解析别名均失败且不创建 SQLite。
+- 终端：普通事件、审批和摘要/banner 的动态文本先将 Unicode Cc/Cf 编码为可见 `\\u` 序列，再有界截断；事件 payload 保持终端安全 JSON，机器 `--json` 仍由原始 `RunSummary` 直接序列化。审批请求携带已持久化规则并安全有界显示，空规则显示“无/未知”；Web API 响应字段未扩张。
+- TDD / 验证：连续审批 2 个 RED 在第二次 `get_approval` 失败，修复后 2 passed；数据边界 7 个 RED 均为未拒绝，修复后 7 passed；事件/摘要/JSON/规则精确用例修复后 7 passed。最终受影响单元回归 244 passed；integration/Web 回归 64 passed、1 条既有 `StarletteDeprecationWarning`；Ruff 全通过；mypy 对 6 个变更源码无问题；`git diff --check` 通过。按上游要求未运行全套，未虚称全量结果。
+- 技能 / 经验：使用 `receiving-code-review`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。审批 capability 的生命周期必须跟随每个 pending approval，而不是跟随整个 run；所有人类终端输出应在边界统一编码，机器 JSON 契约保持独立。

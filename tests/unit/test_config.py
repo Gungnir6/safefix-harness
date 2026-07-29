@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from pathlib import Path
+import sys
 import traceback
 from typing import Any
 
@@ -15,11 +16,30 @@ from safefix.config import (
     PolicySettings,
     SafeFixSettings,
     ValidatorSettings,
+    default_settings_yaml,
     load_settings,
 )
 
 
 _CAPTURE_LOCALS_SECRET = "CAPTURE_LOCALS_REJECTED_SECRET_SENTINEL"
+
+
+def test_default_settings_yaml_loads_as_complete_conservative_config(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "safefix.yaml"
+    path.write_text(default_settings_yaml(), encoding="utf-8")
+
+    settings = load_settings(path)
+
+    assert settings.llm.model == "gpt-4.1-mini"
+    assert str(settings.llm.endpoint).rstrip("/") == "https://api.openai.com/v1"
+    assert settings.validators[0].id == "pytest"
+    assert settings.validators[0].program == sys.executable
+    assert settings.policy.allowed_programs == (
+        sys.executable,
+        "git",
+    )
 
 
 def test_config_rejects_unknown_and_secret_fields(tmp_path: Path) -> None:

@@ -160,10 +160,6 @@ class FeedbackEngine:
             return StopDecision(
                 code=RunStatus.BUDGET_EXCEEDED, reason="step budget exhausted"
             )
-        if budget.remaining_repairs == 0:
-            return StopDecision(
-                code=RunStatus.BUDGET_EXCEEDED, reason="repair budget exhausted"
-            )
         if budget.deadline_at is not None and datetime.now(UTC) >= budget.deadline_at:
             return StopDecision(
                 code=RunStatus.BUDGET_EXCEEDED, reason="time budget exhausted"

@@ -75,11 +75,11 @@ class FakeApprovals:
 
 class FakeAudit:
     def __init__(self) -> None:
-        self.events: list[str] = []
+        self.events: list[tuple[str, object]] = []
 
     def append(self, run_id: str, event_type: str, payload: object) -> object:
-        del run_id, payload
-        self.events.append(event_type)
+        del run_id
+        self.events.append((event_type, payload))
         return object()
 
 
@@ -115,9 +115,11 @@ class LoopFixture:
     loop: AgentLoop
     registry: SpyRegistry
     approvals: FakeApprovals
+    audit: FakeAudit
+    llm: ScriptedMockLLM
 
 
-def _settings() -> SafeFixSettings:
+def _settings(*, repair_rounds: int = 3) -> SafeFixSettings:
     return SafeFixSettings(
         llm=LLMSettings(endpoint="https://example.test/v1", model="mock"),
         validators=(
@@ -132,8 +134,8 @@ def _settings() -> SafeFixSettings:
             ),
         ),
         budget=BudgetSettings(
-            repair_rounds=3,
-            no_progress_rounds=2,
+            repair_rounds=repair_rounds,
+            no_progress_rounds=min(2, repair_rounds),
             total_steps=10,
             wall_time_seconds=60,
         ),
@@ -142,13 +144,19 @@ def _settings() -> SafeFixSettings:
 
 
 def _loop(
-    script: list[str], validation_successes: tuple[bool, ...] = (True,)
+    script: list[str],
+    validation_successes: tuple[bool, ...] = (True,),
+    *,
+    audit: FakeAudit | None = None,
+    repair_rounds: int = 3,
 ) -> LoopFixture:
-    settings = _settings()
+    settings = _settings(repair_rounds=repair_rounds)
     registry = SpyRegistry(validation_successes)
     approvals = FakeApprovals()
+    audit = audit or FakeAudit()
+    llm = ScriptedMockLLM(script)
     loop = AgentLoop(
-        llm=ScriptedMockLLM(script),
+        llm=llm,
         context=ContextBuilder(None, settings.memory),
         action_parser=ActionParser(),
         policy=FakePolicy(),
@@ -156,10 +164,10 @@ def _loop(
         tools=registry,
         feedback=FeedbackEngine(no_progress_limit=2),
         run_store=RunStore(sqlite3.connect(":memory:")),
-        audit=FakeAudit(),
+        audit=audit,
         settings=settings,
     )
-    return LoopFixture(loop, registry, approvals)
+    return LoopFixture(loop, registry, approvals, audit, llm)
 
 
 @pytest.mark.asyncio
@@ -203,7 +211,14 @@ async def test_approval_resume_executes_frozen_action_and_finishes() -> None:
 async def test_failed_validation_allows_two_repairs_then_succeeds() -> None:
     patch_one = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
     patch_two = '{"type":"apply_patch","id":"p2","reason":"fix again","path":"app.py","expected_sha256":"' + "1" * 64 + '","old_text":"b","new_text":"c","expected_replacements":1}'
-    fixture = _loop([patch_one, patch_two], validation_successes=(False, True))
+    fixture = _loop(
+        [
+            patch_one,
+            patch_two,
+            '{"type":"finish","id":"done","reason":"done","summary":"fixed"}',
+        ],
+        validation_successes=(False, True, True),
+    )
 
     snapshot = await fixture.loop.start(project="fixture", description="fix value")
 
@@ -211,6 +226,117 @@ async def test_failed_validation_allows_two_repairs_then_succeeds() -> None:
     assert snapshot.repair_round == 2
     assert snapshot.action_digests[0] != snapshot.action_digests[1]
     assert any(item.category.value == "TEST_FAILURE" for item in snapshot.feedback_history)
+
+
+@pytest.mark.asyncio
+async def test_validation_success_is_feedback_until_finish_succeeds() -> None:
+    fixture = _loop(
+        [
+            '{"type":"run_validation","id":"v1","reason":"check",'
+            '"validator_id":"pytest"}',
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+        ],
+        validation_successes=(True, True),
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="validate then finish",
+    )
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert [
+        payload["id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "ACTION"
+    ] == ["v1", "done"]
+
+
+@pytest.mark.asyncio
+async def test_patch_validation_success_is_feedback_until_finish_succeeds() -> None:
+    patch = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
+    fixture = _loop(
+        [
+            patch,
+            '{"type":"finish","id":"done","reason":"done","summary":"fixed"}',
+        ],
+        validation_successes=(True, True),
+    )
+
+    snapshot = await fixture.loop.start(project="fixture", description="fix value")
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert [
+        payload["id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "ACTION"
+    ] == ["p1", "done"]
+    assert snapshot.changed_files == ("app.py",)
+
+
+@pytest.mark.asyncio
+async def test_single_repair_budget_allows_successful_patch_then_finish() -> None:
+    patch = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
+    fixture = _loop(
+        [
+            patch,
+            '{"type":"finish","id":"done","reason":"done","summary":"fixed"}',
+        ],
+        validation_successes=(True, True),
+        repair_rounds=1,
+    )
+
+    snapshot = await fixture.loop.start(project="fixture", description="fix value")
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert snapshot.budget.remaining_repairs == 0
+    assert fixture.llm.call_index == 2
+
+
+@pytest.mark.asyncio
+async def test_exhausted_repair_budget_blocks_next_patch_before_tool_execution() -> None:
+    patch_one = '{"type":"apply_patch","id":"p1","reason":"fix","path":"app.py","expected_sha256":"' + "0" * 64 + '","old_text":"a","new_text":"b","expected_replacements":1}'
+    patch_two = '{"type":"apply_patch","id":"p2","reason":"fix again","path":"app.py","expected_sha256":"' + "1" * 64 + '","old_text":"b","new_text":"c","expected_replacements":1}'
+    fixture = _loop(
+        [patch_one, patch_two],
+        validation_successes=(True,),
+        repair_rounds=1,
+    )
+
+    snapshot = await fixture.loop.start(project="fixture", description="fix value")
+
+    assert snapshot.status is RunStatus.BUDGET_EXCEEDED
+    assert snapshot.stop_reason == "repair budget exhausted"
+    assert fixture.llm.call_index == 2
+    assert [
+        call.id
+        for call in fixture.registry.calls
+        if isinstance(call, ApplyPatchAction)
+    ] == ["p1"]
+
+
+@pytest.mark.asyncio
+async def test_failed_finish_validation_returns_feedback_and_allows_retry() -> None:
+    fixture = _loop(
+        [
+            '{"type":"finish","id":"done-1","reason":"done","summary":"first"}',
+            '{"type":"finish","id":"done-2","reason":"retry","summary":"second"}',
+        ],
+        validation_successes=(False, True),
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="finish after validation",
+    )
+
+    assert snapshot.status is RunStatus.SUCCESS
+    assert [
+        payload["id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "ACTION"
+    ] == ["done-1", "done-2"]
+    assert snapshot.feedback_history[0].category.value == "TEST_FAILURE"
 
 
 @pytest.mark.asyncio
@@ -223,4 +349,84 @@ async def test_cancel_pending_run() -> None:
     cancelled = await fixture.loop.cancel(paused.run_id)
 
     assert cancelled.status is RunStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_tool_results_and_feedback_are_audited_in_action_order() -> None:
+    fixture = _loop(
+        [
+            '{"type":"run_validation","id":"v1","reason":"check",'
+            '"validator_id":"pytest"}',
+            '{"type":"run_validation","id":"v2","reason":"check again",'
+            '"validator_id":"pytest"}',
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+        ],
+        validation_successes=(False, True, True),
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="validate the project",
+    )
+
+    event_types = [
+        event_type for event_type, payload in fixture.audit.events
+    ]
+    assert snapshot.status is RunStatus.SUCCESS
+    assert event_types == [
+        "ACTION",
+        "POLICY_DECISION",
+        "TOOL_RESULT",
+        "FEEDBACK",
+        "ACTION",
+        "POLICY_DECISION",
+        "TOOL_RESULT",
+        "FEEDBACK",
+        "ACTION",
+        "POLICY_DECISION",
+        "TOOL_RESULT",
+        "FEEDBACK",
+    ]
+    assert [
+        payload["action_id"]
+        for event_type, payload in fixture.audit.events
+        if event_type == "TOOL_RESULT"
+    ] == ["v1", "v2", "done:pytest"]
+
+
+class FailingEvidenceAudit(FakeAudit):
+    def __init__(self, failing_event_type: str) -> None:
+        super().__init__()
+        self._failing_event_type = failing_event_type
+
+    def append(self, run_id: str, event_type: str, payload: object) -> object:
+        if event_type == self._failing_event_type:
+            raise RuntimeError("raw audit storage detail")
+        return super().append(run_id, event_type, payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_event_type", ["TOOL_RESULT", "FEEDBACK"])
+async def test_evidence_audit_failure_stops_before_another_action(
+    failing_event_type: str,
+) -> None:
+    audit = FailingEvidenceAudit(failing_event_type)
+    fixture = _loop(
+        [
+            '{"type":"run_validation","id":"v1","reason":"check",'
+            '"validator_id":"pytest"}',
+            '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+        ],
+        validation_successes=(False, True),
+        audit=audit,
+    )
+
+    snapshot = await fixture.loop.start(
+        project="fixture",
+        description="validate the project",
+    )
+
+    assert snapshot.status is RunStatus.FAILED
+    assert snapshot.stop_reason == "audit unavailable"
+    assert len(fixture.registry.calls) == 1
 

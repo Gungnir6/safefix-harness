@@ -22,6 +22,13 @@ jobs:
       - run: python -m pytest -q
       - run: python -m ruff check .
       - run: python -m mypy src
+      - name: Smoke-test built CLI
+        run: |
+          python -m build --wheel
+          python -m venv .smoke-venv
+          .smoke-venv/bin/python -m pip install dist/*.whl
+          .smoke-venv/bin/safefix --help
+          .smoke-venv/bin/safefix-demo all
       - uses: gitleaks/gitleaks-action@v2
 
   image:

@@ -9,7 +9,10 @@ from safefix.memory import MemoryStore
 _SYSTEM_MESSAGE = """You are the SafeFix repair agent. Return exactly one JSON action object.
 Allowed action types: list_files, read_file, search_text, apply_patch,
 run_validation, run_process, finish. Include id and reason. Never return shell
-syntax outside structured run_process program and args fields."""
+syntax outside structured run_process program and args fields.
+Inspect relevant files before editing. Use run_validation for the configured
+validators. Use the latest tool result and feedback to choose the next action,
+and finish only after validation succeeds."""
 
 
 class ContextBuilder:
