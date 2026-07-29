@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,13 @@ from typing import Any
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="safefix")
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command")
+
+    chat = commands.add_parser("chat")
+    chat.add_argument("project", nargs="?", type=Path, default=Path("."))
+    chat.add_argument("--config", type=Path)
+    chat.add_argument("--data-dir", type=Path)
+    chat.add_argument("--provider", default="openai-compatible")
 
     run = commands.add_parser("run")
     run.add_argument("project", type=Path)
@@ -22,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mock-script", type=Path)
     run.add_argument("--non-interactive", action="store_true")
     run.add_argument("--json", action="store_true")
+
+    setup = commands.add_parser("setup")
+    setup.add_argument("project", nargs="?", type=Path, default=Path("."))
+    setup.add_argument("--config", type=Path)
+    setup.add_argument("--provider", default="openai-compatible")
 
     serve = commands.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
@@ -48,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--yes", action="store_true")
 
     commands.add_parser("demo")
+    parser.set_defaults(
+        command="chat",
+        project=Path("."),
+        config=None,
+        data_dir=None,
+        provider="openai-compatible",
+    )
     return parser
 
 
@@ -67,6 +86,23 @@ def main(
     serve: Callable[[str, int, bool], None] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "chat":
+        from safefix.cli_chat import ChatOptions, run_chat
+
+        return run_chat(
+            ChatOptions(
+                project=args.project,
+                config=args.config,
+                data_dir=args.data_dir,
+                provider=args.provider,
+            ),
+            credential_service=credential_service or _default_credentials(),
+            input_fn=input,
+            secret_input_fn=getpass.getpass,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+
     if args.command == "credentials":
         credentials = credential_service or _default_credentials()
         provider = args.provider
@@ -104,6 +140,21 @@ def main(
         else:
             serve(args.host, args.port, args.public_demo)
         return 0
+
+    if args.command == "setup":
+        from safefix.cli_setup import SetupOptions, run_setup
+
+        return run_setup(
+            SetupOptions(
+                project=args.project,
+                config=args.config,
+                provider=args.provider,
+            ),
+            credential_service=credential_service or _default_credentials(),
+            input_fn=input,
+            secret_input_fn=getpass.getpass,
+            stdout=sys.stdout,
+        )
 
     if args.command == "run":
         if task_service is not None:

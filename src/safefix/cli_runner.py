@@ -514,6 +514,7 @@ async def _run_cli_async(
     stderr: TextIO,
     runtime_factory: Callable[..., RuntimeSession],
     workspace_factory: Callable[..., PreparedWorkspace],
+    summary_observer: Callable[[RunSummary], None] | None,
 ) -> int:
     runtime: RuntimeSession | None = None
     summary: RunSummary | None = None
@@ -652,14 +653,19 @@ async def _run_cli_async(
                 summary = None
 
     if summary is not None:
+        if summary_observer is not None:
+            summary_observer(summary)
         return _render_summary(
             summary,
             json_output=options.json_output,
             stdout=stdout,
         )
+    error_summary = _error_summary(options, exit_code)
+    if summary_observer is not None:
+        summary_observer(error_summary)
     if options.json_output:
         return _render_summary(
-            _error_summary(options, exit_code),
+            error_summary,
             json_output=True,
             stdout=stdout,
         )
@@ -677,6 +683,7 @@ def run_cli(
     stderr: TextIO = sys.stderr,
     runtime_factory: Callable[..., RuntimeSession] = create_runtime,
     workspace_factory: Callable[..., PreparedWorkspace] = prepare_workspace,
+    summary_observer: Callable[[RunSummary], None] | None = None,
 ) -> int:
     if stdout is _DEFAULT_STDOUT:
         stdout = sys.stdout
@@ -692,12 +699,16 @@ def run_cli(
                 stderr=stderr,
                 runtime_factory=runtime_factory,
                 workspace_factory=workspace_factory,
+                summary_observer=summary_observer,
             )
         )
     except KeyboardInterrupt:
+        summary = _error_summary(options, 6)
+        if summary_observer is not None:
+            summary_observer(summary)
         if options.json_output:
             return _render_summary(
-                _error_summary(options, 6),
+                summary,
                 json_output=True,
                 stdout=stdout,
             )
