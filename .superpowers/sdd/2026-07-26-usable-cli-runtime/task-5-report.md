@@ -213,3 +213,11 @@ docs(cli): 完成真实运行与分发说明
 ```
 
 精确 SHA 由提交完成回执记录。
+
+## Final review fixes（2026-07-29，轮次 1/5）
+
+- 连续审批：`TaskService` 在 create/approve/reject 成功取得 snapshot 后统一清理旧 access，并在仍为 `AWAITING_APPROVAL` 时从同一 loop 单次取出新 capability、读取新请求并生成新 CSRF。恢复调用抛错发生在刷新前，因此当前 access 保留。真实 `AgentLoop` 回归覆盖批准与拒绝两条恢复路径、双危险动作、不同 capability、旧 capability replay 失败和最终成功。
+- 数据边界：原地模式不再绕过解析后的 data-dir 边界；运行时在创建目录和 SQLite 前防御性检查解析后的 data/database path 均不位于 prepared workspace。source、source/data 和 `..` 解析别名均 fail closed，且断言未生成 `safefix.sqlite3`。
+- 终端边界：所有普通事件动态 key/value/type、摘要 stop reason/changed files/workspace/audit path 及 banner provider/model/path 均先编码 Unicode Cc/Cf、再有界截断；中文保持可读，事件 payload 为终端安全 JSON。`--json` 分支仍直接序列化原始摘要，反序列化后保留原值。
+- 审批规则：审批领域请求携带持久化 `rule_ids`，CLI 安全编码并有界展示；空规则显示“无/未知”。既有 Web API 继续显式返回原字段集合。
+- 验证：244 个受影响 unit passed；64 个 integration/Web passed（1 条既有 Starlette warning）；Ruff passed；mypy 对 6 个变更源码 passed；diff check passed。按上游要求未运行全套。

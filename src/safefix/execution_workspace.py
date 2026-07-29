@@ -158,13 +158,12 @@ def prepare_workspace(
     sensitive_patterns: tuple[str, ...],
 ) -> PreparedWorkspace:
     source = _resolve_project(project)
-    execution_id = str(uuid.uuid4())
-    if in_place:
-        return PreparedWorkspace(execution_id, source, source, "in_place", None)
-
     data_directory = data_dir.resolve(strict=False)
     if data_directory.is_relative_to(source):
         raise WorkspacePreparationError("data directory must not be inside the project")
+    execution_id = str(uuid.uuid4())
+    if in_place:
+        return PreparedWorkspace(execution_id, source, source, "in_place", None)
 
     execution_directory = data_directory / "runs" / execution_id
     workspace = execution_directory / "workspace"

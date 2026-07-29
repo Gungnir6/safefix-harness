@@ -260,3 +260,12 @@
 - packaged Mock journey：把已安装资源复制到工作树临时输入目录，使用 `.smoke-venv` launcher 执行 `config init`、`config validate` 和 Mock run。`PYTHONPATHPresent=False`、exit 0、输入副本 SHA-256 未变、隔离结果含 `return left + right`、审计库存在、输出包含失败/patch/通过/SUCCESS，且无 traceback/capability。
 - Minor：README 明列 pytest 是运行时依赖，用于内置 feedback/Mock 验收和默认 validator；分发测试改用 `packaging.Requirement` 与 `canonicalize_name` 后精确断言依赖名为 `pytest`，避免 `pytest-fake` 等前缀误报。
 - 清理：`.smoke-venv`、`dist`、`.wheel-smoke-input`、`.wheel-smoke-data` 和 `.wheel-smoke-config.yaml` 均在解析为当前工作树严格后代后删除。
+
+## Usable CLI runtime — Final review fixes 轮次 1/5
+
+- 时间：2026-07-29 +08:00；分支 / 工作树：`usable-cli-runtime` / `.worktrees/usable-cli-runtime`；实现代理 `/root/usable_cli_final_fixes`，上游编排代理 `/root`。未使用系统 Python，所有源码测试均使用仓库根 `.venv` 和当前 worktree `PYTHONPATH`。
+- 修复：`TaskService` 统一刷新审批 access；批准或拒绝恢复到下一次审批时读取同一 loop 的新单次 capability，恢复调用抛错前不清旧 access。真实运行时测试证明双危险动作依次审批后成功、拒绝后可再次等待审批、不同审批的 capability 不同且旧 capability 不可复用。
+- 边界：`prepare_workspace` 在原地模式早退前解析并拒绝 workspace 内的 `data_dir`；`create_runtime` 在 `mkdir`/SQLite 连接前再次拒绝解析后位于有效 workspace 内的 data/database path。source、子目录及 `..` 解析别名均失败且不创建 SQLite。
+- 终端：普通事件、审批和摘要/banner 的动态文本先将 Unicode Cc/Cf 编码为可见 `\\u` 序列，再有界截断；事件 payload 保持终端安全 JSON，机器 `--json` 仍由原始 `RunSummary` 直接序列化。审批请求携带已持久化规则并安全有界显示，空规则显示“无/未知”；Web API 响应字段未扩张。
+- TDD / 验证：连续审批 2 个 RED 在第二次 `get_approval` 失败，修复后 2 passed；数据边界 7 个 RED 均为未拒绝，修复后 7 passed；事件/摘要/JSON/规则精确用例修复后 7 passed。最终受影响单元回归 244 passed；integration/Web 回归 64 passed、1 条既有 `StarletteDeprecationWarning`；Ruff 全通过；mypy 对 6 个变更源码无问题；`git diff --check` 通过。按上游要求未运行全套，未虚称全量结果。
+- 技能 / 经验：使用 `receiving-code-review`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。审批 capability 的生命周期必须跟随每个 pending approval，而不是跟随整个 run；所有人类终端输出应在边界统一编码，机器 JSON 契约保持独立。

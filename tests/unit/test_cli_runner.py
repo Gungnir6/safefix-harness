@@ -86,6 +86,7 @@ def _approval() -> ApprovalAccess:
         frozen_action_json=json.dumps(action, separators=(",", ":")),
         created_at=now,
         expires_at=now + timedelta(minutes=5),
+        rule_ids=("CMD_GIT_WRITE",),
     )
     return ApprovalAccess(request, "one-time-capability", "csrf-secret")
 
@@ -470,6 +471,28 @@ def test_event_rendering_redacts_sensitive_fields_and_bounds_output() -> None:
     assert len(output) < 5_000
 
 
+def test_event_rendering_escapes_all_dynamic_terminal_controls() -> None:
+    stdout = StringIO()
+    event = _event(
+        1,
+        "未知\x1b\u202e事件",
+        {
+            "键\u2066\x1b": "中文\u009b\u202e值",
+            "normal": "可读中文",
+        },
+    )
+
+    _render_events([event], after_sequence=0, stdout=stdout)
+
+    output = stdout.getvalue()
+    assert "未知\\u001b\\u202e事件" in output
+    assert "中文" in output
+    assert "可读中文" in output
+    assert all(control not in output for control in ("\x1b", "\u009b", "\u202e", "\u2066"))
+    payload = output.partition(": ")[2].removesuffix("\n")
+    json.loads(payload)
+
+
 def test_event_rendering_skips_already_presented_sequences() -> None:
     stdout = StringIO()
 
@@ -547,6 +570,78 @@ def test_json_output_is_one_machine_readable_summary_without_banner(
     }
     assert "原项目不会被修改" not in stdout.getvalue()
     assert "模型动作" not in stdout.getvalue()
+
+
+def test_human_output_escapes_dynamic_summary_and_banner_fields(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "项目\u202e\x1b"
+    prepared = PreparedWorkspace("exec-1", source, source, "in_place", None)
+    snapshot = _snapshot(
+        RunStatus.SUCCESS,
+        stop_reason="停止中文\x1b\u009b\u202e\u2066尾",
+        changed_files=("文件\x1b.py", "第二\u202e.txt"),
+    )
+    runtime = FakeRuntime(tmp_path, FakeService(snapshot))
+    runtime.provider = "供应商\u2066"
+    runtime.model_name = "模型\u009b"
+    runtime.database_path = tmp_path / "数据\u202e\x1b.sqlite3"
+    stdout = StringIO()
+
+    result = run_cli(
+        _options(tmp_path, in_place=True),
+        credential_service=FakeCredentials(),
+        stdout=stdout,
+        runtime_factory=lambda *args, **kwargs: runtime,
+        workspace_factory=_workspace_factory(prepared),
+    )
+
+    output = stdout.getvalue()
+    assert result == 0
+    assert "停止中文" in output
+    assert "文件" in output
+    assert "项目" in output
+    assert "供应商" in output
+    assert "模型" in output
+    assert all(control not in output for control in ("\x1b", "\u009b", "\u202e", "\u2066"))
+    assert "\\u001b" in output
+    assert "\\u009b" in output
+    assert "\\u202e" in output
+    assert "\\u2066" in output
+
+
+def test_json_output_preserves_raw_dynamic_summary_values(tmp_path: Path) -> None:
+    source = tmp_path / "项目\u202e\x1b"
+    prepared = PreparedWorkspace("exec-1", source, source, "in_place", None)
+    stop_reason = "停止\x1b\u009b\u202e\u2066"
+    changed_files = ("文件\x1b.py", "第二\u202e.txt")
+    runtime = FakeRuntime(
+        tmp_path,
+        FakeService(
+            _snapshot(
+                RunStatus.SUCCESS,
+                stop_reason=stop_reason,
+                changed_files=changed_files,
+            )
+        ),
+    )
+    runtime.database_path = tmp_path / "数据\u2066.sqlite3"
+    stdout = StringIO()
+
+    result = run_cli(
+        _options(tmp_path, in_place=True, json_output=True),
+        credential_service=FakeCredentials(),
+        stdout=stdout,
+        runtime_factory=lambda *args, **kwargs: runtime,
+        workspace_factory=_workspace_factory(prepared),
+    )
+
+    summary = json.loads(stdout.getvalue())
+    assert result == 0
+    assert summary["stop_reason"] == stop_reason
+    assert summary["changed_files"] == list(changed_files)
+    assert summary["workspace"] == str(source)
+    assert summary["audit_database"] == str(runtime.database_path)
 
 
 def test_json_interactive_approval_keeps_stdout_machine_readable(
@@ -677,6 +772,7 @@ def test_approval_prompt_describes_frozen_action_without_sensitive_ids() -> None
     assert '程序: "git"' in prompt
     assert '参数: ["commit", "-m", "fix tests"]' in prompt
     assert '理由: "save the verified repair"' in prompt
+    assert "规则: CMD_GIT_WRITE" in prompt
     assert access.capability not in prompt
     assert access.csrf_token not in prompt
     assert access.request.action_hash not in prompt
@@ -745,3 +841,20 @@ def test_approval_prompt_escapes_terminal_controls_but_keeps_chinese_readable() 
     )
     assert '理由: "批准中文\\u009b警告\\u202e尾"' in prompt
     assert access.capability not in prompt
+
+
+def test_approval_prompt_safely_bounds_rule_ids_and_labels_empty_rules() -> None:
+    access = _approval()
+    unsafe = "规则中文\x1b\u009b\u202e\u2066" + ("长" * 1_000)
+
+    prompt = _approval_prompt(
+        access.request.model_copy(update={"rule_ids": (unsafe,)})
+    )
+    empty_prompt = _approval_prompt(
+        access.request.model_copy(update={"rule_ids": ()})
+    )
+
+    assert "规则中文" in prompt
+    assert "已截断" in prompt
+    assert all(control not in prompt for control in ("\x1b", "\u009b", "\u202e", "\u2066"))
+    assert "规则: 无/未知" in empty_prompt

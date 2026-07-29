@@ -319,8 +319,16 @@ def create_runtime(
     if provider == "mock" and mock_actions is None:
         raise RuntimeConfigurationError("mock actions are required")
 
-    data_dir.mkdir(parents=True, exist_ok=True)
     database_path = data_dir / "safefix.sqlite3"
+    workspace_path = prepared.path.resolve(strict=False)
+    if (
+        data_dir.resolve(strict=False).is_relative_to(workspace_path)
+        or database_path.resolve(strict=False).is_relative_to(workspace_path)
+    ):
+        raise RuntimeConfigurationError(
+            "runtime data and database paths must be outside the workspace"
+        )
+    data_dir.mkdir(parents=True, exist_ok=True)
     result = _build_runtime(
         settings,
         prepared,

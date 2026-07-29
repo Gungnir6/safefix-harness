@@ -742,6 +742,7 @@ class ApprovalStateMachine:
             frozen_action_json=stored.frozen_action_json,
             created_at=stored.created_at,
             expires_at=stored.expires_at,
+            rule_ids=stored.rule_ids,
             decided_at=stored.decided_at,
         )
 

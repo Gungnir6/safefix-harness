@@ -67,15 +67,7 @@ class TaskService:
         )
         snapshot = await loop.start(domain_task)
         self._loops[snapshot.run_id] = loop
-        approval_id = getattr(snapshot, "pending_approval_id", None)
-        if approval_id and self._approvals is not None:
-            capability = loop.take_approval_capability(approval_id)
-            if capability:
-                self._access[snapshot.run_id] = ApprovalAccess(
-                    self._approvals.get(approval_id),
-                    capability,
-                    secrets.token_urlsafe(24),
-                )
+        self._refresh_approval_access(snapshot, loop)
         self._remember_terminal(snapshot)
         return snapshot
 
@@ -102,7 +94,7 @@ class TaskService:
         if approval_id is None:
             raise TaskServiceError("run has no pending approval")
         snapshot = await loop.resume_approved(approval_id, token)
-        self._access.pop(run_id, None)
+        self._refresh_approval_access(snapshot, loop)
         self._remember_terminal(snapshot)
         return snapshot
 
@@ -112,7 +104,7 @@ class TaskService:
         if approval_id is None:
             raise TaskServiceError("run has no pending approval")
         snapshot = await loop.resume_rejected(approval_id, token)
-        self._access.pop(run_id, None)
+        self._refresh_approval_access(snapshot, loop)
         self._remember_terminal(snapshot)
         return snapshot
 
@@ -138,6 +130,24 @@ class TaskService:
             return self._loops[run_id]
         except KeyError as exc:
             raise TaskServiceError("run is not active in this process") from exc
+
+    def _refresh_approval_access(self, snapshot: RunSnapshot, loop: Any) -> None:
+        self._access.pop(snapshot.run_id, None)
+        approval_id = snapshot.pending_approval_id
+        if (
+            snapshot.status is not RunStatus.AWAITING_APPROVAL
+            or approval_id is None
+            or self._approvals is None
+        ):
+            return
+        capability = loop.take_approval_capability(approval_id)
+        if capability is None:
+            return
+        self._access[snapshot.run_id] = ApprovalAccess(
+            self._approvals.get(approval_id),
+            capability,
+            secrets.token_urlsafe(24),
+        )
 
     def _remember_terminal(self, snapshot: RunSnapshot) -> None:
         if (

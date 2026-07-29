@@ -22,7 +22,7 @@ from safefix.config import (
 from safefix.credentials import CredentialError, CredentialService
 from safefix.domain import RunStatus
 from safefix.execution_workspace import PreparedWorkspace, prepare_workspace
-from safefix.governance.approvals import ApprovalStateMachine
+from safefix.governance.approvals import ApprovalError, ApprovalStateMachine
 from safefix.governance.audit import AuditStore, AuditUnavailable
 from safefix.memory import MemoryStore
 from safefix.runtime import RuntimeConfigurationError, create_runtime
@@ -157,6 +157,137 @@ async def test_runtime_uses_real_agent_loop_and_persists_audit(
     assert [event.event_type for event in events]
     assert runtime.list_events(snapshot.run_id, after_sequence=2) == events[2:]
     await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_refreshes_capability_for_consecutive_approvals(
+    tmp_path: Path,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+    program = json.dumps(sys.executable)
+    actions = (
+        f'{{"type":"run_process","id":"first","reason":"first",'
+        f'"program":{program},"args":["-c","pass"]}}',
+        f'{{"type":"run_process","id":"second","reason":"second",'
+        f'"program":{program},"args":["-c","pass"]}}',
+        '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+    )
+    runtime = create_runtime(
+        _settings(),
+        prepared,
+        data_dir,
+        provider="mock",
+        credential_service=_credentials(),
+        mock_actions=actions,
+    )
+
+    first_wait = await runtime.service.create(
+        task="run two approved checks",
+        project_path=str(prepared.path),
+        provider="mock",
+    )
+    assert first_wait.status is RunStatus.AWAITING_APPROVAL
+    first_access = runtime.service.get_approval(first_wait.run_id)
+    second_wait = await runtime.service.approve(
+        first_wait.run_id, first_access.capability
+    )
+    second_access = runtime.service.get_approval(first_wait.run_id)
+
+    assert second_wait.status is RunStatus.AWAITING_APPROVAL
+    assert second_access.request.id != first_access.request.id
+    assert second_access.capability != first_access.capability
+    with pytest.raises(ApprovalError):
+        await runtime.service.approve(first_wait.run_id, first_access.capability)
+    assert runtime.service.get_approval(first_wait.run_id) == second_access
+
+    finished = await runtime.service.approve(
+        first_wait.run_id, second_access.capability
+    )
+    assert finished.status is RunStatus.SUCCESS
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_refreshes_capability_when_rejection_resumes_to_approval(
+    tmp_path: Path,
+) -> None:
+    prepared, data_dir = _prepared(tmp_path)
+    program = json.dumps(sys.executable)
+    actions = (
+        f'{{"type":"run_process","id":"first","reason":"first",'
+        f'"program":{program},"args":["-c","pass"]}}',
+        f'{{"type":"run_process","id":"second","reason":"second",'
+        f'"program":{program},"args":["-c","pass"]}}',
+        '{"type":"finish","id":"done","reason":"done","summary":"complete"}',
+    )
+    runtime = create_runtime(
+        _settings(),
+        prepared,
+        data_dir,
+        provider="mock",
+        credential_service=_credentials(),
+        mock_actions=actions,
+    )
+
+    first_wait = await runtime.service.create(
+        task="reject then approve",
+        project_path=str(prepared.path),
+        provider="mock",
+    )
+    assert first_wait.status is RunStatus.AWAITING_APPROVAL
+    first_access = runtime.service.get_approval(first_wait.run_id)
+    second_wait = await runtime.service.reject(
+        first_wait.run_id, first_access.capability
+    )
+    second_access = runtime.service.get_approval(first_wait.run_id)
+
+    assert second_wait.status is RunStatus.AWAITING_APPROVAL
+    assert second_access.request.id != first_access.request.id
+    assert second_access.capability != first_access.capability
+    with pytest.raises(ApprovalError):
+        await runtime.service.approve(first_wait.run_id, first_access.capability)
+    assert runtime.service.get_approval(first_wait.run_id) == second_access
+
+    finished = await runtime.service.approve(
+        first_wait.run_id, second_access.capability
+    )
+    assert finished.status is RunStatus.SUCCESS
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relative_parts",
+    ((), ("runtime-data",), ("missing", "..", "runtime-data")),
+    ids=("workspace", "workspace-child", "resolved-workspace-child"),
+)
+async def test_runtime_rejects_database_inside_prepared_workspace_before_creation(
+    tmp_path: Path,
+    relative_parts: tuple[str, ...],
+) -> None:
+    source = _fixture_project(tmp_path)
+    prepared = PreparedWorkspace("exec-1", source, source, "in_place", None)
+    data_dir = source.joinpath(*relative_parts)
+    resolved_data_dir = data_dir.resolve(strict=False)
+    runtime = None
+    try:
+        with pytest.raises(RuntimeConfigurationError, match="workspace"):
+            runtime = create_runtime(
+                _settings(),
+                prepared,
+                data_dir,
+                provider="mock",
+                credential_service=_credentials(),
+                mock_actions=(
+                    '{"type":"finish","id":"done","reason":"done",'
+                    '"summary":"complete"}',
+                ),
+            )
+    finally:
+        if runtime is not None:
+            await runtime.aclose()
+
+    assert not (resolved_data_dir / "safefix.sqlite3").exists()
 
 
 def test_mock_provider_requires_scripted_actions(tmp_path: Path) -> None:

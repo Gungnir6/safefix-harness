@@ -213,10 +213,12 @@ def _is_sensitive_key(key: str) -> bool:
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
-def _bounded_text(value: str) -> str:
-    if len(value) <= _MAX_RENDERED_VALUE_CHARS:
+def _bounded_text(
+    value: str, *, max_chars: int = _MAX_RENDERED_VALUE_CHARS
+) -> str:
+    if len(value) <= max_chars:
         return value
-    return value[:_MAX_RENDERED_VALUE_CHARS] + "…[已截断]"
+    return value[:max_chars] + "…[已截断]"
 
 
 def _unicode_escape(character: str) -> str:
@@ -229,13 +231,22 @@ def _unicode_escape(character: str) -> str:
     return f"\\u{high:04x}\\u{low:04x}"
 
 
-def _terminal_safe_json(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False)
+def _terminal_safe_text(value: str) -> str:
     return "".join(
         _unicode_escape(character)
         if unicodedata.category(character) in {"Cc", "Cf"}
         else character
-        for character in encoded
+        for character in value
+    )
+
+
+def _bounded_terminal_text(value: str) -> str:
+    return _bounded_text(_terminal_safe_text(value))
+
+
+def _terminal_safe_json(value: Any, *, sort_keys: bool = False) -> str:
+    return _terminal_safe_text(
+        json.dumps(value, ensure_ascii=False, sort_keys=sort_keys)
     )
 
 
@@ -246,7 +257,7 @@ def _safe_payload(value: Any, *, depth: int = 0) -> Any:
         mapping_result: dict[str, Any] = {}
         items = list(value.items())
         for key, item in items[:50]:
-            safe_key = _bounded_text(str(key))
+            safe_key = _bounded_terminal_text(str(key))
             mapping_result[safe_key] = (
                 "[REDACTED]"
                 if _is_sensitive_key(safe_key)
@@ -263,10 +274,10 @@ def _safe_payload(value: Any, *, depth: int = 0) -> Any:
             sequence_result.append(f"[{len(value) - 50} items omitted]")
         return sequence_result
     if isinstance(value, str):
-        return _bounded_text(value)
+        return _bounded_terminal_text(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value
-    return _bounded_text(str(value))
+    return _bounded_terminal_text(str(value))
 
 
 def _event_label(event: AuditEvent) -> str:
@@ -278,7 +289,10 @@ def _event_label(event: AuditEvent) -> str:
             return "验证通过"
         if category in {"TEST_FAILURE", "LINT_FAILURE", "TYPE_ERROR"}:
             return "验证失败"
-    return _EVENT_LABELS.get(event.event_type, _bounded_text(event.event_type))
+    return _EVENT_LABELS.get(
+        event.event_type,
+        _bounded_terminal_text(event.event_type),
+    )
 
 
 def _render_events(
@@ -291,14 +305,20 @@ def _render_events(
     for event in sorted(events, key=lambda item: item.sequence):
         if event.sequence <= last_sequence:
             continue
-        payload = json.dumps(
-            _safe_payload(event.redacted_payload),
-            ensure_ascii=False,
+        safe_payload = _safe_payload(event.redacted_payload)
+        payload = _terminal_safe_json(
+            safe_payload,
             sort_keys=True,
         )
         if len(payload) > _MAX_RENDERED_EVENT_CHARS:
-            payload = (
-                payload[: _MAX_RENDERED_EVENT_CHARS - 8] + "…[已截断]"
+            payload = _terminal_safe_json(
+                {
+                    "preview": _bounded_text(
+                        payload,
+                        max_chars=_MAX_RENDERED_EVENT_CHARS // 2,
+                    ),
+                    "truncated": True,
+                }
             )
         stdout.write(f"[{event.sequence}] {_event_label(event)}: {payload}\n")
         last_sequence = max(last_sequence, event.sequence)
@@ -316,9 +336,9 @@ def _approval_prompt(request: ApprovalRequest) -> str:
         safe = _safe_payload(raw)
         if not isinstance(safe, dict):
             raise ValueError
-        action_type = _bounded_text(str(safe.get("type", "unknown")))
-        reason = _terminal_safe_json(
-            _bounded_text(str(safe.get("reason", "未提供"))),
+        action_type = _bounded_terminal_text(str(raw.get("type", "unknown")))
+        reason = _bounded_text(
+            _terminal_safe_json(str(raw.get("reason", "未提供"))),
         )
         if action_type == "run_process":
             program_value = raw.get("program")
@@ -352,11 +372,15 @@ def _approval_prompt(request: ApprovalRequest) -> str:
             )
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
+    rule_ids = _bounded_text(
+        ", ".join(_terminal_safe_text(rule_id) for rule_id in request.rule_ids)
+    )
     return (
         "\n需要一次性审批\n"
         f"动作: {action_type}\n"
         f"{detail}\n"
         f"理由: {reason}\n"
+        f"规则: {rule_ids or '无/未知'}\n"
         "风险等级: MEDIUM\n"
         "Approve this action once? [y/N] "
     )
@@ -394,21 +418,29 @@ def _render_summary(
         )
         return summary.exit_code
 
-    stdout.write(f"\n运行结果: {summary.status}\n")
+    stdout.write(f"\n运行结果: {_bounded_terminal_text(summary.status)}\n")
     if summary.run_id is not None:
-        stdout.write(f"运行 ID: {summary.run_id}\n")
-    stdout.write(f"模式: {summary.mode}\n")
+        stdout.write(f"运行 ID: {_bounded_terminal_text(summary.run_id)}\n")
+    stdout.write(f"模式: {_bounded_terminal_text(summary.mode)}\n")
     if summary.stop_reason:
-        stdout.write(f"停止原因: {_bounded_text(summary.stop_reason)}\n")
+        stdout.write(f"停止原因: {_bounded_terminal_text(summary.stop_reason)}\n")
+    changed_files = _bounded_text(
+        ", ".join(
+            _bounded_terminal_text(changed_file)
+            for changed_file in summary.changed_files
+        )
+    )
     stdout.write(
         "修改文件: "
-        + (", ".join(summary.changed_files) if summary.changed_files else "无")
+        + (changed_files if changed_files else "无")
         + "\n"
     )
     if summary.workspace is not None:
-        stdout.write(f"结果工作区: {summary.workspace}\n")
+        stdout.write(f"结果工作区: {_bounded_terminal_text(summary.workspace)}\n")
     if summary.audit_database is not None:
-        stdout.write(f"审计数据库: {summary.audit_database}\n")
+        stdout.write(
+            f"审计数据库: {_bounded_terminal_text(summary.audit_database)}\n"
+        )
     return summary.exit_code
 
 
@@ -436,18 +468,22 @@ def _write_start_banner(
         stdout.write("警告：原地模式将直接修改原项目。\n")
     else:
         stdout.write("运行模式：隔离副本，原项目不会被修改。\n")
-    stdout.write(f"有效工作区: {prepared.path}\n")
-    stdout.write(f"模型: {provider}/{model_name}\n")
+    stdout.write(f"有效工作区: {_bounded_terminal_text(str(prepared.path))}\n")
+    model = _bounded_text(
+        f"{_terminal_safe_text(provider)}/{_terminal_safe_text(model_name)}"
+    )
+    stdout.write(f"模型: {model}\n")
 
 
 def _known_error(error: BaseException, provider: str) -> tuple[int, str] | None:
     if isinstance(error, ConfigError):
-        return 2, f"配置错误：{error}"
+        return 2, f"配置错误：{_bounded_terminal_text(str(error))}"
     if isinstance(error, CredentialError):
         return (
             3,
             "凭据错误：未能读取模型凭据。请运行 "
-            f"`safefix credentials set --provider {provider}`。",
+            "`safefix credentials set --provider "
+            f"{_bounded_terminal_text(provider)}`。",
         )
     if isinstance(error, (ProviderError, RuntimeConfigurationError)):
         return 3, "模型供应商错误：请检查 provider、模型配置和 Mock 脚本。"

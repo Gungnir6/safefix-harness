@@ -1574,6 +1574,7 @@ Update this table only with actual commits; do not prefill hashes.
 - Task 3（真实 CLI、审批交互与结果输出）：`15c66bf`；审批交互、安全完整展示修复为 `84651fc`、`05da5b5`。RED 覆盖 parser/template、缺少 runner、拒绝退出码、JSON stdout、动作边界与终端控制字符；任务最终门禁为 72 passed、1 条既有第三方 warning，Ruff 与 mypy 通过。
 - Task 4（完整 Mock 修复流程）：`1489907`；动作级 repair budget 与广义占位符失败关闭修复为 `0651614`。RED 覆盖缺失模板/loader、finish 前提前成功、补丁预算和占位符绕过；最终受影响回归为 67 passed、1 条既有第三方 warning，Ruff 与 mypy 通过。
 - Task 5（fresh wheel、CI、教程与最终证据）：本提交 `docs(cli): 完成真实运行与分发说明`。新增 Linux CI fresh-wheel smoke、声明 `build>=1.2,<2`、真实中文 CLI 教程、Windows fresh-wheel 与手工旅程证据。fresh wheel 首轮暴露 demo validator 只在 dev extra；新增分发依赖测试先 RED，再把既有 `pytest>=8.3,<9` 约束移到运行时依赖后 GREEN。
+- Final review fixes 轮次 1/5：本提交修复连续审批 capability 刷新、原地模式与运行时 SQLite 数据目录边界、普通 CLI 动态终端输出的 Cc/Cf 安全编码，以及审批提示的安全有界 `rule_ids`。精确 RED 覆盖真实双审批/拒绝恢复、解析别名与建库前失败、事件/摘要/JSON/规则显示；受影响回归为 244 unit + 64 integration/web，Ruff 与 6 个变更源码的 mypy 通过。按审查要求未运行全套。
 
 ### Task 5 本地证据（2026-07-28 +08:00）
 

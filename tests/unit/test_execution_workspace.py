@@ -130,6 +130,39 @@ def test_prepare_workspace_rejects_data_directory_inside_source(tmp_path: Path) 
         )
 
 
+@pytest.mark.parametrize(
+    "relative_parts",
+    (
+        (),
+        ("data",),
+        ("missing", ".."),
+        ("missing", "..", "data"),
+    ),
+    ids=("source", "source-child", "resolved-source", "resolved-child"),
+)
+def test_in_place_workspace_rejects_resolved_data_directory_inside_workspace(
+    tmp_path: Path,
+    relative_parts: tuple[str, ...],
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    data_dir = source.joinpath(*relative_parts)
+    resolved_data_dir = data_dir.resolve(strict=False)
+
+    with pytest.raises(
+        WorkspacePreparationError,
+        match="data directory must not be inside the project",
+    ):
+        prepare_workspace(
+            source / ".." / source.name,
+            data_dir,
+            in_place=True,
+            sensitive_patterns=(),
+        )
+
+    assert not (resolved_data_dir / "safefix.sqlite3").exists()
+
+
 def test_prepare_workspace_refuses_existing_execution_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
