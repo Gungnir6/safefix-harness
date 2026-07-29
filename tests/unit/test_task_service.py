@@ -99,6 +99,35 @@ async def test_create_accepts_snapshot_without_status_when_no_approval() -> None
 
 
 @pytest.mark.asyncio
+async def test_pending_snapshot_without_status_preserves_existing_access() -> None:
+    snapshot = SimpleNamespace(
+        run_id="run-1",
+        pending_approval_id="approval-1",
+    )
+
+    class LegacyLoop:
+        async def start(self, task: object) -> object:
+            del task
+            return snapshot
+
+    service = TaskService(
+        lambda project_path, provider: LegacyLoop(),
+        RecordingRuns(_snapshot(RunStatus.SUCCESS)),
+    )
+    existing_access = object()
+    service._access["run-1"] = existing_access  # type: ignore[assignment]
+
+    with pytest.raises(AttributeError):
+        await service.create(
+            task="invalid injected run",
+            project_path="C:/workspace",
+            provider="mock",
+        )
+
+    assert service._access["run-1"] is existing_access
+
+
+@pytest.mark.asyncio
 async def test_task_service_separates_project_identity_and_workspace() -> None:
     loop = SuccessfulLoop(changed_files=("calculator.py",))
     memory = RecordingMemory()

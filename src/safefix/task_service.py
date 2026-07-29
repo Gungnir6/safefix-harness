@@ -132,14 +132,14 @@ class TaskService:
             raise TaskServiceError("run is not active in this process") from exc
 
     def _refresh_approval_access(self, snapshot: RunSnapshot, loop: Any) -> None:
-        self._access.pop(snapshot.run_id, None)
         approval_id = getattr(snapshot, "pending_approval_id", None)
         if approval_id is None:
+            self._access.pop(snapshot.run_id, None)
             return
-        if (
-            getattr(snapshot, "status", None) is not RunStatus.AWAITING_APPROVAL
-            or self._approvals is None
-        ):
+        if snapshot.status is not RunStatus.AWAITING_APPROVAL:
+            return
+        self._access.pop(snapshot.run_id, None)
+        if self._approvals is None:
             return
         capability = loop.take_approval_capability(approval_id)
         if capability is None:
