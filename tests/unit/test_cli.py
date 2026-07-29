@@ -43,6 +43,55 @@ def test_run_parser_exposes_safe_defaults() -> None:
     assert args.json is False
 
 
+def test_setup_parser_exposes_project_config_and_provider() -> None:
+    args = build_parser().parse_args(
+        [
+            "setup",
+            "C:/project",
+            "--config",
+            "C:/config.yaml",
+            "--provider",
+            "custom-provider",
+        ]
+    )
+
+    assert args.command == "setup"
+    assert args.project == Path("C:/project")
+    assert args.config == Path("C:/config.yaml")
+    assert args.provider == "custom-provider"
+
+
+def test_no_arguments_selects_chat_in_current_directory() -> None:
+    args = build_parser().parse_args([])
+
+    assert args.command == "chat"
+    assert args.project == Path(".")
+    assert args.config is None
+    assert args.data_dir is None
+    assert args.provider == "openai-compatible"
+
+
+def test_explicit_chat_parser_accepts_runtime_locations() -> None:
+    args = build_parser().parse_args(
+        [
+            "chat",
+            "C:/project",
+            "--config",
+            "C:/config.yaml",
+            "--data-dir",
+            "C:/data",
+            "--provider",
+            "custom-provider",
+        ]
+    )
+
+    assert args.command == "chat"
+    assert args.project == Path("C:/project")
+    assert args.config == Path("C:/config.yaml")
+    assert args.data_dir == Path("C:/data")
+    assert args.provider == "custom-provider"
+
+
 def test_config_init_writes_valid_template_and_refuses_overwrite(
     tmp_path: Path,
 ) -> None:

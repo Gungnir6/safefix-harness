@@ -269,3 +269,12 @@
 - 终端：普通事件、审批和摘要/banner 的动态文本先将 Unicode Cc/Cf 编码为可见 `\\u` 序列，再有界截断；事件 payload 保持终端安全 JSON，机器 `--json` 仍由原始 `RunSummary` 直接序列化。审批请求携带已持久化规则并安全有界显示，空规则显示“无/未知”；Web API 响应字段未扩张。
 - TDD / 验证：连续审批 2 个 RED 在第二次 `get_approval` 失败，修复后 2 passed；数据边界 7 个 RED 均为未拒绝，修复后 7 passed；事件/摘要/JSON/规则精确用例修复后 7 passed。最终受影响单元回归 244 passed；integration/Web 回归 64 passed、1 条既有 `StarletteDeprecationWarning`；Ruff 全通过；mypy 对 6 个变更源码无问题；`git diff --check` 通过。按上游要求未运行全套，未虚称全量结果。
 - 技能 / 经验：使用 `receiving-code-review`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。审批 capability 的生命周期必须跟随每个 pending approval，而不是跟随整个 run；所有人类终端输出应在边界统一编码，机器 JSON 契约保持独立。
+## T18 — Lightweight Conversational CLI
+
+- 时间：2026-07-29 +08:00；分支 / 工作树：`conversational-cli` / `.worktrees/conversational-cli`。
+- 目标：保留 `safefix run` 自动化入口，同时让安装后的普通用户执行无参数 `safefix` 即可完成首次配置并连续提交自然语言修复任务。
+- 架构：新增 `cli_setup.py` 和 `cli_chat.py` 两个窄边界；对话中的每个任务继续调用唯一的 `run_cli`，后者只增加最终 `RunSummary` 观察器，不复制运行时、策略、审批、验证或审计逻辑。
+- 安全：API Key 继续使用隐藏输入和现有 keyring；默认只创建隔离工作区；`/diff` 只执行固定参数的 `git -C <workspace> diff --no-ext-diff --`，不拼接用户输入。
+- TDD：摘要观察接口先得到 2 failed，修复后 `37 passed`；setup 模块先因缺失产生 collection RED，最小实现后 setup/CLI 为 `12 passed`；chat 模块先因缺失产生 collection RED，随后抓到无参数 command 仍为 `None`，修复后 chat/CLI 为 `14 passed`。
+- 文档：同步更新 README、PLAN 和本日志。
+- 最终门禁：全量 pytest `972 passed, 2 skipped, 1 warning in 56.47s`；唯一 warning 为既有 FastAPI TestClient 的 `StarletteDeprecationWarning`。Ruff 全通过；mypy 对 35 个源码文件无问题；guardrail、feedback、approval 三个机制演示均 PASS；`git diff --check` 退出码 0，仅报告 Windows 的预期 LF/CRLF 转换提示。

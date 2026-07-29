@@ -763,6 +763,54 @@ def test_runtime_closes_when_run_creation_aborts(
     assert runtime.closed == 1
 
 
+def test_run_cli_reports_success_summary_to_observer(tmp_path: Path) -> None:
+    service = FakeService(
+        _snapshot(
+            RunStatus.SUCCESS,
+            stop_reason="validation succeeded",
+            changed_files=("calculator.py",),
+        )
+    )
+    runtime = FakeRuntime(tmp_path, service)
+    summaries: list[object] = []
+    prepared = _prepared(tmp_path)
+
+    result = run_cli(
+        _options(tmp_path),
+        credential_service=FakeCredentials(),
+        stdout=StringIO(),
+        runtime_factory=lambda *args, **kwargs: runtime,
+        workspace_factory=_workspace_factory(prepared),
+        summary_observer=summaries.append,
+    )
+
+    assert result == 0
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.status == "SUCCESS"
+    assert summary.exit_code == 0
+    assert summary.workspace == str(prepared.path)
+
+
+def test_run_cli_reports_known_error_summary_to_observer(tmp_path: Path) -> None:
+    summaries: list[object] = []
+
+    result = run_cli(
+        _options(tmp_path, config=tmp_path / "missing.yaml"),
+        credential_service=FakeCredentials(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        summary_observer=summaries.append,
+    )
+
+    assert result == 2
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary.status == "ERROR"
+    assert summary.exit_code == 2
+    assert summary.workspace is None
+
+
 def test_approval_prompt_describes_frozen_action_without_sensitive_ids() -> None:
     access = _approval()
 

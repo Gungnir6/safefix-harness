@@ -27,17 +27,37 @@ wheel 的运行时依赖包括 FastAPI、HTTPX、Jinja2、keyring、pathspec、P
 
 ## Real CLI Tutorial
 
-先生成完整的保守配置。命令默认写入当前目录的 `safefix.yaml`，文件已存在时拒绝覆盖：
+安装后，进入希望修复的项目并直接启动 SafeFix：
 
-```bash
-safefix config init
+```powershell
+cd C:\path\to\project
+safefix
 ```
 
-按 OpenAI-compatible 服务修改 `llm.endpoint` 与 `llm.model`，并检查 `validators` 中的 Python 路径和命令适合目标项目。随后验证配置：
+首次启动会询问模型接口、模型名称和 API Key。直接回车可采用
+OpenAI-compatible 默认配置；API Key 使用隐藏输入并存入系统 keyring，不写入
+YAML。配置完成后直接输入自然语言任务：
+
+```text
+SafeFix > 修复当前项目里失败的测试
+SafeFix > 再检查一下类型错误
+SafeFix > /diff
+SafeFix > /exit
+```
+
+每条任务都复用真实的 AgentLoop、策略、审批、验证和审计机制，并默认在持久化隔离
+副本中执行，不修改原项目。`/status` 查看最近结果，`/diff` 查看结果工作区的 Git
+改动，`/new` 清除当前会话状态，`/help` 显示全部命令。显式入口
+`safefix chat C:\path\to\project` 与上述用法等价。
+
+也可以先单独运行配置向导：
 
 ```bash
-safefix config validate
+safefix setup C:\path\to\project
 ```
+
+向导生成 `safefix.yaml` 后，应检查 `validators` 中的 Python 路径和命令是否适合
+目标项目。已有配置会被验证并保留，不会被覆盖。
 
 ## Credentials
 
@@ -49,7 +69,7 @@ safefix credentials status --provider openai-compatible
 safefix credentials clear --provider openai-compatible
 ```
 
-默认运行会把项目复制到持久化隔离工作区，原项目不会被修改：
+需要脚本、CI 或一次性可复现实验时，继续使用非对话式 `run`：
 
 ```bash
 safefix run C:\path\to\project --task "修复失败的测试"

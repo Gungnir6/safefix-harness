@@ -1601,3 +1601,13 @@ Update this table only with actual commits; do not prefill hashes.
 10. pytest/Ruff/mypy/demo/diff 本地通过；Gitleaks 与 Docker jobs 保留在 CI。当前 Docker daemon 不可用，当前提交外部 CI 尚未运行。
 11. README 的安装、真实运行、Mock、凭据、隔离、原地和限制说明：Task 5。
 12. 公网 WebUI 与 GitHub Release：映射到 Final Gate 的外部状态步骤，当前未完成且未虚构链接。
+# T18 — Lightweight Conversational CLI
+
+- [x] 无参数 `safefix` 默认在当前项目启动轻量对话模式。
+- [x] 增加 `safefix chat [project]` 和 `safefix setup [project]`。
+- [x] 首次配置向导生成可加载配置，并通过现有 keyring 服务隐藏保存 API Key。
+- [x] 自然语言任务复用现有 `run_cli`、`TaskService` 和 `AgentLoop`，不建立第二套执行循环。
+- [x] 支持 `/help`、`/status`、`/diff`、`/new`、`/exit`，默认保持隔离工作区。
+- [x] `run_cli` 提供窄的最终摘要观察接口，供对话状态和只读 diff 使用。
+- [x] README 将安装后的首选体验改为 `cd <project>` 后直接运行 `safefix`。
+- [x] 完整 pytest、Ruff、mypy、三个机制 demo 和 diff check 最终门禁。
