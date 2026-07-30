@@ -312,3 +312,19 @@
 - TDD：摘要观察接口先得到 2 failed，修复后 `37 passed`；setup 模块先因缺失产生 collection RED，最小实现后 setup/CLI 为 `12 passed`；chat 模块先因缺失产生 collection RED，随后抓到无参数 command 仍为 `None`，修复后 chat/CLI 为 `14 passed`。
 - 文档：同步更新 README、PLAN 和本日志。
 - 最终门禁：全量 pytest `972 passed, 2 skipped, 1 warning in 56.47s`；唯一 warning 为既有 FastAPI TestClient 的 `StarletteDeprecationWarning`。Ruff 全通过；mypy 对 35 个源码文件无问题；guardrail、feedback、approval 三个机制演示均 PASS；`git diff --check` 退出码 0，仅报告 Windows 的预期 LF/CRLF 转换提示。
+
+## Final Delivery — Render、快速公开演示与 v0.1.1
+
+- 时间：2026-07-30 +08:00；主仓库：[Gungnir6/safefix-harness](https://github.com/Gungnir6/safefix-harness)。
+- 用户决策：最终同时交付 CLI Release 与可访问 WebUI；优先满足课程清单，不继续增加非必要产品功能。
+- Render 恢复：精简提交曾删除 `Dockerfile` 和 `render.yaml`，导致 Blueprint 在 `main` 报告文件不存在。分支 `restore-render-deployment` 恢复两个文件并新增部署回归测试；提交 `4faacb9`，PR [#7](https://github.com/Gungnir6/safefix-harness/pull/7)，合并提交 `101f3cc`。完整验证为 961 passed、2 skipped，Ruff 通过；本机 Docker daemon 未运行，因此没有虚称本地镜像构建。
+- 线上部署：Render 服务 [https://safefix-public-demo.onrender.com](https://safefix-public-demo.onrender.com) 上线，首页和 `/health` 返回 200。
+- 性能排障：线上 feedback 场景实测约 22 秒。调用链为 `PublicDemoService.create → run_feedback_demo → ValidatorRunner.run`，一次请求连续启动三次 pytest；免费实例等待期间看似卡死。
+- 性能修复：分支 `fast-public-feedback-demo` 先增加“公开 feedback 不得启动子进程验证器”的 RED，再用确定性内存 `ToolResult`、`FeedbackEngine` 与 `ScriptedMockLLM` 保留失败→错误补丁→再次失败→正确补丁→通过五段证据；CLI 的真实 fixture/pytest 演示不变。提交 `4c547b1`，PR [#8](https://github.com/Gungnir6/safefix-harness/pull/8)，合并提交 `bd97a76`。
+- 环境发现：仓库 `.venv` 的 editable install 仍指向旧 `.worktrees/conversational-cli`；后续源码验证显式设置 `PYTHONPATH=<current>/src`，避免测试加载旧工作树。修复后本地公开 feedback 接口为 0.021 秒；完整门禁 962 passed、2 skipped，Ruff 和 mypy 通过。
+- 重新部署验证：guardrail `SUCCESS` / 0.61 秒 / `TOOL_CALLS:0`；feedback `SUCCESS` / 0.38 秒 / `VALIDATION:PASS`；approval `SUCCESS` / 0.40 秒 / `TOOL_CALLS:1`；健康状态为 `ok`。
+- Release：分支 `release-v0.1.1` 将包和 FastAPI 元数据升级到 0.1.1，并更新 README 安装命令；提交 `2446ec9`，PR [#9](https://github.com/Gungnir6/safefix-harness/pull/9)，合并提交 `2026802`。
+- 构建排障：隔离 build 在临时环境下载 `hatchling` 时受网络限制，并因 Windows 中文错误输出触发 UTF-8 解码异常；确认 Python 3.12.3 环境已安装 hatchling 1.31.0 后，使用 `python -m build --wheel --no-isolation` 从合并提交完成构建。
+- Release 验证：fresh target 安装报告版本 0.1.1，guardrail、feedback、approval 全部 PASS；发布 [v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1) 后重新下载资产，SHA-256 与本地一致：`5bfb28a7c4c733d60befc9f83278d4197c93b1ed24196e3100989d8260065bed`。
+- 技能 / 流程：使用 `systematic-debugging`、`test-driven-development`、`verification-before-completion`、`finishing-a-development-branch` 与 GitHub 发布流程；没有 subagent，也没有学生手工代码修改。
+- 最终仓库决策：学生于 2026-07-30 明确确认 NJU 历史镜像无需继续维护，最终以公开 GitHub 仓库、GitHub PASS CI、v0.1.1 Release 和 Render WebUI URL 作为提交入口；文档不虚称 NJU 同步或 GitLab 最终流水线已发生。
