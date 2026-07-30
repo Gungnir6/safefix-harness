@@ -53,6 +53,8 @@ safefix serve --public-demo --host 127.0.0.1 --port 8000
 
 然后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。WebUI 只运行内置 Mock 场景，不接收真实项目、真实 Key 或任意命令。
 
+无需安装也可访问线上演示：[SafeFix Public Demo](https://safefix-public-demo.onrender.com)。免费实例休眠后的首次访问可能需要等待 Render 唤醒。
+
 若要验证一次完整的“失败测试 → 修改 → 测试通过”闭环：
 
 ```powershell
@@ -79,7 +81,7 @@ safefix run C:\path\to\project --task "修复失败的测试"
 
 ## Distribution
 
-本项目选择“CLI Release 链接”作为最终分发方式，本地 WebUI 仅用于 Mock 演示，不要求 Render 或 Docker。构建 wheel：
+本项目同时提供 CLI Release 和 [在线 WebUI](https://safefix-public-demo.onrender.com)。构建 wheel：
 
 ```powershell
 python -m build --wheel
