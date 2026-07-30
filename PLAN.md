@@ -1536,9 +1536,9 @@ For every formal task T01–T17:
 - [ ] Student verifies the NJU Git submission repository/access and, if required, the public GitHub mirror.
 - [ ] Student verifies every worktree has a corresponding PR and that commit history is not a single bulk commit.
 - [x] Student verifies `SPEC.md`, `PLAN.md`, `SPEC_PROCESS.md`, `AGENT_LOG.md`, `REFLECTION.md`, `README.md`, source, tests, demos, distribution and CI files are present.
-- [ ] Student verifies no real credential exists in working tree, Git history, CI variables shown in logs, screenshots or submitted archives.
-- [ ] Student verifies the final CI/CD execution is PASS and the GitHub Release contains the installable wheel; local Mock WebUI is supporting evidence.
-- [ ] Invoke `superpowers:finishing-a-development-branch` and choose merge/PR/keep only after fresh verification output.
+- [x] Student verifies no real credential exists in working tree or Git history; final Gitleaks checks passed and GitHub masked authentication output.
+- [x] Student verifies the final CI/CD execution is PASS and [GitHub Release v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0) contains the installable wheel; local Mock WebUI is supporting evidence.
+- [x] Invoke `superpowers:finishing-a-development-branch` and choose merge/PR/keep only after fresh verification output.
 
 ## Task Status Ledger
 
@@ -1586,7 +1586,7 @@ Update this table only with actual commits; do not prefill hashes.
 - 第一轮完整门禁：pytest `942 passed, 2 skipped, 1 warning in 58.59s`；warning 是既有 FastAPI TestClient 的 `StarletteDeprecationWarning`。Ruff `All checks passed!`；mypy `Success: no issues found in 33 source files`；三个 demo PASS；`git diff --check` exit 0。
 - 清理：删除 `.smoke-venv`、`dist`、`.manual-data`、`.manual-safefix.yaml` 及审查轮的 `.wheel-smoke-*` 前，均解析为当前工作树的严格后代路径；清理后 Git 状态只包含预期跟踪文件。
 - Docker：本机 `docker_engine` named pipe 不存在，Docker daemon 未运行，因此没有执行 image build/container demo，也不宣称通过。
-- 外部状态：当前提交尚无 GitHub Actions 结果、GitHub Release URL 或 Render 公网 URL；这些仍是集成后需要账户权限的独立步骤。
+- 历史状态：该轮当时尚无 GitHub Actions 或 Release；最终交付已改为并完成 [v0.1.0 CLI Release](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)，Render 不再属于最终范围。
 
 ### 设计验收映射
 
@@ -1601,7 +1601,7 @@ Update this table only with actual commits; do not prefill hashes.
 9. Mock 端到端、provider 传输、隔离与分发入口：Task 2/4/5。
 10. pytest/Ruff/mypy/demo/diff 本地通过；Gitleaks 与 fresh-wheel smoke 保留在 CI。
 11. README 的安装、真实运行、Mock、凭据、隔离、原地和限制说明：Task 5。
-12. GitHub Release：映射到 Final Gate 的外部状态步骤，当前未完成且未虚构链接；WebUI 仅需本地 Mock 演示。
+12. GitHub Release：最终已发布 [v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)；WebUI 仅需本地 Mock 演示。
 
 # T18 — Lightweight Conversational CLI（最终范围中撤销）
 
@@ -1616,4 +1616,4 @@ Update this table only with actual commits; do not prefill hashes.
 - [x] 运行完整 pytest、Ruff、mypy、三项 demo、wheel fresh-install smoke 和 `git diff --check`。
 - [x] 修复 PR #3 的 Gitleaks pull_request 令牌契约；回归测试先 RED 后 8 passed。
 - [x] 学生本人完成 `REFLECTION.md`；正文约 2295 个非空白字符，覆盖全部必答问题，智能体未修改正文。
-- [ ] 创建 GitHub Release 并上传 wheel。
+- [x] 创建 [GitHub Release v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0) 并上传已验证 wheel。
