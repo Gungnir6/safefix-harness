@@ -1,4 +1,4 @@
-stages: [test, quality, build]
+stages: [test, quality]
 
 unit-test:
   stage: test
@@ -28,14 +28,3 @@ secret-scan:
     GIT_DEPTH: "0"
   script:
     - gitleaks git . --redact --no-banner
-
-image-build:
-  stage: build
-  image:
-    name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27-cli
-  services:
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:27-dind
-      alias: docker
-  needs: [unit-test, lint-type, secret-scan]
-  script:
-    - docker build --tag safefix-harness:$CI_COMMIT_SHA .

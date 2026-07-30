@@ -1,5 +1,23 @@
 # AGENT_LOG
 
+## Final Minimal Submission Trim
+
+- 时间：2026-07-30 +08:00；分支：`minimal-submission`；学生明确确认采用保守最小版。
+- 删除：无参数对话模式、`chat`、`setup`、专用模块/测试/摘要观察器、Dockerfile、Render Blueprint 和容器 CI jobs。
+- 保留：自研 AgentLoop、治理/审批/审计/反馈/记忆、Scripted Mock、三个确定性机制演示、本地 Mock WebUI、显式 CLI、wheel 和双平台 CI 配置。
+- 文档：README 与现行 SPEC 改为 wheel + Mock 验收；PLAN、SPEC_PROCESS 和本日志保留历史事实，同时标明后续范围调整。
+- TDD：CLI 契约先得到 3 failed 后为 63 passed；分发契约先得到 2 failed 后为 7 passed；最终聚焦回归 70 passed。
+- 最终门禁：pytest `959 passed, 2 skipped, 1 warning in 59.06s`；Ruff 全通过；mypy 对 33 个源码文件无问题；guardrail、feedback、approval 全部 PASS；`git diff --check` 通过。唯一 warning 是既有 FastAPI TestClient 第三方弃用提示。
+- 分发验证：隔离构建在 Windows 网络错误输出处触发 `build` UTF-8 解码缺陷，改用已验证环境的 `--no-isolation` 后成功生成 wheel；全新虚拟环境联网安装 wheel 后，`safefix --help` 只列出 5 个保留子命令，三个 Mock demo 全 PASS。随后安全删除 `dist/` 和 smoke 环境。
+- 人工项：`REFLECTION.md` 必须由学生本人撰写；GitHub Release 及 wheel 上传需要在最终代码合并和 CI 通过后完成。
+
+### PR #3 CI 修复
+
+- 时间：2026-07-30 +08:00；PR：[GitHub #3](https://github.com/Gungnir6/safefix-harness/pull/3)。
+- 现象：同一提交的 push 检查成功、pull_request 检查失败；pytest、Ruff、mypy、wheel smoke 和三个演示均成功，只有 Gitleaks 步骤失败。
+- 根因：`gitleaks/gitleaks-action@v2` 的当前 PR 扫描要求显式接收 `GITHUB_TOKEN`，日志明确报告缺失令牌。
+- TDD：新增分发契约测试先因 `KeyError: 'env'` RED；为 Gitleaks 步骤映射 `${{ secrets.GITHUB_TOKEN }}` 后，分发回归 8 passed，Ruff 与 `git diff --check` 通过。
+
 本文件只记录课程要求的关键过程证据：task 编号与时间戳、Superpowers 技能、关键 prompt/context、subagent 产出或 commit、人工修改及原因、经验总结。普通命令与无关环境信息不记录。
 
 正式记录从 `PLAN.md` 任务执行阶段开始。
