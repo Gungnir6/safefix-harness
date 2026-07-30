@@ -14,17 +14,17 @@ Windows/Conda 用户推荐直接创建独立环境，避免现有 `(base)` 环�
 conda create -n safefix python=3.12 -y
 conda activate safefix
 python --version
-python -m pip install .\safefix_harness-0.1.0-py3-none-any.whl
+python -m pip install .\safefix_harness-0.1.1-py3-none-any.whl
 safefix-demo all
 ```
 
-正式分发链接：[SafeFix Harness v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)。上述 wheel 文件从该页面下载。
+正式分发链接：[SafeFix Harness v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1)。上述 wheel 文件从该页面下载。
 
 没有 Conda 时，先确认 `python --version` 显示 `3.12.x`，再使用独立虚拟环境：
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install .\safefix_harness-0.1.0-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\safefix_harness-0.1.1-py3-none-any.whl
 .\.venv\Scripts\safefix-demo.exe all
 ```
 
@@ -87,7 +87,7 @@ safefix run C:\path\to\project --task "修复失败的测试"
 python -m build --wheel
 ```
 
-GitHub Actions 和保留的 GitLab CI 执行 pytest、Ruff、mypy、fresh-wheel CLI smoke 与 secret scan。`v0.1.0` 已从通过 CI 的 `main` 构建并发布，wheel 的 SHA-256 为 `15689a3f0ee1fbb84645f9745a467aed97627cd0f7688d19c69841bf3bc35c60`。
+GitHub Actions 和保留的 GitLab CI 执行 pytest、Ruff、mypy、fresh-wheel CLI smoke 与 secret scan。`v0.1.1` 从通过 CI 的 `main` 构建并发布，Release 页面同时提供 wheel 与校验信息。
 
 ## Project Structure
 
