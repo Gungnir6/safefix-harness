@@ -158,6 +158,25 @@ def test_public_demo_runs_inside_the_api_event_loop() -> None:
     assert response.json()["status"] == "SUCCESS"
 
 
+def test_public_feedback_demo_does_not_launch_subprocess_validators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reject_subprocess_validation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("public feedback demo launched a subprocess validator")
+
+    monkeypatch.setattr(
+        "safefix.demo.ValidatorRunner.run", reject_subprocess_validation
+    )
+    client = TestClient(
+        create_app(AppDependencies(service=PublicDemoService(), public_demo=True))
+    )
+
+    response = client.post("/api/runs", json={"task": "feedback"})
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "SUCCESS"
+
+
 def test_public_demo_exposes_chinese_explanations_and_machine_codes() -> None:
     client = TestClient(
         create_app(AppDependencies(service=PublicDemoService(), public_demo=True))

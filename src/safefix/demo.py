@@ -30,6 +30,7 @@ from safefix.domain import (
     RunSnapshot,
     RunStatus,
     RunProcessAction,
+    ToolResult,
 )
 from safefix.feedback import FeedbackEngine
 from safefix.governance.approvals import ActionMismatch, ApprovalAlreadyUsed
@@ -181,6 +182,71 @@ def run_feedback_demo() -> DemoResult:
     return DemoResult("feedback", events[-1] == "VALIDATION:PASS", events, not workspace.exists())
 
 
+async def _public_feedback_events() -> tuple[str, ...]:
+    feedback = FeedbackEngine()
+    initial = ToolResult(
+        action_id="pytest",
+        success=False,
+        exit_code=1,
+        stdout_summary="1 failed",
+    )
+    initial_feedback = feedback.from_results((initial,), (), 5, 2)
+    assert initial_feedback.category is FeedbackCategory.TEST_FAILURE
+
+    wrong = await _parse_scripted(
+        {
+            "type": "apply_patch",
+            "id": "wrong-patch",
+            "reason": "first repair attempt",
+            "path": "calculator.py",
+            "expected_sha256": "0" * 64,
+            "old_text": "return left - right",
+            "new_text": "return left * right",
+            "expected_replacements": 1,
+        }
+    )
+    still_failing = ToolResult(
+        action_id="pytest",
+        success=False,
+        exit_code=1,
+        stdout_summary="1 failed",
+    )
+    repeated_feedback = feedback.from_results((still_failing,), (), 4, 1)
+    assert repeated_feedback.category is FeedbackCategory.TEST_FAILURE
+
+    correct = await _parse_scripted(
+        {
+            "type": "apply_patch",
+            "id": "correct-patch",
+            "reason": f"repair from {repeated_feedback.category.value}",
+            "path": "calculator.py",
+            "expected_sha256": "1" * 64,
+            "old_text": "return left * right",
+            "new_text": "return left + right",
+            "expected_replacements": 1,
+        }
+    )
+    assert isinstance(wrong, ApplyPatchAction)
+    assert isinstance(correct, ApplyPatchAction)
+    assert wrong.new_text != correct.new_text
+
+    passing = ToolResult(action_id="pytest", success=True, exit_code=0)
+    passing_feedback = feedback.from_results((passing,), ("calculator.py",), 3, 0)
+    assert passing_feedback.category is FeedbackCategory.VALIDATION_SUCCESS
+    return (
+        "VALIDATION:FAIL",
+        "PATCH:WRONG",
+        "VALIDATION:STILL_FAIL",
+        "PATCH:CORRECT",
+        "VALIDATION:PASS",
+    )
+
+
+def run_public_feedback_demo() -> DemoResult:
+    events = asyncio.run(_public_feedback_events())
+    return DemoResult("feedback", True, events, True)
+
+
 def run_approval_demo() -> DemoResult:
     with _isolated_fixture() as workspace:
         database = workspace / "approvals.sqlite3"
@@ -234,6 +300,7 @@ SCENARIOS: dict[str, Callable[[], DemoResult]] = {
     "feedback": run_feedback_demo,
     "approval": run_approval_demo,
 }
+_PUBLIC_SCENARIOS = {**SCENARIOS, "feedback": run_public_feedback_demo}
 
 _SCENARIO_TITLES = {
     "guardrail": "安全边界演示",
@@ -320,7 +387,7 @@ class PublicDemoService:
         scenario = task.strip().lower()
         if scenario not in SCENARIOS:
             scenario = "guardrail"
-        result = await asyncio.to_thread(run_scenario, scenario)
+        result = await asyncio.to_thread(_PUBLIC_SCENARIOS[scenario])
         now = datetime.now(UTC)
         run_id = f"demo-{uuid.uuid4().hex[:12]}"
         snapshot = RunSnapshot(
