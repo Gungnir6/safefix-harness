@@ -24,6 +24,8 @@
 - fresh-install 验证：全新虚拟环境从 wheel 安装公开依赖，确认 `safefix` 从该环境的 `site-packages` 加载；`safefix --help` 和 guardrail/feedback/approval 三项演示全部通过。
 - 发布：[SafeFix Harness v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)；GitHub 资产状态为 uploaded，大小 93806 bytes。
 - SHA-256：`15689a3f0ee1fbb84645f9745a467aed97627cd0f7688d19c69841bf3bc35c60`，与 GitHub 资产 digest 一致。
+- Python 版本复核：在 Python 3.13.5 临时环境中忽略元数据限制后，完整回归为 `956 passed, 4 failed, 2 skipped`；失败涉及 3.13 traceback 展示和 Windows 路径解析语义。因此保留 `>=3.12,<3.13`，不把未经验证的 3.13 宣称为支持版本。
+- 易用性处理：README 与 Release 说明增加醒目的 Python 3.12 限制、Conda 独立环境和非 Conda 虚拟环境命令，避免用户误用现有 3.13 base 环境。
 
 ### PR #3 CI 修复
 
