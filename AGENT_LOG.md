@@ -11,6 +11,12 @@
 - 分发验证：隔离构建在 Windows 网络错误输出处触发 `build` UTF-8 解码缺陷，改用已验证环境的 `--no-isolation` 后成功生成 wheel；全新虚拟环境联网安装 wheel 后，`safefix --help` 只列出 5 个保留子命令，三个 Mock demo 全 PASS。随后安全删除 `dist/` 和 smoke 环境。
 - 人工项：`REFLECTION.md` 必须由学生本人撰写；GitHub Release 及 wheel 上传需要在最终代码合并和 CI 通过后完成。
 
+### Student-owned reflection
+
+- 时间：2026-07-30 +08:00；学生本人新增 `REFLECTION.md`。
+- 合规检查：约 2295 个非空白字符，位于 1500–2500 字要求内，并覆盖作业列出的全部反思问题。
+- AI 边界：智能体只读取并检查长度、覆盖范围和明显错字，没有生成、改写或替换正文观点。
+
 ### PR #3 CI 修复
 
 - 时间：2026-07-30 +08:00；PR：[GitHub #3](https://github.com/Gungnir6/safefix-harness/pull/3)。
