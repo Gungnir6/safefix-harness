@@ -1532,10 +1532,10 @@ For every formal task T01–T17:
 
 ## Gate 2: Human-Owned Final Submission
 
-- [ ] Student writes `REFLECTION.md` in Chinese, 1500–2500 Chinese characters, covering every required reflection prompt. AI may only proofread on request, and assistance must be disclosed.
+- [x] Student writes `REFLECTION.md` in Chinese, 1500–2500 Chinese characters, covering every required reflection prompt. AI performed only length/coverage checking and did not modify the student's text.
 - [ ] Student verifies the NJU Git submission repository/access and, if required, the public GitHub mirror.
 - [ ] Student verifies every worktree has a corresponding PR and that commit history is not a single bulk commit.
-- [ ] Student verifies `SPEC.md`, `PLAN.md`, `SPEC_PROCESS.md`, `AGENT_LOG.md`, `REFLECTION.md`, `README.md`, source, tests, demos, distribution and CI files are present.
+- [x] Student verifies `SPEC.md`, `PLAN.md`, `SPEC_PROCESS.md`, `AGENT_LOG.md`, `REFLECTION.md`, `README.md`, source, tests, demos, distribution and CI files are present.
 - [ ] Student verifies no real credential exists in working tree, Git history, CI variables shown in logs, screenshots or submitted archives.
 - [ ] Student verifies the final CI/CD execution is PASS and the GitHub Release contains the installable wheel; local Mock WebUI is supporting evidence.
 - [ ] Invoke `superpowers:finishing-a-development-branch` and choose merge/PR/keep only after fresh verification output.
@@ -1615,4 +1615,5 @@ Update this table only with actual commits; do not prefill hashes.
 - [x] README、SPEC、SPEC_PROCESS、PLAN 与 AGENT_LOG 对齐 wheel + Mock CLI/WebUI 的最终范围。
 - [x] 运行完整 pytest、Ruff、mypy、三项 demo、wheel fresh-install smoke 和 `git diff --check`。
 - [x] 修复 PR #3 的 Gitleaks pull_request 令牌契约；回归测试先 RED 后 8 passed。
-- [ ] 学生本人完成 `REFLECTION.md`，随后创建 GitHub Release 并上传 wheel。
+- [x] 学生本人完成 `REFLECTION.md`；正文约 2295 个非空白字符，覆盖全部必答问题，智能体未修改正文。
+- [ ] 创建 GitHub Release 并上传 wheel。
