@@ -1529,7 +1529,7 @@ Record the T17 hash and required evidence after both reviews.
 ## Gate 2: Human-Owned Final Submission
 
 - [x] Student writes `REFLECTION.md` in Chinese, 1500–2500 Chinese characters, covering every required reflection prompt. AI performed only length/coverage checking and did not modify the student's text.
-- [ ] Student verifies the NJU Git submission repository/access, synchronizes the final `main`, and obtains a final PASS GitLab pipeline.
+- [x] Student confirms the final submission uses the public GitHub repository, GitHub PASS CI, v0.1.1 Release and Render URL; the historical NJU mirror is intentionally not synchronized.
 - [x] Student verifies the task ledger maps T01–T17 to PR/MR history and that the repository is not a single bulk commit.
 - [x] Student verifies `SPEC.md`, `PLAN.md`, `SPEC_PROCESS.md`, `AGENT_LOG.md`, `REFLECTION.md`, `README.md`, source, tests, demos, distribution and CI files are present.
 - [x] Student verifies no real credential exists in working tree or Git history; final Gitleaks checks passed and GitHub masked authentication output.
@@ -1561,7 +1561,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T15 | Completed | `a6b9384`; merge `583c15b` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
 | T16 | Completed / Merged | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
 | T17 | Completed; final delivery is wheel + Render WebUI | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161`; restore `4faacb9`; fast demo `4c547b1`; release `2446ec9` | [GitHub #7](https://github.com/Gungnir6/safefix-harness/pull/7), [#8](https://github.com/Gungnir6/safefix-harness/pull/8), [#9](https://github.com/Gungnir6/safefix-harness/pull/9); legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Docker/Render were removed during scope trim, then restored for the required online WebUI; GitHub CI passed, Render deployed, public feedback latency reduced from about 22 seconds to under 1 second, and v0.1.1 was published |
-| Gate 2 | Pending NJU sync only | `2026802` final release source | [v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1) | GitHub/Release/Render verified; NJU final `main` sync and GitLab PASS pipeline remain |
+| Gate 2 | Completed for selected GitHub submission | `2026802` final release source | [v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1) | GitHub CI, Release and Render verified; student explicitly excluded the historical NJU mirror from the final submission workflow |
 
 ## Usable CLI runtime
 
@@ -1627,4 +1627,4 @@ Update this table only with actual commits; do not prefill hashes.
 - [x] 从合并提交构建并 fresh-install `safefix_harness-0.1.1-py3-none-any.whl`；三个机制演示全部 PASS。
 - [x] 发布 [GitHub Release v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1)，重新下载的 wheel SHA-256 为 `5bfb28a7c4c733d60befc9f83278d4197c93b1ed24196e3100989d8260065bed`。
 - [x] 最终本地门禁：962 passed、2 skipped；Ruff 与 mypy 通过。
-- [ ] 将最终 GitHub `main` 同步到 NJU GitLab，并确认最后一次 GitLab CI/CD 为 PASS。
+- [x] 学生确认最终以公开 GitHub 仓库、GitHub PASS CI、v0.1.1 Release 与 Render URL 提交；历史 NJU 镜像不再同步。
