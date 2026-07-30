@@ -32,16 +32,15 @@ def test_required_delivery_files_and_ci_job_exist() -> None:
     for name in (
         ".gitlab-ci.yml",
         ".github/workflows/ci.yml",
+        "Dockerfile",
         "README.md",
+        "render.yaml",
     ):
         assert (ROOT / name).is_file()
 
     gitlab = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
     for job in ("unit-test:", "lint-type:", "secret-scan:"):
         assert job in gitlab
-
-    assert not (ROOT / "Dockerfile").exists()
-    assert not (ROOT / "render.yaml").exists()
 
 
 def test_gitlab_ci_uses_dependency_proxy_images() -> None:
