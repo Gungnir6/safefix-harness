@@ -14,7 +14,7 @@ py -3.12 -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-也可以安装 GitHub Release 中的 wheel；只有发布页实际出现 `.whl` 资产后，Release 链接才算最终交付链接：
+正式分发链接：[SafeFix Harness v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)。下载其中的 wheel 后安装：
 
 ```powershell
 python -m pip install .\safefix_harness-0.1.0-py3-none-any.whl
@@ -71,7 +71,7 @@ safefix run C:\path\to\project --task "修复失败的测试"
 python -m build --wheel
 ```
 
-GitHub Actions 和保留的 GitLab CI 执行 pytest、Ruff、mypy、fresh-wheel CLI smoke 与 secret scan。CI 配置存在不代表 Release 已创建；提交前仍需把成功构建的 wheel 上传到 GitHub Release。
+GitHub Actions 和保留的 GitLab CI 执行 pytest、Ruff、mypy、fresh-wheel CLI smoke 与 secret scan。`v0.1.0` 已从通过 CI 的 `main` 构建并发布，wheel 的 SHA-256 为 `15689a3f0ee1fbb84645f9745a467aed97627cd0f7688d19c69841bf3bc35c60`。
 
 ## Project Structure
 

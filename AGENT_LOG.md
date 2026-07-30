@@ -9,13 +9,21 @@
 - TDD：CLI 契约先得到 3 failed 后为 63 passed；分发契约先得到 2 failed 后为 7 passed；最终聚焦回归 70 passed。
 - 最终门禁：pytest `959 passed, 2 skipped, 1 warning in 59.06s`；Ruff 全通过；mypy 对 33 个源码文件无问题；guardrail、feedback、approval 全部 PASS；`git diff --check` 通过。唯一 warning 是既有 FastAPI TestClient 第三方弃用提示。
 - 分发验证：隔离构建在 Windows 网络错误输出处触发 `build` UTF-8 解码缺陷，改用已验证环境的 `--no-isolation` 后成功生成 wheel；全新虚拟环境联网安装 wheel 后，`safefix --help` 只列出 5 个保留子命令，三个 Mock demo 全 PASS。随后安全删除 `dist/` 和 smoke 环境。
-- 人工项：`REFLECTION.md` 必须由学生本人撰写；GitHub Release 及 wheel 上传需要在最终代码合并和 CI 通过后完成。
+- 人工项：`REFLECTION.md` 必须由学生本人撰写；该项与 GitHub Release/wheel 上传均已在后续步骤完成。
 
 ### Student-owned reflection
 
 - 时间：2026-07-30 +08:00；学生本人新增 `REFLECTION.md`。
 - 合规检查：约 2295 个非空白字符，位于 1500–2500 字要求内，并覆盖作业列出的全部反思问题。
 - AI 边界：智能体只读取并检查长度、覆盖范围和明显错字，没有生成、改写或替换正文观点。
+
+### GitHub Release v0.1.0
+
+- 时间：2026-07-30 +08:00；来源：合并并通过 CI 的 `main` 提交 `ffae54e5bf456a59a736eab0fdf7dd3c5069d889`。
+- 构建：使用仓库 `.venv` 与 Hatchling 生成 `safefix_harness-0.1.0-py3-none-any.whl`。
+- fresh-install 验证：全新虚拟环境从 wheel 安装公开依赖，确认 `safefix` 从该环境的 `site-packages` 加载；`safefix --help` 和 guardrail/feedback/approval 三项演示全部通过。
+- 发布：[SafeFix Harness v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)；GitHub 资产状态为 uploaded，大小 93806 bytes。
+- SHA-256：`15689a3f0ee1fbb84645f9745a467aed97627cd0f7688d19c69841bf3bc35c60`，与 GitHub 资产 digest 一致。
 
 ### PR #3 CI 修复
 
