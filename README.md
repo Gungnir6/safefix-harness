@@ -6,19 +6,33 @@ SafeFix 是课程作业 A（Coding Agent Harness）的实现。它自研了 Agen
 
 ## Installation
 
-要求 Python `>=3.12,<3.13`。从源码安装：
+要求 **Python 3.12**（`>=3.12,<3.13`）。Python 3.13 当前不受支持，使用 3.13 安装时 pip 会按设计拒绝继续。
+
+Windows/Conda 用户推荐直接创建独立环境，避免现有 `(base)` 环境的 Python 版本干扰：
 
 ```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+conda create -n safefix python=3.12 -y
+conda activate safefix
+python --version
+python -m pip install .\safefix_harness-0.1.0-py3-none-any.whl
+safefix-demo all
 ```
 
-正式分发链接：[SafeFix Harness v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)。下载其中的 wheel 后安装：
+正式分发链接：[SafeFix Harness v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0)。上述 wheel 文件从该页面下载。
+
+没有 Conda 时，先确认 `python --version` 显示 `3.12.x`，再使用独立虚拟环境：
 
 ```powershell
-python -m pip install .\safefix_harness-0.1.0-py3-none-any.whl
-safefix --help
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .\safefix_harness-0.1.0-py3-none-any.whl
+.\.venv\Scripts\safefix-demo.exe all
+```
+
+从源码开发安装：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
 ## Usage

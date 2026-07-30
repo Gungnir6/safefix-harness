@@ -1617,3 +1617,4 @@ Update this table only with actual commits; do not prefill hashes.
 - [x] 修复 PR #3 的 Gitleaks pull_request 令牌契约；回归测试先 RED 后 8 passed。
 - [x] 学生本人完成 `REFLECTION.md`；正文约 2295 个非空白字符，覆盖全部必答问题，智能体未修改正文。
 - [x] 创建 [GitHub Release v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0) 并上传已验证 wheel。
+- [x] 复核 Python 3.13：完整测试有 4 项版本语义失败，因此保持 3.12 支持边界，并补充 Conda/venv 安装说明。
