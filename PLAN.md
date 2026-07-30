@@ -6,7 +6,9 @@
 
 **Architecture:** A FastAPI/CLI task service drives a custom `AgentLoop`. Each model action passes through strict parsing and a deterministic `PolicyEngine` before a focused tool executes; validation, memory, approvals, and audit data are stored through explicit interfaces backed by SQLite. Local real-LLM mode and public mock-demo mode inject different LLM, workspace, and policy dependencies while sharing the same core.
 
-**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLite, PyYAML, httpx, keyring, pytest, Hypothesis, Jinja2, vanilla JavaScript, Docker/OCI.
+**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLite, PyYAML, httpx, keyring, pytest, Hypothesis, Jinja2 and vanilla JavaScript. Distribution uses a Hatchling wheel.
+
+> **2026-07-30 final-scope note:** The student approved the conservative minimal submission. Docker, Render and the conversational `safefix`/`chat`/`setup` layer are removed. Historical task records below remain as process evidence; where they conflict with this note, this final scope controls.
 
 ## Global Constraints
 
@@ -20,7 +22,7 @@
 - Repair attempts default to 3; two no-progress rounds, repeated actions, or exhausted budget stop deterministically.
 - Secrets never appear in YAML, SQLite, logs, audit events, terminal arguments, test fixtures, Git history, or the public demo.
 - Public mode uses only an embedded sample repository and `ScriptedMockLLM`; it accepts no project path, source upload, real Key, arbitrary program, or network tool.
-- Primary native target is Windows 10/11 with Python 3.12; Docker provides the reproducible Linux runtime.
+- Primary target is Python 3.12 on Windows 10/11; CI also verifies the wheel on Linux.
 - Each task uses a fresh subagent, a dedicated `codex/tNN-*` branch/worktree, spec-compliance review, code-quality review, and one PR.
 - Every commit message follows Conventional Commits as `type(scope): 中文摘要`; allowed types are `feat`, `fix`, `test`, `refactor`, `docs`, `build`, `ci`, and `chore`.
 - After each implementation commit, update this plan with its hash and append only required evidence to `AGENT_LOG.md`.
@@ -62,9 +64,8 @@ examples/python_bug/*                 Embedded Python repair fixture
 tests/unit/*                           Deterministic component tests
 tests/integration/*                    Full-loop temporary-repository tests
 tests/web/*                            API and rendered-page tests
-Dockerfile                            Non-root OCI distribution
-.gitlab-ci.yml                        Required `unit-test` job and image build
-.github/workflows/ci.yml              GitHub test, scan and image workflow
+.gitlab-ci.yml                        Required test, quality and secret-scan jobs
+.github/workflows/ci.yml              GitHub test, wheel smoke and secret scan
 README.md                             Required usage, distribution, security and limitations
 ```
 
@@ -1478,11 +1479,11 @@ Expected: zero errors and zero verified secrets.
 迁移前 GitLab MR 首次运行曾暴露学校 Runner 访问 Docker Hub 的可用性问题，且管理员只允许 `always` 拉取策略；保留的 GitLab CI 已改走 Dependency Proxy。
 首次人工 WebUI 体验暴露公开演示在 FastAPI 事件循环内嵌套 `asyncio.run()`；真实 API 回归测试先稳定复现 409，再将同步演示移入工作线程。修复后本地完整回归为 819 passed、2 skipped，真实 `feedback` HTTP 请求返回 `SUCCESS`。
 
-- [ ] **Step 8: Deploy and verify public demo**
+- [x] **Step 8: Deploy and verify public demo — superseded by final wheel-only scope**
 
-Deploy the public-demo container to Render without any LLM Key, open the health endpoint and manually run all three scenarios. Record the exact URL in README and save the passing deployment/CI URLs as submission evidence.
+Historical plan: deploy the public-demo container to Render. The student later selected the teacher-approved CLI Release delivery route, so no Render URL is required.
 
-阻塞：本机没有 Render CLI/API 凭据，无法代替仓库所有者创建外部服务；`render.yaml` 已按官方 Blueprint 规范准备好。
+最终处理：删除 `render.yaml` 与 Docker distribution；改由 wheel、GitHub Release 和本地 Mock WebUI 验收。
 
 - [x] **Step 9: Review and commit**
 
@@ -1536,7 +1537,7 @@ For every formal task T01–T17:
 - [ ] Student verifies every worktree has a corresponding PR and that commit history is not a single bulk commit.
 - [ ] Student verifies `SPEC.md`, `PLAN.md`, `SPEC_PROCESS.md`, `AGENT_LOG.md`, `REFLECTION.md`, `README.md`, source, tests, demos, distribution and CI files are present.
 - [ ] Student verifies no real credential exists in working tree, Git history, CI variables shown in logs, screenshots or submitted archives.
-- [ ] Student verifies the final CI/CD execution is PASS and the WebUI URL is publicly reachable.
+- [ ] Student verifies the final CI/CD execution is PASS and the GitHub Release contains the installable wheel; local Mock WebUI is supporting evidence.
 - [ ] Invoke `superpowers:finishing-a-development-branch` and choose merge/PR/keep only after fresh verification output.
 
 ## Task Status Ledger
@@ -1562,7 +1563,7 @@ Update this table only with actual commits; do not prefill hashes.
 | T14 | Completed | `35daee5`; merge `a72afc9` | [!14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14) | Quick-delivery mode, no independent review; 800 passed, 2 skipped; Ruff passed |
 | T15 | Completed | `a6b9384`; merge `583c15b` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
 | T16 | Completed / Merged | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
-| T17 | Completed on GitHub main (deploy pending) | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161` | [GitHub main](https://github.com/Gungnir6/safefix-harness) / legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Quick-delivery mode; [Actions #30192558314](https://github.com/Gungnir6/safefix-harness/actions/runs/30192558314) passed 801 tests with Ruff, mypy, Gitleaks and Docker build; Render deploy remains pending |
+| T17 | Completed; final scope later reduced to wheel-only | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161` | [GitHub main](https://github.com/Gungnir6/safefix-harness) / legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Historical CI passed; Docker/Render artifacts were subsequently removed by the approved minimal-submission trim |
 | Gate 2 | Pending | — | — | Final submission |
 
 ## Usable CLI runtime
@@ -1598,16 +1599,19 @@ Update this table only with actual commits; do not prefill hashes.
 7. 高风险动作等待审批且能力单次消费：Task 3 自动测试。
 8. 动作、治理、工具、反馈和最终结果可见：Task 2/3/5，审计自动测试与手工输出。
 9. Mock 端到端、provider 传输、隔离与分发入口：Task 2/4/5。
-10. pytest/Ruff/mypy/demo/diff 本地通过；Gitleaks 与 Docker jobs 保留在 CI。当前 Docker daemon 不可用，当前提交外部 CI 尚未运行。
+10. pytest/Ruff/mypy/demo/diff 本地通过；Gitleaks 与 fresh-wheel smoke 保留在 CI。
 11. README 的安装、真实运行、Mock、凭据、隔离、原地和限制说明：Task 5。
-12. 公网 WebUI 与 GitHub Release：映射到 Final Gate 的外部状态步骤，当前未完成且未虚构链接。
-# T18 — Lightweight Conversational CLI
+12. GitHub Release：映射到 Final Gate 的外部状态步骤，当前未完成且未虚构链接；WebUI 仅需本地 Mock 演示。
 
-- [x] 无参数 `safefix` 默认在当前项目启动轻量对话模式。
-- [x] 增加 `safefix chat [project]` 和 `safefix setup [project]`。
-- [x] 首次配置向导生成可加载配置，并通过现有 keyring 服务隐藏保存 API Key。
-- [x] 自然语言任务复用现有 `run_cli`、`TaskService` 和 `AgentLoop`，不建立第二套执行循环。
-- [x] 支持 `/help`、`/status`、`/diff`、`/new`、`/exit`，默认保持隔离工作区。
-- [x] `run_cli` 提供窄的最终摘要观察接口，供对话状态和只读 diff 使用。
-- [x] README 将安装后的首选体验改为 `cd <project>` 后直接运行 `safefix`。
-- [x] 完整 pytest、Ruff、mypy、三个机制 demo 和 diff check 最终门禁。
+# T18 — Lightweight Conversational CLI（最终范围中撤销）
+
+- [x] 历史实现曾提供无参数对话、`chat` 和 `setup`。
+- [x] 2026-07-30 按学生确认删除上述非必要交互层，恢复显式子命令；保留 `run`、`serve`、`config`、`credentials` 和 `demo`。
+
+# Final Minimal Submission Trim
+
+- [x] 删除对话 CLI 及其专用测试和摘要观察器。
+- [x] 删除 Dockerfile、Render Blueprint 与容器 CI job，保留 wheel、pytest、Ruff、mypy、fresh-wheel smoke 和 secret scan。
+- [x] README、SPEC、SPEC_PROCESS、PLAN 与 AGENT_LOG 对齐 wheel + Mock CLI/WebUI 的最终范围。
+- [x] 运行完整 pytest、Ruff、mypy、三项 demo、wheel fresh-install smoke 和 `git diff --check`。
+- [ ] 学生本人完成 `REFLECTION.md`，随后创建 GitHub Release 并上传 wheel。

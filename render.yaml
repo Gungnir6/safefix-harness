@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: safefix-public-demo
-    runtime: docker
-    plan: free
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
-    autoDeployTrigger: commit

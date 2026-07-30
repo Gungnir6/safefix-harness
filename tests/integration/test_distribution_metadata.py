@@ -30,18 +30,18 @@ def test_runtime_dependencies_include_the_demo_validator() -> None:
 
 def test_required_delivery_files_and_ci_job_exist() -> None:
     for name in (
-        "Dockerfile",
-        ".dockerignore",
         ".gitlab-ci.yml",
         ".github/workflows/ci.yml",
         "README.md",
-        "render.yaml",
     ):
         assert (ROOT / name).is_file()
 
     gitlab = (ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    for job in ("unit-test:", "lint-type:", "secret-scan:", "image-build:"):
+    for job in ("unit-test:", "lint-type:", "secret-scan:"):
         assert job in gitlab
+
+    assert not (ROOT / "Dockerfile").exists()
+    assert not (ROOT / "render.yaml").exists()
 
 
 def test_gitlab_ci_uses_dependency_proxy_images() -> None:
@@ -51,17 +51,15 @@ def test_gitlab_ci_uses_dependency_proxy_images() -> None:
         "unit-test": "python:3.12-slim",
         "lint-type": "python:3.12-slim",
         "secret-scan": "zricethezav/gitleaks:v8.24.2",
-        "image-build": "docker:27-cli",
     }
     prefix = "${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/"
     for job, suffix in expected.items():
         image = pipeline[job]["image"]
         assert image["name"] == prefix + suffix
         assert "pull_policy" not in image
-    service = pipeline["image-build"]["services"][0]
-    assert service["name"] == prefix + "docker:27-dind"
-    assert service["alias"] == "docker"
-    assert "pull_policy" not in service
+
+    assert pipeline["stages"] == ["test", "quality"]
+    assert "image-build" not in pipeline
 
 
 def test_readme_has_required_submission_sections() -> None:
@@ -70,13 +68,11 @@ def test_readme_has_required_submission_sections() -> None:
         "Installation",
         "Usage",
         "Credentials",
-        "Public Demo",
         "Distribution",
         "Project Structure",
         "Security Boundaries",
         "Known Limitations",
         "Architecture",
-        "Deployment",
         "Third-Party Licenses",
     ):
         assert f"## {heading}" in readme
@@ -97,14 +93,6 @@ def test_ignore_and_package_metadata_cover_secrets_and_assets() -> None:
         '"examples/mock_repair.jsonl" = "safefix/_fixtures/mock_repair.jsonl"'
         in package
     )
-
-
-def test_container_is_non_root_and_has_healthcheck() -> None:
-    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "FROM python:3.12-slim" in dockerfile
-    assert "USER safefix" in dockerfile
-    assert "HEALTHCHECK" in dockerfile
-    assert 'CMD ["safefix", "serve", "--public-demo"' in dockerfile
 
 
 def test_health_endpoint_is_ready() -> None:

@@ -134,7 +134,7 @@ SafeFix Harness 面向在本地代码库工作的个人开发者。用户提供�
 - `credentials set` 使用隐藏输入写入操作系统 Keyring。
 - `credentials status` 仅返回是否已配置及供应商，不显示明文。
 - `credentials clear` 删除对应凭据；再次运行真实模型任务时重新引导录入。
-- Docker 真实模型模式支持只读 secret 文件；`.env` 只作为标明风险的备用来源。
+- 可选真实模型模式只从操作系统 Keyring 或显式只读 secret 文件获取凭据；不把 `.env` 作为推荐来源。
 - 所有日志、异常、审计、记忆和 Web API 响应在输出前脱敏。
 
 ### 4.10 WebUI 与 CLI
@@ -189,7 +189,7 @@ Coding 场景需要文件列举、读取、搜索、局部修改、验证命令�
 - 策略判定不依赖提示词遵从。
 - 真实 Key 不进入仓库、数据库、日志、终端参数或公网演示。
 - 公网演示每个会话使用独立临时目录，只开放内置工具，并限制执行时间、步骤、输出和请求频率。
-- Docker 本地模式只挂载目标项目并以非 root 用户运行。mock/offline 模式可关闭容器网络；真实模型模式需要允许 LLM HTTP 出站，额外网络程序仍由策略拦截或审批。
+- 默认在持久化隔离副本中运行；真实模型模式只为 LLM HTTP 请求开放网络，额外网络程序仍由策略拦截或审批。
 
 ### 6.2 性能与资源
 
@@ -352,16 +352,15 @@ Action 使用判别联合而非通用 `payload`。所有动作都有非空 `id`�
 - pytest + Hypothesis：确定性单测、集成测试及路径/命令属性测试。
 - keyring：对接 Windows Credential Manager 等操作系统凭据库。
 - httpx：实现 OpenAI-compatible 单次 HTTP 调用。
-- Docker/OCI：可重复分发并为本地与公网演示提供额外边界。
+- Hatchling wheel：提供可复现安装包和 CLI Release 资产。
 
 第三方组件只作为 HTTP、解析、存储和测试等底层零件，不提供 Agent 主循环或高层治理。
 
-## 11. 分发与部署设计
+## 11. 分发设计
 
-- 目标平台：Windows 10/11 原生 Python 包；Linux/Windows Docker Desktop 容器模式。
+- 目标平台：Windows 10/11 与 Linux 的 Python 3.12 环境。
 - Python 包：提供安装和 CLI 入口，真实 Key 默认保存到 OS Keyring。
-- 容器：提供 `docker build` 与 `docker run` 命令，真实模型使用只读 secret 文件；目标项目必须显式挂载到固定工作区；镜像发布到公开 OCI Registry。
-- 公网：使用 Render 部署 Docker Web Service，运行 public-demo 配置，不配置真实 LLM Key。
+- 演示：CLI Release 是最终分发入口；本地 WebUI 只运行内置 public-demo Mock，不依赖公网部署。
 - README 必须说明安装、运行、目录结构、分发、安全边界、Key 配置和已知限制。
 - CI 同时提供 `.gitlab-ci.yml` 的 `unit-test` job 与 GitHub Actions；最终流水线必须通过。
 
@@ -376,10 +375,10 @@ Action 使用判别联合而非通用 `payload`。所有动作都有非空 `id`�
 7. SQLite 记忆按项目隔离，只返回数量和字符预算内的相关记录。
 8. Key 可隐藏录入、查看状态、更新和清除，且不会出现在日志、数据库或 Git。
 9. 本地 WebUI 与 CLI 能运行内置 Python 示例修复任务。
-10. 公网 WebUI 可操作 mock 修复、失败反馈和危险动作拦截场景。
+10. 本地 WebUI 可操作 mock 修复、失败反馈和危险动作拦截场景。
 11. `python -m safefix.demo` 可重复运行三项机制演示。
 12. `python -m pytest` 一键运行核心测试；GitLab `unit-test` job 和最终 CI/CD 均通过。
-13. Docker 镜像可按 README 的单条构建与运行命令启动。
+13. wheel 可构建、在干净虚拟环境安装，并运行 CLI 与三项 Mock 演示。
 14. 最终仓库包含课程要求的全部文档、源码、测试、演示、分发与过程证据。
 
 ## 13. 测试策略
@@ -388,26 +387,26 @@ Action 使用判别联合而非通用 `payload`。所有动作都有非空 `id`�
 - 属性测试：生成特殊路径、参数和命令组合，检查围栏与分类不被绕过。
 - 集成：临时 Python 项目 + scripted mock LLM + 真实 pytest 子进程。
 - API/UI：任务创建、状态、时间线、审批、取消、凭据状态和公网模式限制。
-- 分发：CI 构建镜像并运行容器健康检查。
+- 分发：CI 构建 wheel，并在干净虚拟环境运行 CLI smoke。
 - 安全：凭据扫描、日志脱敏、审批 TOCTOU 和重放测试。
 
 开发严格执行红—绿—重构。每个 PLAN task 先保存失败测试证据，再实现最小代码，通过两阶段评审后提交。
 
 ## 14. 风险、限制与缓解
 
-1. **Python 模式与联网 Docker 模式都不是完整 OS/网络沙箱**：文件工具受围栏保护，但用户批准的程序可能访问进程权限范围；Docker 通过最小挂载和非 root 用户降低影响，README 必须明确剩余风险。公网演示不开放任意程序。
+1. **Python 进程不是完整 OS/网络沙箱**：文件工具受围栏保护，但用户批准的程序可能访问当前进程权限范围；默认隔离副本降低误改风险，README 必须明确剩余风险。Mock WebUI 不开放任意程序。
 2. **跨平台命令差异**：核心动作保持结构化；主要验收固定在 Python 示例；其他语言由用户配置验证器。
 3. **模型输出不稳定**：严格 Schema、解析反馈、步骤预算和 mock 测试降低影响，但不保证真实模型每次修复成功。
 4. **误判危险动作**：规则提供编号和解释；可控风险进入人工审批，永久禁止规则保持最小且明确。
 5. **长测试输出挤占上下文**：限制输出、提取失败摘要并使用指纹。
-6. **公网资源滥用**：固定示例、mock、速率限制、临时目录、时间与步骤预算。
+6. **WebUI 资源滥用**：固定示例、mock、速率限制、临时目录、时间与步骤预算。
 7. **GitHub/GitLab 要求不一致**：按更严格标准同时维护 GitHub Actions 与 `.gitlab-ci.yml`，正式提交以课程指定 NJU Git 地址为准，并保留公开镜像/仓库能力。
 
 ## 15. 外部依赖
 
 - 可选真实 LLM：OpenAI-compatible Chat Completions API。
 - 操作系统：Windows Credential Manager 或兼容 Keyring 后端。
-- 执行环境：Python 3.12、项目自身验证工具；Docker 模式需要 Docker Desktop/Engine。
-- 部署：Render Docker Web Service；OCI Registry。
+- 执行环境：Python 3.12 与目标项目自身验证工具。
+- 分发：GitHub Release 中的 wheel；本地 Mock WebUI 不要求外部托管平台。
 
 所有第三方依赖及许可证将在 README 中列出。

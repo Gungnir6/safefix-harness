@@ -38,7 +38,7 @@
 - Preserve: `run_cli(options: CliRunOptions, ...) -> int`
 - Remove: `ChatOptions`, `run_chat`, `SetupOptions`, `ensure_setup`, `run_setup`, and `summary_observer`
 
-- [ ] **Step 1: Write the failing CLI contract test**
+- [x] **Step 1: Write the failing CLI contract test**
 
 Replace the conversational parser tests with a test that captures real parser behavior:
 
@@ -58,7 +58,7 @@ def test_removed_commands_are_rejected(removed: str) -> None:
 
 This catches accidental restoration of the removed public commands.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -69,7 +69,7 @@ $env:PYTHONPATH=(Resolve-Path 'src').Path
 
 Expected: the new tests fail because no arguments still select `chat` and both removed commands still parse.
 
-- [ ] **Step 3: Implement the minimal rollback**
+- [x] **Step 3: Implement the minimal rollback**
 
 In `cli.py`, make subparsers required again and remove all `chat`/`setup` parsers and dispatch branches:
 
@@ -79,7 +79,7 @@ commands = parser.add_subparsers(dest="command", required=True)
 
 Delete both production modules and their focused tests. In `cli_runner.py`, remove `summary_observer` from `_run_cli_async` and `run_cli`, remove observer calls, and restore direct rendering of `_error_summary(options, exit_code)`. Delete only the two observer tests from `test_cli_runner.py`.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run:
 
@@ -96,8 +96,8 @@ Expected: all retained CLI and Mock run tests pass.
 - Delete: `Dockerfile`
 - Delete: `render.yaml`
 - Modify: `.github/workflows/ci.yml`
+- Modify: `.gitlab-ci.yml`
 - Modify: `tests/integration/test_distribution_metadata.py`
-- Verify: `.gitlab-ci.yml`
 - Verify: `pyproject.toml`
 
 **Interfaces:**
@@ -105,7 +105,7 @@ Expected: all retained CLI and Mock run tests pass.
 - Preserve wheel-packaged fixtures and Web assets
 - Remove OCI image build/push and Render Blueprint contracts
 
-- [ ] **Step 1: Establish the retained distribution contract**
+- [x] **Step 1: Establish the retained distribution contract**
 
 Update `test_distribution_metadata.py` so the required artifact set contains only files used by wheel/CI documentation:
 
@@ -121,7 +121,7 @@ assert all((ROOT / path).is_file() for path in required)
 
 Delete Dockerfile-specific assertions and Render Blueprint assertions. Preserve tests that build/load wheel resources, validate console scripts, inspect runtime dependencies, and verify CI test commands.
 
-- [ ] **Step 2: Remove optional deployment artifacts**
+- [x] **Step 2: Remove optional deployment artifacts**
 
 Delete `Dockerfile` and `render.yaml`. In GitHub Actions:
 
@@ -129,9 +129,11 @@ Delete `Dockerfile` and `render.yaml`. In GitHub Actions:
 - keep `test-quality`, Gitleaks, wheel build, fresh venv install, CLI smoke, and demos;
 - remove the complete `image` job and all GHCR login/push configuration.
 
-Do not change `.gitlab-ci.yml`; its `unit-test` job is a formal checklist item.
+In `.gitlab-ci.yml`, preserve `unit-test`, `lint-type`, and `secret-scan`, remove
+the Docker `image-build` job, and reduce `stages` to `[test, quality]`. The named
+`unit-test` job remains a formal checklist item.
 
-- [ ] **Step 3: Verify distribution tests**
+- [x] **Step 3: Verify distribution tests**
 
 Run:
 
@@ -156,7 +158,7 @@ Expected: wheel and CI metadata tests pass without Docker or Render.
 - SPEC distribution choice is wheel; Mock WebUI remains; Docker/Render are historical removals.
 - REFLECTION remains a student-owned missing gate.
 
-- [ ] **Step 1: Rewrite README around deterministic acceptance**
+- [x] **Step 1: Rewrite README around deterministic acceptance**
 
 Order the usage sections as:
 
@@ -170,11 +172,11 @@ Order the usage sections as:
 
 Remove all `safefix chat`, `safefix setup`, Docker, Render, GHCR, and unverified public URL instructions.
 
-- [ ] **Step 2: Make SPEC and SPEC_PROCESS truthful**
+- [x] **Step 2: Make SPEC and SPEC_PROCESS truthful**
 
 In `SPEC.md`, change distribution/deployment commitments from Docker/Render to Hatchling wheel and local Mock WebUI. Preserve historical design intent only where labeled superseded; acceptance criteria must not require Docker. In `SPEC_PROCESS.md`, retain the fact that Docker was originally selected, then append the dated decision that final scope selected wheel-only distribution after reviewing the assignment's mandatory Mock criteria.
 
-- [ ] **Step 3: Update PLAN and AGENT_LOG evidence**
+- [x] **Step 3: Update PLAN and AGENT_LOG evidence**
 
 Add a dated minimal-submission task recording:
 
@@ -186,7 +188,7 @@ Add a dated minimal-submission task recording:
 
 Do not rewrite earlier historical entries; label the conversational feature and Docker/Render scope as subsequently removed.
 
-- [ ] **Step 4: Scan for active contradictions**
+- [x] **Step 4: Scan for active contradictions**
 
 Run:
 
@@ -207,11 +209,11 @@ Expected: matches only in explicitly historical entries marked removed/supersede
 - Produces a clean feature diff containing only the approved tracked-file changes.
 - Produces fresh test, quality, demo, WebUI, and wheel evidence.
 
-- [ ] **Step 1: Safely remove the two approved temporary targets**
+- [x] **Step 1: Safely remove the two approved temporary targets**
 
 Resolve each target to an absolute path and verify its parent/ancestor is the main repository root before deletion. Delete only the two exact names; do not use a wildcard and do not touch `.worktrees/`.
 
-- [ ] **Step 2: Run focused acceptance checks**
+- [x] **Step 2: Run focused acceptance checks**
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path 'src').Path
@@ -219,7 +221,7 @@ $env:PYTHONPATH=(Resolve-Path 'src').Path
 ..\..\.venv\Scripts\python.exe -m safefix.demo all
 ```
 
-- [ ] **Step 3: Run full project gates**
+- [x] **Step 3: Run full project gates**
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path 'src').Path
@@ -229,7 +231,7 @@ $env:PYTHONPATH=(Resolve-Path 'src').Path
 git diff --check
 ```
 
-- [ ] **Step 4: Build and smoke-test a fresh wheel**
+- [x] **Step 4: Build and smoke-test a fresh wheel**
 
 Build with the repository `.venv`, create `.wheel-smoke-minimal`, remove inherited `PYTHONPATH`, install the produced wheel, then run:
 
