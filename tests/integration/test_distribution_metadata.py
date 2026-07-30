@@ -62,6 +62,18 @@ def test_gitlab_ci_uses_dependency_proxy_images() -> None:
     assert "image-build" not in pipeline
 
 
+def test_github_pull_request_secret_scan_receives_token() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["test-quality"]["steps"]
+    gitleaks_step = next(
+        step for step in steps if step.get("uses") == "gitleaks/gitleaks-action@v2"
+    )
+
+    assert gitleaks_step["env"]["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+
 def test_readme_has_required_submission_sections() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     for heading in (

@@ -29,3 +29,5 @@ jobs:
           .smoke-venv/bin/safefix --help
           .smoke-venv/bin/safefix-demo all
       - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

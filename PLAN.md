@@ -1614,4 +1614,5 @@ Update this table only with actual commits; do not prefill hashes.
 - [x] 删除 Dockerfile、Render Blueprint 与容器 CI job，保留 wheel、pytest、Ruff、mypy、fresh-wheel smoke 和 secret scan。
 - [x] README、SPEC、SPEC_PROCESS、PLAN 与 AGENT_LOG 对齐 wheel + Mock CLI/WebUI 的最终范围。
 - [x] 运行完整 pytest、Ruff、mypy、三项 demo、wheel fresh-install smoke 和 `git diff --check`。
+- [x] 修复 PR #3 的 Gitleaks pull_request 令牌契约；回归测试先 RED 后 8 passed。
 - [ ] 学生本人完成 `REFLECTION.md`，随后创建 GitHub Release 并上传 wheel。
