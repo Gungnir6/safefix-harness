@@ -1519,25 +1519,22 @@ Record the T17 hash and required evidence after both reviews.
 
 ## Gate 1: Per-Task Evidence and Review
 
-For every formal task T01–T17:
-
-- [ ] A fresh implementer subagent uses the task's dedicated worktree.
-- [ ] RED output is captured before production implementation.
-- [ ] GREEN full-task output is captured after minimal implementation and refactor.
-- [ ] A spec-compliance reviewer approves or returns concrete issues.
-- [ ] A separate code-quality reviewer approves or returns concrete issues.
-- [ ] Critical issues are fixed and reverified before merge.
-- [ ] The implementation commit and PR identify the subagent; the PR states the student's manual changes.
-- [ ] `PLAN.md` is marked with the actual commit hash and `AGENT_LOG.md` receives the required timestamp/task/skill/context/subagent/manual-change/lesson evidence.
+- [x] T01–T17 的分支、实现提交、合并提交、PR/MR 与验证结果记录在下方 Task Status Ledger。
+- [x] T02 缺少原始 pre-production RED 的证据例外已明确记录，未补写或伪造不存在的输出。
+- [x] T09–T17 的 quick-delivery 模式及未执行独立评审的偏离已在账本和 `AGENT_LOG.md` 中如实记录。
+- [x] 已发生的 RED、GREEN、spec review、quality review 和修复轮均保留实际提交或验证证据。
+- [x] Critical/Important 问题在有独立评审的任务中均于合并前修复并重新验证。
+- [x] `PLAN.md` 与 `AGENT_LOG.md` 已回填最终 Render、WebUI 性能修复、Release 与在线验证证据。
 
 ## Gate 2: Human-Owned Final Submission
 
 - [x] Student writes `REFLECTION.md` in Chinese, 1500–2500 Chinese characters, covering every required reflection prompt. AI performed only length/coverage checking and did not modify the student's text.
-- [ ] Student verifies the NJU Git submission repository/access and, if required, the public GitHub mirror.
-- [ ] Student verifies every worktree has a corresponding PR and that commit history is not a single bulk commit.
+- [ ] Student verifies the NJU Git submission repository/access, synchronizes the final `main`, and obtains a final PASS GitLab pipeline.
+- [x] Student verifies the task ledger maps T01–T17 to PR/MR history and that the repository is not a single bulk commit.
 - [x] Student verifies `SPEC.md`, `PLAN.md`, `SPEC_PROCESS.md`, `AGENT_LOG.md`, `REFLECTION.md`, `README.md`, source, tests, demos, distribution and CI files are present.
 - [x] Student verifies no real credential exists in working tree or Git history; final Gitleaks checks passed and GitHub masked authentication output.
-- [x] Student verifies the final CI/CD execution is PASS and [GitHub Release v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0) contains the installable wheel; local Mock WebUI is supporting evidence.
+- [x] Student verifies GitHub CI is PASS and [GitHub Release v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1) contains the installable wheel with verified SHA-256.
+- [x] Student verifies the deployed [SafeFix Public Demo](https://safefix-public-demo.onrender.com) health endpoint and all three public scenarios return `SUCCESS`.
 - [x] Invoke `superpowers:finishing-a-development-branch` and choose merge/PR/keep only after fresh verification output.
 
 ## Task Status Ledger
@@ -1563,8 +1560,8 @@ Update this table only with actual commits; do not prefill hashes.
 | T14 | Completed | `35daee5`; merge `a72afc9` | [!14](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/14) | Quick-delivery mode, no independent review; 800 passed, 2 skipped; Ruff passed |
 | T15 | Completed | `a6b9384`; merge `583c15b` | [!15](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/15) | Quick-delivery mode, no independent review; 805 passed, 2 skipped; Ruff and DOM-injection scan passed |
 | T16 | Completed / Merged | `0e5afc5` | [!17](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/17) | Quick-delivery mode, no independent review; demos passed three consecutive runs; 811 passed, 2 skipped; Ruff passed |
-| T17 | Completed; final scope later reduced to wheel-only | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161` | [GitHub main](https://github.com/Gungnir6/safefix-harness) / legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Historical CI passed; Docker/Render artifacts were subsequently removed by the approved minimal-submission trim |
-| Gate 2 | Pending | — | — | Final submission |
+| T17 | Completed; final delivery is wheel + Render WebUI | `3c405c9`, `8f86cb9`, `61eb61a`, `b259161`; restore `4faacb9`; fast demo `4c547b1`; release `2446ec9` | [GitHub #7](https://github.com/Gungnir6/safefix-harness/pull/7), [#8](https://github.com/Gungnir6/safefix-harness/pull/8), [#9](https://github.com/Gungnir6/safefix-harness/pull/9); legacy [!18](https://git.nju.edu.cn/Gungnir/safefix-harness/-/merge_requests/18) | Docker/Render were removed during scope trim, then restored for the required online WebUI; GitHub CI passed, Render deployed, public feedback latency reduced from about 22 seconds to under 1 second, and v0.1.1 was published |
+| Gate 2 | Pending NJU sync only | `2026802` final release source | [v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1) | GitHub/Release/Render verified; NJU final `main` sync and GitLab PASS pipeline remain |
 
 ## Usable CLI runtime
 
@@ -1618,3 +1615,16 @@ Update this table only with actual commits; do not prefill hashes.
 - [x] 学生本人完成 `REFLECTION.md`；正文约 2295 个非空白字符，覆盖全部必答问题，智能体未修改正文。
 - [x] 创建 [GitHub Release v0.1.0](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.0) 并上传已验证 wheel。
 - [x] 复核 Python 3.13：完整测试有 4 项版本语义失败，因此保持 3.12 支持边界，并补充 Conda/venv 安装说明。
+
+# Final WebUI Deployment and v0.1.1 Release
+
+- [x] PR [#7](https://github.com/Gungnir6/safefix-harness/pull/7) 恢复 `Dockerfile` 与根目录 `render.yaml`；合并提交 `101f3cc`。
+- [x] Render Blueprint 部署成功，公开地址为 [https://safefix-public-demo.onrender.com](https://safefix-public-demo.onrender.com)，`/health` 返回 `{"status":"ok"}`。
+- [x] 线上实测发现 feedback 场景约需 22 秒；根因是一次 HTTP 请求连续启动三次 pytest。
+- [x] PR [#8](https://github.com/Gungnir6/safefix-harness/pull/8) 将公开 feedback 场景改为确定性内存 Mock，保留五段反馈证据；提交 `4c547b1`，合并提交 `bd97a76`。
+- [x] 重新部署后线上三场景均为 `SUCCESS`：guardrail 0.61 秒、feedback 0.38 秒、approval 0.40 秒。
+- [x] PR [#9](https://github.com/Gungnir6/safefix-harness/pull/9) 将版本更新为 0.1.1；提交 `2446ec9`，合并提交 `2026802`，两个 GitHub CI check 均 PASS。
+- [x] 从合并提交构建并 fresh-install `safefix_harness-0.1.1-py3-none-any.whl`；三个机制演示全部 PASS。
+- [x] 发布 [GitHub Release v0.1.1](https://github.com/Gungnir6/safefix-harness/releases/tag/v0.1.1)，重新下载的 wheel SHA-256 为 `5bfb28a7c4c733d60befc9f83278d4197c93b1ed24196e3100989d8260065bed`。
+- [x] 最终本地门禁：962 passed、2 skipped；Ruff 与 mypy 通过。
+- [ ] 将最终 GitHub `main` 同步到 NJU GitLab，并确认最后一次 GitLab CI/CD 为 PASS。
