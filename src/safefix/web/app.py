@@ -21,7 +21,7 @@ class AppDependencies:
 
 
 def create_app(dependencies: AppDependencies) -> FastAPI:
-    app = FastAPI(title="SafeFix", version="0.1.0")
+    app = FastAPI(title="SafeFix", version="0.1.1")
     static_dir = Path(__file__).with_name("static")
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
